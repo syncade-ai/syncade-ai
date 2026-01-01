@@ -1,0 +1,13 @@
+# Preset: balanced (PR-v2-9) — the proven, shipped defaults.
+#
+# Behaviourally identical to a zero-config run: `--preset balanced` changes nothing on its own.
+# It exists as the honest starting point — copy it, then deviate ONE knob at a time. The values
+# below are pinned to the shipped defaults by a drift test (test_presets.py), so this file can
+# never quietly diverge from what a plain `syncade <pr-doc>` does.
+#
+# Presets vary ONLY loop dimensions (rounds / timeout). They NEVER touch the reviewer model or
+# effort tier — a cheaper panel that audits leniently is the pr-29 hazard, and a preset must not
+# reintroduce it. Set `[[reviewers]]` yourself in .syncade/config.toml if you truly want that.
+[loop]
+max_rounds = 3          # full loop: reviewers -> synthesizer -> optional test -> producer-if-NO-SHIP
+timeout_seconds = 1800  # 30 min per reviewer (the default)

@@ -1,0 +1,11 @@
+# Preset: cheap (PR-v2-9) — a fast, low-cost single-pass check.
+#
+# Trades ROUNDS for cost: one round of reviewers -> synthesizer, with NO producer loop. That is the
+# structurally cheapest honest config — a single review pass at the SAME proven reviewer model and
+# effort tier. It deliberately does NOT lower the effort tier or swap in a cheaper model (the pr-29
+# leniency hazard), and it sets no token/dollar budget that could abort a legitimate run.
+#
+# Layer your own knobs on top in .syncade/config.toml (e.g. a budget_tokens ceiling) — the user
+# file always wins over the preset.
+[loop]
+max_rounds = 1  # single pass: no producer subprocess, no second round

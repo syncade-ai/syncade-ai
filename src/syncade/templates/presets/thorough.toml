@@ -1,0 +1,9 @@
+# Preset: thorough (PR-v2-9) — full rounds plus extra per-reviewer wall-clock for large diffs.
+#
+# Trades TIME for depth: the full producer loop (max_rounds = 3, the Appendix-C ceiling) and double
+# the per-reviewer timeout, so a heavy reviewer working a large diff is not SIGKILLed mid-review. It
+# holds the reviewer model + effort tier at the SAME proven level as balanced — "thorough" buys more
+# rounds and more time, never a different (or more expensive) panel.
+[loop]
+max_rounds = 3          # the full loop (Appendix C caps max_rounds at 3)
+timeout_seconds = 3600  # 60 min per reviewer — double the default, for big diffs

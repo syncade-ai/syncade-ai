@@ -1,0 +1,2 @@
+?? cowork/alpha-briefings/phase-04-evaluator-and-data-pipeline.md
+?? cowork/alpha-briefings/phase-05-trading-loop.md

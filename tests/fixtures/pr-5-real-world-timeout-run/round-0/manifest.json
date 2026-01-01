@@ -1,0 +1,33 @@
+{
+  "syncade_version": "0.1.0",
+  "run_id": "2026-05-13T11-46-55",
+  "round": 0,
+  "started_at_utc": "2026-05-13T16:56:56Z",
+  "snapshot": {
+    "commit_sha": "d165626946ce71ea649725e6f8c4a35282cd1707",
+    "branch": "main",
+    "base_ref": null,
+    "diff_present": false
+  },
+  "reviewers": [
+    {
+      "name": "claude-reviewer",
+      "provider": "anthropic",
+      "verdict": null,
+      "finding_count": null,
+      "duration_seconds": 600.0230249161832,
+      "outcome": "failure",
+      "error_type": "SubprocessTimeoutError"
+    },
+    {
+      "name": "codex-reviewer",
+      "provider": "openai",
+      "verdict": null,
+      "finding_count": null,
+      "duration_seconds": 600.014123249799,
+      "outcome": "failure",
+      "error_type": "SubprocessTimeoutError"
+    }
+  ],
+  "exit_code": 40
+}

@@ -1,0 +1,34 @@
+SubprocessTimeoutError: 'claude' exceeded timeout of 600s (killed after 600.02s)
+
+Traceback (most recent call last):
+
+  File "/Users/dev/Documents/syncade/src/syncade/process.py", line 172, in run_subprocess
+    stdout, stderr = proc.communicate(input=input_text, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/Users/dev/.local/share/uv/python/cpython-3.11.13-macos-aarch64-none/lib/python3.11/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/Users/dev/.local/share/uv/python/cpython-3.11.13-macos-aarch64-none/lib/python3.11/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+
+  File "/Users/dev/.local/share/uv/python/cpython-3.11.13-macos-aarch64-none/lib/python3.11/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+
+subprocess.TimeoutExpired: Command '['claude', '-p', 'You are reviewing work that another coding agent has asserted is complete to\nspec. We are using LLM-as-judge to ensure quality and correct output.\n\nPlease review the work the coding agent has asserted has been implemented.\nRead the PR doc at /Users/dev/Documents/acme/docs/feature-work/08_pr8_followups.md, the master plan at (none)\n(if applicable), and assess whether the work has been done fully according\nto spec, or if there are things not implemented correctly.\n\nBe thorough. You are in effect the principal engineer supervising and\nreviewing this work. Test everything: code, tests, database state, backend\nbehavior. Run SQL statements to verify where needed. Verify cron jobs work.\nHit API endpoints. Run the test suite. The kitchen sink.\n\nTest as a user would as well, using playwright (if a UI exists) to ensure\nthat functionality works and surfaces as advertised — and most importantly,\nthat the data in the UI is correct, actually surfaces in the UI, and matches\nwhat is in the database, persistent state, and any synthesis output.\n\nRead all relevant docs in the repo if needed to familiarize yourself with\nthe codebase. Do not skim. Accuracy is the most important thing. Be as\nthorough as possible. Take the time you need.\n\nDo not fix anything. Capture what you find. The original coding agent will\nmake the changes.\n\nThe diff under review:\n\n(diff not provided; review against the full repo state at HEAD)\n\nOutput your findings as a single JSON object matching the schema below,\nand nothing else — no markdown fences, no preamble, no trailing chatter:\n\n{\n  "verdict": "SHIP" | "NO-SHIP",\n  "findings": [\n    {"severity": "blocker"|"minor"|"nit", "file": "path", "line": int|null, "spec_clause": "string", "finding": "string", "evidence_cmd": "string"|null, "evidence_output": "string"|null}\n  ]\n}\n', '--output-format', 'json', '--model', 'claude-opus-4-6', '--effort', 'high', '--permission-mode', 'bypassPermissions', '--add-dir', '/tmp/syncade/2026-05-13T11-46-55/claude-reviewer']' timed out after 600 seconds
+
+
+The above exception was the direct cause of the following exception:
+
+
+Traceback (most recent call last):
+
+  File "/Users/dev/Documents/syncade/src/syncade/dispatcher.py", line 352, in _run_single_reviewer
+    subprocess_result = run_subprocess(
+                        ^^^^^^^^^^^^^^^
+
+  File "/Users/dev/Documents/syncade/src/syncade/process.py", line 188, in run_subprocess
+    raise SubprocessTimeoutError(
+
+syncade.process.SubprocessTimeoutError: 'claude' exceeded timeout of 600s (killed after 600.02s)

@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# Build
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Local Codex/OMO evidence and task state; never committed.
+.omo/
+
+# Local uv resolver artifact from ad hoc checks; this library does not commit it.
+/uv.lock
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Syncade runtime (kept gitignored per-consumer-repo;
+# this repo doesn't generate them, but defensive in case of dev testing)
+.syncade/runs/
+.syncade/metrics.db
+.syncade/evidence/
+.syncade/findings.md
+.syncade/clarifications.md
+.syncade/last-reviewed.json
+.syncade/draft-spec-*.md
+.syncade/metrics.db
+# NOTE: .syncade/config.toml is intentionally NOT gitignored — that's
+# the per-repo config that travels with the project.
+
+# Claude Code harness runtime artifacts (session locks, scheduled-task
+# state files, local settings). Created in the developer's working
+# tree by Claude Code itself; not produced by syncade and not part of
+# the project. The whitelist pattern (ignore-everything-then-allow)
+# is required so the in-tree skill bridge under .claude/skills/ can
+# escape the ignore — gitignore can't re-include a file once its
+# parent dir is ignored, so we ignore individual paths instead.
+.claude/*
+# Exception: the in-tree Claude Code skill bridge (PR-9 Task 1) lives
+# at .claude/skills/syncade/ and IS part of the project. Future PRs
+# may extract this to a separate marketplace/distribution repo; until
+# then the skill markdown ships in-tree.
+!.claude/skills/

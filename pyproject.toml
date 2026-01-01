@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "syncade"
+version = "0.1.0"
+description = "External blind multi-judge review orchestrator for AI-assisted coding"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Syncade", email = "nickc181@gmail.com" }]
+keywords = ["code-review", "llm", "ai", "code-quality", "ai-agents", "orchestrator", "claude", "codex"]
+# No "License ::" classifier — `license = "Apache-2.0"` above is the SPDX expression (PEP 639),
+# and pairing it with a license classifier is redundant/discouraged. No Windows classifier:
+# GC shells out to `lsof` and worktrees assume POSIX `/tmp` (see README "Platform support").
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/syncade-ai/syncade-ai"
+Repository = "https://github.com/syncade-ai/syncade-ai"
+Issues = "https://github.com/syncade-ai/syncade-ai/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+syncade = "syncade.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# templates/ are the prompt files the CLI renders. skills/ are the Agent Skill copies the
+# `syncade --install-skill` subcommand lays down into ~/.claude and ~/.codex — bundled so
+# a `pip install` (no checkout) user can install the skill. A drift test keeps them
+# byte-identical to the canonical .claude/ and .codex/ copies.
+syncade = ["templates/*.md", "templates/presets/*.toml", "skills/*/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "smoke: end-to-end integration tests that shell out to real provider CLIs (opt-in via `pytest -m smoke`)",
+]
+addopts = "-m 'not smoke'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "UP"]
+ignore = []
+
+[tool.ruff.format]

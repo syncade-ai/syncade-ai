@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  non-smoke:
+    name: non-smoke gates (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the requires-python floor / primary dev target; 3.14 guards
+        # against version drift in the subprocess/signal paths (process.py).
+        python-version: ["3.11", "3.14"]
+    env:
+      # Force uv to honor the matrix version over any .python-version file.
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install package and dev tools
+        run: |
+          uv venv --seed
+          uv pip install -e ".[dev]"
+
+      - name: Run non-smoke tests
+        run: uv run python -m pytest -q
+
+      - name: Run ruff lint
+        run: uv run ruff check .
+
+      - name: Check ruff formatting
+        run: uv run ruff format --check .
+
+      - name: Compile source
+        run: uv run python -m compileall -q src
+
+      - name: Check file length gate
+        run: scripts/check-loc.sh 500
+
+      - name: Check for private identifiers (leak gate)
+        run: scripts/check-no-private-identifiers.sh
+
+      - name: Check whitespace errors
+        run: git diff --check

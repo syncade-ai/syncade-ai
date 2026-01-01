@@ -1,0 +1,540 @@
+---
+name: syncade
+description: 'Run the syncade external blind multi-judge review orchestrator from inside Claude Code. Use when the operator types `/syncade <pr-doc>`, says it in natural language (e.g. "/syncade review a PR for 2 rounds against main"), references the syncade review loop, asks to dogfood a PR brief, OR has no formal spec and asks to review what they just built ("review what we did this session", "I didn''t write a brief" — the skill drafts a spec from the session transcript, ratifies it in this pane, then runs the loop). The skill resolves which of three spec tiers applies: tier A (a brief path), tier B (an OpenSpec change via --openspec), or tier C (no spec — draft from transcript + ratify in-pane). All three tiers converge on the same review loop. The interactive Claude is the operator''s UI; syncade spawns its own reviewer/producer subprocesses with process isolation from this session.'
+---
+
+# syncade — review orchestrator bridge
+
+## What this skill does
+
+`/syncade <pr-doc>` runs the syncade review loop on a PR doc. Syncade
+dispatches blind reviewers (two Codex prompts by default — cross-prompt
+today, cross-lab next),
+synthesizes their structured outputs cold, optionally re-runs tests,
+and (when `max_rounds > 1`) hands NO-SHIP findings to a producer
+subprocess that attempts to commit a fix. The loop runs until SHIP,
+max-rounds reached, or a budget ceiling (exit 25) is hit.
+
+This skill is a Bash orchestration layer: it runs a safety check (the
+operator's auth + producer-commit path), confirms with the operator
+before firing the expensive subprocess, streams output, and reads the
+final `loop-summary.md` to inline a verdict in chat. After the safety
+check passes it goes STRAIGHT to the reviewer loop — there is no
+brief-check or automatic spec-audit between the safety check and the
+reviewers. The reviewer loop answers the question that matters ("did
+this get built to spec, and are there bugs?"); a separate
+brief-verification pre-flight is redundant, because implementation is
+itself the brief-verification pass and syncade reads the implementer's
+corrected brief at invocation.
+
+**The interactive Claude reading this skill is NOT a reviewer.** Syncade
+spawns reviewer subprocesses (`claude -p`, `codex exec`) with no shared
+context with this session. The process-isolation invariant that makes
+syncade's verdict meaningful is preserved as long as this skill is a
+Bash-only wrapper and never tries to substitute the interactive
+session for one of syncade's subprocesses.
+
+## When to use
+
+- Operator types `/syncade <pr-doc>` or asks to run syncade on a PR doc.
+- Operator asks to dogfood a PR brief that lives under your repo.
+- Operator says "review this PR", "run the syncade loop", or
+  references `loop-summary.md` / "round N producer commit".
+- Operator has no formal spec and says "review what we did this session",
+  "I didn't write a brief", or similar — the skill drafts a spec from the
+  session transcript (tier C), ratifies it in this pane, then runs the loop.
+
+Do NOT use this skill when:
+
+- The operator only wants to read a PR brief — that's just `Read`.
+- The operator wants to inspect a prior run's artifacts — that's
+  `Read` on `<repo-root>/.syncade/runs/<run-id>/loop-summary.md`.
+- The operator wants to debug their auth specifically — they should
+  run `syncade --auth-check` from a terminal; this skill calls it as
+  step 2 but is not a substitute for the standalone diagnostic.
+- The operator only wants a spec audit of the brief — they run
+  `syncade --spec-audit <pr-doc>` from a terminal. `--spec-audit` is a
+  MANUAL opt-in diagnostic; this skill no longer runs it automatically.
+
+## Workflow (Step 0 + a tier-C ratification step + seven steps)
+
+**The single pane (PR-E).** One natural-language request flows to a blind review
+without leaving this chat. Step 0 resolves which of **three spec tiers** applies,
+and they all converge on the same loop (Steps 2–7):
+
+- **Tier A — a formal brief** (a PR-doc path). Use it as-is.
+- **Tier B — an OpenSpec change** (`--openspec`). syncade assembles it.
+- **Tier C — no spec** ("review what we did"). syncade DRAFTS one from the session
+  transcript, you **ratify it in this pane** (Step 1.5), then the loop runs.
+
+### Step 0 — Resolve invocation intent (natural language → command)
+
+Before any preflight, translate the operator's request into an exact
+structured command. This is interpretation done by *you* (the interactive
+Claude reading this skill) in markdown — there is NO Python parser; the skill
+only maps natural language onto the CLI's flags (PR-B added the `--scope` flag
+this targets). Derive four values:
+
+```
+PR_DOC          the spec source: EITHER a readable markdown file (the
+                  spec/contract) OR an OpenSpec change (see OPENSPEC) — exactly one
+MAX_ROUNDS      optional — integer in [1, 3]
+BASE_REF        optional — an explicit git ref (mutually exclusive with SCOPE)
+SCOPE           optional — one of everything|local|since-last-review
+                  (mutually exclusive with BASE_REF)
+OPENSPEC        optional — an OpenSpec change-id (or "auto"); mutually exclusive
+                  with a PR_DOC path. Sets the spec, NOT the base (PR-C)
+RESOLVED_COMMAND  the exact command to run, e.g.
+                  syncade [--base <ref> | --scope <token>] [--max-rounds <n>] <pr-doc>
+                  syncade --openspec [<change-id>] [--base <ref> | --scope <token>] [--max-rounds <n>]
+```
+
+**Supported intent shapes (resolve these without asking):**
+
+```
+/syncade path/to/pr.md
+/syncade review path/to/pr.md
+/syncade run syncade on path/to/pr.md
+/syncade review path/to/pr.md for 2 rounds against main
+/syncade dogfood a PR for one round
+/syncade review a PR single pass
+```
+
+**PR_DOC resolution order — stop at the first that yields exactly one file:**
+
+1. **Explicit path** in the command (e.g. `path/to/pr.md`, `./x.md`). Prefer
+   this always.
+2. **PR shorthand** (a bare number): search the repo's PR docs for one
+   readable markdown file whose basename matches the number/prefix
+   (`ls <your-brief-dir>/*<number>*.md`). Use it only if **exactly one** matches.
+3. **Conversation-local "this PR" / "this brief":** use a readable markdown PR
+   doc only if **exactly one** has been clearly referenced in this command or
+   the immediate conversation. Be conservative.
+
+If zero or more than one candidate results at every step, **ask one concise
+question naming the ambiguity, then stop** (do not run auth-check/selfcheck).
+
+**MAX_ROUNDS parsing:** `for 1 round` / `for 2 rounds` / `max rounds 3` →
+`--max-rounds N`; `single pass` → `--max-rounds 1`. Valid values are **1, 2, 3**
+— anything else, ask for a valid count and stop. If no round count is given,
+**omit `--max-rounds`** (the operator's `.syncade/config.toml` stays
+authoritative).
+
+**BASE_REF parsing:** `against <ref>` / `from <ref>` / `base <ref>` / literal
+`--base <ref>`. Validate the ref BEFORE continuing:
+`git rev-parse --verify "<ref>^{commit}"` — if it fails, stop and ask for a
+valid ref. If no base is given, **omit `--base`** (current CLI behavior stays
+authoritative).
+
+**SCOPE parsing (PR-B) — map scope language to `--scope`, do NOT hand-pick a
+base:** when the operator names a *scope* instead of an explicit ref, set SCOPE
+(Python owns the actual base resolution; the skill only maps the phrase):
+
+- *"review everything"* / *"everything since main"* / *"the whole branch"* →
+  `--scope everything` (the branch point off the default branch).
+- *"review what I just did"* / *"my recent changes"* / *"my local commits"* →
+  `--scope local` (the local-ahead commits vs the branch's upstream).
+- *"since last review"* / *"what's new since last time"* / *"new since the last
+  run"* → `--scope since-last-review` (the recorded last-reviewed SHA for this
+  branch).
+
+`--scope` and `--base` are **mutually exclusive**. If the operator gives BOTH an
+explicit ref and scope language (e.g. *"what I did against main"*), the explicit
+ref wins — set BASE_REF and omit SCOPE (an explicit ref is unambiguous). Never
+emit both flags.
+
+If the resolved `syncade --scope …` later **stops before the loop** (exit 60
+with a scope/base message — e.g. no default branch to anchor the branch point
+to), surface that message verbatim and ask for an explicit `--base <ref>`. The
+ask-when-ambiguous rule still holds: Python decides resolvability, the skill
+relays the ask. (Note: `local` with no upstream and `since-last-review` with no
+prior record do NOT stop — they fall back to the branch point and syncade prints
+a one-line note; that is expected, not an error.)
+
+**OPENSPEC parsing (PR-C) — an OpenSpec change folder as the spec source:** when
+the operator points syncade at an OpenSpec change instead of a PR brief, set
+OPENSPEC (the Python CLI reads `openspec/changes/<id>/` directly and assembles it
+into the spec — the skill only maps the phrase):
+
+- *"review the openspec change `<id>`"* / *"run syncade on my openspec proposal
+  `<id>`"* → `--openspec <id>`.
+- *"review my openspec change"* / *"use openspec"* with no id named → `--openspec`
+  (bare; the CLI auto-resolves IFF exactly one active change exists, else it lists
+  them and asks — relay that ask).
+
+`--openspec` is the spec source, so it is **mutually exclusive with a PR_DOC
+path** (set one or the other, never both). It is NOT mutually exclusive with
+`--base`/`--scope` — those still set the diff base (e.g. "review openspec change
+add-auth since last review" → `--openspec add-auth --scope since-last-review`).
+If the resolved `syncade --openspec …` stops before the loop (exit 60 — no
+`openspec/` folder, unknown/ambiguous change-id), surface the message verbatim
+and ask for a change-id or a PR brief path.
+
+**DRAFT-SPEC intent (PR-D/PR-E, tier C) — manufacture a spec when there is none:**
+when the operator has NO brief and asks to review what was just built — *"I didn't
+write a spec, review what we did this session"* / *"draft a spec from our
+conversation"* / *"there's no brief, just check the work"* — syncade manufactures
+the spec, you **ratify it in this pane** (Step 1.5), and then the normal review
+loop runs. **One pane, no second command** (PR-E). Require a reasonably explicit
+no-spec signal; if it is ambiguous whether the operator meant a brief, ask — do
+NOT silently draft.
+
+1. Resolve the current session transcript. The session id is in
+   `$CLAUDE_CODE_SESSION_ID`; the transcript is `<id>.jsonl` under a per-project
+   directory in `~/.claude/projects/`. **Find it by its unique id — do NOT
+   hand-compute the project-dir slug.** (Claude Code derives that slug by
+   replacing *every non-alphanumeric character* — `/`, `.`, `_`, … — with `-`,
+   which is easy to get wrong; the session id is globally unique, so a glob is
+   robust and version-proof):
+   `TRANSCRIPT=$(ls "$HOME"/.claude/projects/*/"$CLAUDE_CODE_SESSION_ID".jsonl 2>/dev/null | head -1)`.
+   If `$CLAUDE_CODE_SESSION_ID` is unset or no file matches, ask the operator for
+   the transcript path.
+2. Run `syncade --draft-spec --transcript <path> [--base <ref> | --scope <token>]`
+   (pass a base/scope only if the operator named one). This is a single cold
+   subprocess (~20–60s); run it DIRECTLY (no auth-check/selfcheck yet). It writes a
+   ratifiable `.syncade/draft-spec-<session>.md`. The skill passes the transcript
+   PATH only — it NEVER curates or summarizes the conversation itself (the cold
+   drafter reads it raw and applies the firewall).
+3. Set `PR_DOC = .syncade/draft-spec-<session>.md` and remember any
+   `--base`/`--scope` the operator gave (so the review diff base == the base the
+   draft was scoped to). Then **continue the normal flow** — Step 1 (validate the
+   file), **Step 1.5 (ratify it in this pane — REQUIRED for tier C)**, then Steps
+   2–7 (safety → confirm → loop), with
+   `RESOLVED_COMMAND = syncade <draft-spec-path> [--base <ref> | --scope <token>] [--max-rounds <n>]`.
+   A manufactured spec is **NEVER** sent to the loop unratified.
+
+**Unsupported flags — stop and ask, never pass through silently:**
+The only CLI flags this skill supports are `--base <ref>`, `--scope <token>`,
+`--openspec [<change-id>]`, `--draft-spec --transcript <path>`,
+`--max-rounds N`, `--budget-tokens N`, and `--budget-usd N`. If the
+operator's request includes any other flag (e.g. `--timeout`, `--quiet`,
+`--verbose`, `--force-dirty`, `--resume`, `--force-drift`), stop and respond:
+
+```
+[syncade] Unrecognized option: <flag>. Step 0 supports only --base <ref>,
+--scope <token>, --openspec [<change-id>], --draft-spec --transcript <path>,
+--max-rounds N, --budget-tokens N, and --budget-usd N. Pass a valid
+invocation or omit the unsupported flag.
+```
+
+Do not guess the intent, do not silently drop the flag, do not forward it.
+
+**Build RESOLVED_COMMAND** by appending the flags that are present, in the order
+`syncade [--openspec [<id>] | <pr-doc>] [--base <ref> | --scope <token>] [--max-rounds <n>] [--budget-tokens <n>] [--budget-usd <n>]` —
+at most one spec source (`--openspec` OR a `<pr-doc>` path, never both) and at
+most one of `--base`/`--scope`. Quote the path and ref safely; **never** build
+the command with `eval`. Every later step uses this exact `RESOLVED_COMMAND`
+(validation, confirmation, invocation, summary).
+
+The bare structured form `/syncade path/to/pr.md` resolves trivially to
+`RESOLVED_COMMAND = syncade path/to/pr.md` and follows the unchanged path.
+
+### Step 1 — Validate the resolved PR doc
+
+**If the spec source is `--openspec`, SKIP this file check** — there is no
+PR_DOC path; the Python CLI resolves and validates the OpenSpec change folder
+itself (and stops with an actionable message if it can't). Proceed to step 2.
+
+Otherwise `PR_DOC` (resolved in Step 0) must be an existing readable markdown
+file. Check with `[ -f "$PR_DOC" ] && [ -r "$PR_DOC" ]`. If it doesn't exist or
+isn't readable:
+
+```
+[syncade] error: <PR_DOC> is not a readable file. Pass a path to a PR brief markdown.
+```
+
+Stop. Do not proceed. (Any `BASE_REF` was already validated with
+`git rev-parse --verify` in Step 0.) On success: tier C → Step 1.5; tiers A/B →
+Step 2.
+
+### Step 1.5 — Ratify a manufactured spec (tier C only)
+
+**Tiers A (a brief path) and B (`--openspec`) SKIP this step** — their spec is
+operator-authored or operator-chosen, i.e. already authoritative. **Tier C's spec
+was manufactured by the cold drafter from the transcript, so it MUST be ratified**
+before it becomes the yardstick the blind reviewers measure against. This is the
+honesty backstop: authorship does not make a spec legitimate — *ratification
+does*. A manufactured spec is never fed to the loop unratified.
+
+Read the drafted `.syncade/draft-spec-<session>.md` and present it in the pane:
+
+1. Show the **proposal** (the "## Why / What") and the **acceptance criteria**.
+2. Show the **"## Assumptions to confirm" section VERBATIM** — these are the
+   drafter's own self-flagged inferences (every criterion it inferred rather than
+   transcribed, plus cross-cutting assumptions). Display the drafter's lines as
+   written; do NOT re-word them into yes-leaning questions. **You are a transparent
+   conduit** — the moment you reword a flag, you can steer the spec toward an
+   implementation.
+3. Ask ONE completeness-oriented question (completeness, NOT "approve this" — the
+   latter is rubber-stampable; the former is the one place a silent omission is
+   catchable, because the operator is the only other holder of intent):
+
+```
+[syncade] Here's the spec I drafted from our session — this is what I think you
+asked me to build, and the "Assumptions to confirm" list is everything I had to
+INFER rather than take from your words. What did I miss or get wrong? Confirm or
+correct the flagged assumptions. (Reply 'looks right' to ratify as-is.)
+```
+
+4. On the operator's reply: **EDIT** `.syncade/draft-spec-<session>.md` to
+   incorporate their confirmations/corrections — add / fix / remove criteria as
+   they direct. The operator's words are authoritative; you are the scribe, not a
+   co-author: do not add criteria they did not affirm, and do not drop their
+   corrections. If they reply "looks right", leave the file as-is.
+
+Then proceed to Step 2 with the ratified file as `PR_DOC`. (v1 ratification is a
+SINGLE round-trip; if a correction is large enough to need a full re-draft, treat
+it as an in-pane edit for now.)
+
+<!-- SYNCADE-SHARED:start — from here to SYNCADE-SHARED:end is byte-identical across
+     the Claude (.claude/skills/syncade) and Codex (.codex/skills/syncade) skill copies.
+     tests/skills/test_skill_drift.py enforces it. Edit BOTH copies together. -->
+
+### Step 2 — Safety check: auth-check
+
+Run `syncade --auth-check` and capture exit code + stdout + stderr.
+This is ~5–10 seconds. Stream both streams to chat as they arrive.
+
+- **Exit 0 → proceed to step 3.**
+- **Exit non-zero → report the failing provider and stop.** The
+  stderr from `--auth-check` already names which provider failed and
+  the remediation step (`run 'claude' interactively to re-authenticate`
+  or `run 'codex login' to re-authenticate`). Don't paraphrase; surface
+  the syncade output verbatim and then stop.
+
+Auth-check failures gate the run. Do not invoke `syncade <pr-doc>` if
+auth is broken — the reviewer subprocesses will all 401, the operator
+will pay for ~30s of failed-call latency per reviewer, and the loop
+will exit 40 with no useful output.
+
+### Step 3 — Safety check: selfcheck
+
+Run `syncade --selfcheck` and capture exit code + stdout + stderr.
+This is ~30 seconds (slower than auth-check because it actually runs
+the producer once against a throwaway repo). Stream output to chat.
+
+- **Exit 0 → proceed to step 4.**
+- **Exit non-zero → report and stop.** Selfcheck failures mean the
+  producer's headless-commit path is broken even though auth works
+  (claude sandbox tightened? codex sandbox tightened? CLI version bump
+  changed the headless-commit flags?).
+  Surface the syncade output verbatim. The selfcheck workspace is
+  preserved on failure; the path is the last stderr line.
+
+If `max_rounds == 1` in the operator's config and they object to the
+selfcheck cost ("the producer never runs"), explain: the operator can
+either set `max_rounds=1` in the override (`syncade --max-rounds 1
+<pr-doc>` skips this skill entirely) or accept the ~30s preflight as
+the safety check.
+
+The safety check (steps 2–3) is the whole pre-flight. Once it's green,
+go straight to the operator-confirmation gate and then the reviewer
+loop — no brief-check, no automatic spec-audit in between.
+
+### Step 4 — Confirm with the operator
+
+Auth + selfcheck both green. Print to chat:
+
+```
+[syncade] Safety check green:
+  --auth-check: OK (<duration>)
+  --selfcheck: OK (<duration>)
+
+Ready to run: <RESOLVED_COMMAND>
+Expected timing: 15-45 minutes depending on findings + producer rounds.
+The producer may commit directly to the current branch.
+
+Reply 'go' to proceed, 'cancel' to abort.
+```
+
+Show the EXACT `RESOLVED_COMMAND` from Step 0 (e.g.
+`syncade --base main --max-rounds 2 path/to/pr.md`), not a generic
+`syncade <pr-doc>` — the operator confirms the precise command that will fire.
+
+Wait for the operator's reply.
+
+- **'go' (or 'y' / 'yes' / 'proceed') → proceed to step 5.**
+- **'cancel' (or 'n' / 'no' / 'abort') → stop with `[syncade] cancelled
+  at operator confirmation`.**
+- **Anything else → treat as cancel.** Don't try to interpret
+  ambiguous answers; the cancel surface exists specifically because
+  the loop is expensive.
+
+This gate is load-bearing. Without it, invoking `syncade <pr-doc>`
+immediately commits to ~15–45 minutes of wall-clock and a
+producer that may modify their branch.
+
+### Step 5 — Invoke the resolved command and stream output
+
+Run the exact `RESOLVED_COMMAND` from Step 0 — it already carries any
+`--base` / `--max-rounds` the operator asked for. If neither was given it is
+the bare `syncade <pr-doc>` and the operator's config drives `max_rounds`,
+`timeout`, etc. Do NOT add, drop, or reorder flags here, and never run the
+command via `eval`. Stream stdout AND stderr to chat in
+real time. Do NOT aggregate; phase-level logging from syncade
+(`[syncade] dispatching round 0 reviewers...`,
+`[syncade] synthesizer running...`, etc.) is the operator's only
+window into a long-running subprocess.
+
+Capture the exit code.
+
+Common exit codes the operator may see:
+
+- `0` — SHIP at some round; the producer either didn't run (round-0
+  SHIP) or did and converged.
+- `10` — clarification or operator decision needed; the loop
+  checkpointed and wrote `decision-needed.md` at the run root. Resolve
+  it (write your ruling into `decision.txt`) and `syncade --resume <run-id>`.
+- `20` — max rounds reached without SHIP.
+- `25` — budget ceiling hit; loop stopped gracefully at a phase
+  boundary (before a review bundle or a producer). Resume with
+  `syncade --resume` to continue on a fresh budget tally.
+- `30` — findings present (NO-SHIP), or producer stalled, or tests
+  failed when reviewers shipped.
+- `40` — reviewer / synthesizer / producer subprocess error.
+- `50` — config error.
+- `60` — worktree / dirty-tree / loop-mode refusal.
+- `70` — reviewer or synthesizer output unparseable.
+
+(Full table in the exit-code contract above.)
+
+### Step 6 — Read `loop-summary.md` and present inline
+
+Locate the run directory. Syncade prints it during the run as
+`[syncade] run dir: <path>`; capture the last such line. The
+top-level summary is at `<run-dir>/loop-summary.md`.
+
+Read it, then present in chat:
+
+```
+[syncade] Run complete (exit <code>).
+
+Verdict: <SHIP / NO-SHIP / max-rounds-reached / error>
+Rounds: <N> of <max>
+Termination: <termination_reason from loop-manifest.json>
+Final round duration: <s>
+Total wall-clock: <s, summed across rounds>
+
+Per-round summary:
+  Round 0: <verdict>, <finding_count> active blockers
+  Round 1: <verdict>, ...
+  ...
+
+Artifacts: <run-dir>
+- Top-level findings.md: <run-dir>/findings.md
+- Per-round artifacts: <run-dir>/round-N/
+```
+
+Use the actual round count and verdicts from `loop-manifest.json` —
+don't paraphrase from memory.
+
+**If exit is 10, 20, or 30, also surface the run's operator-facing document** — its "what now", and
+skipping it is exactly how an escalation stalls unread. READ the file (don't paraphrase from memory,
+don't paste it whole); present the verdict + a plain-language why + a clickable path:
+
+- **Exit 10 (decision needed).** Read `<run-dir>/decision-needed.md`; present its
+  `## The decision you must make` paragraph and the resume path:
+
+  ```
+  [syncade] This run needs YOUR decision (exit 10) — the loop checkpointed, nothing shipped.
+
+  Decision: <the "decision you must make" paragraph from decision-needed.md>
+  Full context + options: <run-dir>/decision-needed.md
+
+  To continue: write your ruling into <run-dir>/decision.txt, then run
+    syncade --resume <run-id>
+  ```
+
+- **Exit 20 / 30 (NO-SHIP, work remaining).** If `<run-dir>/handoff.md` exists, read it and list each
+  active-blocker heading (the `### Blocker N — …` line — one per blocker; each may run a full sentence):
+
+  ```
+  [syncade] NO-SHIP (exit <code>) — <N> active blocker(s) remain:
+
+    1. <Blocker 1 title>
+    2. <Blocker 2 title>
+    ...
+
+  Full handoff (per-blocker file / provenance / disposition): <run-dir>/handoff.md
+  ```
+
+  If `handoff.md` is absent, the `findings.md` pointer above is the entry point — never invent a path.
+
+### Step 7 — If producer ran, surface every commit
+
+When `loop-manifest.json` shows any round's `producer.outcome ==
+"committed"`, list each commit explicitly:
+
+```
+[syncade] Producer commits on this branch:
+
+  Round 1: <sha-short> "<commit-subject>"
+  Round 2: <sha-short> "<commit-subject>"
+  ...
+
+These commits are on the current branch. To inspect:
+  git show <sha>
+
+To roll back ALL producer commits, reset to the round-0 starting SHA:
+  git reset --hard <round-0-starting-sha>
+
+To roll back a specific commit, use `git revert <sha>` (creates an
+inverting commit; preserves history).
+```
+
+The round-0 starting SHA is in `loop-manifest.json` at
+`rounds[0].snapshot.commit_sha`. Don't auto-revert anything — the
+operator decides what to keep.
+
+If the producer ran but every round's `producer.outcome != "committed"`
+(stall or subprocess_error every time), say so explicitly:
+
+```
+[syncade] Producer ran but made no commits across <N> rounds
+(every outcome: <stalled | subprocess_error>). Inspect
+<run-dir>/round-N/producer.stdout and producer.error.txt for the
+failure mode.
+```
+
+## Failure modes and how to handle them
+
+- **Auth-check or selfcheck fails (steps 2–3):** stop. Don't run the
+  main loop. Surface the syncade output verbatim — the remediation
+  step is in the error message.
+- **Operator declines confirmation (step 4):** stop. The cancel
+  surface exists for a reason.
+- **`syncade <pr-doc>` exits non-zero:** still execute steps 6 + 7.
+  The run dir exists, `loop-summary.md` may exist (depends on which
+  phase failed). If it doesn't, point the operator at the highest-
+  numbered round dir and its `manifest.json`.
+- **The operator's argument is a relative path:** resolve it via
+  `realpath` or `readlink -f`. The `--auth-check` / `--selfcheck`
+  steps don't need the resolved path, but `syncade <pr-doc>` does so
+  it picks up the right config.
+
+## Invariants this skill must not violate
+
+- **No Python.** This is markdown + Bash. The "code" is the workflow
+  the interactive agent reads at runtime.
+- **No substituting this session for a reviewer.** Reviewers are
+  syncade's `claude -p` / `codex exec` subprocesses. The interactive
+  agent is the operator's UI; it never feeds findings into the
+  reviewer or synthesizer phase.
+- **No auto-revert of producer commits.** Step 7 surfaces them; the
+  operator decides.
+- **No skipping the confirmation gate in step 4.** Even after the
+  safety check passes, the expensive subprocess fires only on explicit
+  operator consent.
+- **No aggregating syncade's streaming output.** The operator needs
+  phase-level visibility for a ~15-45 minute run. Real-time streaming
+  is the contract.
+
+<!-- SYNCADE-SHARED:end -->
+
+## Pointers
+
+- `CLAUDE.md` — current syncade architecture (authoritative).
+- `path/to/pr.md` — the
+  brief that landed this skill.
+- `.claude/skills/syncade/README.md` — operator-facing description
+  (when to use, prerequisites, failure-mode references).
