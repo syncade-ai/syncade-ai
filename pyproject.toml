@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "Syncade", email = "nickc181@gmail.com" }]
+authors = [{ name = "Syncade", email = "build@syncade.ai" }]
 keywords = ["code-review", "llm", "ai", "code-quality", "ai-agents", "orchestrator", "claude", "codex"]
 # No "License ::" classifier — `license = "Apache-2.0"` above is the SPDX expression (PEP 639),
 # and pairing it with a license classifier is redundant/discouraged. No Windows classifier:
