@@ -27,7 +27,7 @@ class TestMaxRoundsFlag:
         out = capsys.readouterr().out
         assert "--max-rounds" in out
         normalized = " ".join(out.split())
-        assert "[1, 3]" in normalized or "1, 3" in normalized or "1-3" in normalized
+        assert "[1, 10]" in normalized or "1, 10" in normalized or "1-10" in normalized
 
     def test_max_rounds_zero_rejected_by_argparse(self, capsys):
         with pytest.raises(SystemExit) as exc_info:
@@ -36,11 +36,11 @@ class TestMaxRoundsFlag:
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "--max-rounds" in err
-        assert "[1, 3]" in err or "in [1, 3]" in err
+        assert "[1, 10]" in err or "in [1, 10]" in err
 
-    def test_max_rounds_four_rejected_by_argparse(self, capsys):
+    def test_max_rounds_eleven_rejected_by_argparse(self, capsys):
         with pytest.raises(SystemExit) as exc_info:
-            main(["--max-rounds", "4", "x.md"])
+            main(["--max-rounds", "11", "x.md"])
         assert exc_info.value.code == 2
 
     def test_max_rounds_non_integer_rejected(self, capsys):
@@ -49,6 +49,18 @@ class TestMaxRoundsFlag:
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "integer" in err or "'two'" in err
+
+    def test_max_rounds_type_accepts_ten_rejects_eleven(self):
+        """PR-v2-31: the --max-rounds argparse type mirrors the schema's
+        raised [1, 10] bound (was [1, 3])."""
+        import argparse
+
+        from syncade.cli.parser import _max_rounds
+
+        assert _max_rounds("10") == 10
+        with pytest.raises(argparse.ArgumentTypeError) as exc:
+            _max_rounds("11")
+        assert "[1, 10]" in str(exc.value)
 
     def test_max_rounds_one_overrides_config(self, tmp_path, monkeypatch):
         """``--max-rounds 1`` reaches ``run_review``'s ``config.loop.max_rounds``

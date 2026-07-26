@@ -1,7 +1,7 @@
 """Tests for :mod:`syncade.worktree_env` — PR-23 (worktree Python-env isolation).
 
 **The load-bearing proof.** The venv's editable-install ``.pth``
-(``__editable__.syncade-0.1.0.pth``) is a bare path to the operator's MAIN repo
+(``__editable__.syncade-<version>.pth``) is a bare path to the operator's MAIN repo
 ``src``; it is processed at interpreter startup and added to ``sys.path``, so
 *any* Python in that venv resolves ``import syncade`` to MAIN regardless of cwd.
 Every worktree subprocess inherits it. :func:`worktree_scoped_env` must make a

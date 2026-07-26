@@ -13,6 +13,12 @@ inside Claude Code; this skill orchestrates the safety check
 /syncade dogfood a PR single pass
 ```
 
+The skill also handles **configuration** without running a review — "/syncade config",
+"change my producer to gpt-5", "set rounds to 2", "show my config" — rendering a config
+**menu** (`syncade --config list --all`) you browse and edit via
+`syncade --config set <key> <value>` (writes the global `~/.syncade/config.toml`, or the
+repo's with `--repo`). See "Configuring syncade" in the SKILL.
+
 Both the structured form and clear natural language work: the skill
 maps your request onto the CLI shape `syncade [--openspec [ID] | PR_DOC]
 [--base REF | --scope SCOPE] [--max-rounds N]` — at the skill (markdown) layer
@@ -41,7 +47,7 @@ only; the skill adds no Python of its own (PR-B added `--scope`, PR-C added
 ### Natural-language phrasings the skill understands
 
 - **Round count:** `for 1 round`, `for 2 rounds`, `max rounds 3`, `single pass`
-  (= 1 round). Valid: 1–3. Omit it and your config's `max_rounds` stays
+  (= 1 round). Valid: 1–10. Omit it and your config's `max_rounds` stays
   authoritative.
 - **Base ref:** `against main`, `from origin/main`, `base HEAD~3`, or literal
   `--base <ref>` (validated with `git rev-parse` before running). Omit it and

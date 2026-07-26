@@ -97,6 +97,20 @@ def test_force_dirty_with_resume_is_permitted_not_a_mutex_error(tmp_path, capsys
     assert "not found" in err
 
 
+def test_all_flag_rejected_outside_config_list(tmp_path, capsys):
+    """``--all`` is meaningful only with ``--config list``; outside that context it must be a
+    hard exit-2 usage error — not silently ignored on ``--config get`` / ``--config set``."""
+    for argv in (
+        ["--all"],  # no --config at all
+        ["--all", "--config", "get", "loop.max_rounds"],
+        ["--all", "--config", "set", "loop.max_rounds", "3"],
+    ):
+        rc = main(["--repo-root", str(tmp_path), *argv])
+        assert rc == 2, f"expected exit 2 for {argv}"
+        err = capsys.readouterr().err
+        assert "--all is meaningful only with --config list" in err
+
+
 def test_force_dirty_help_documents_resume_escape():
     """N12: ``--force-dirty``'s help must state it also governs — and is the
     only escape from — the dirty-tree refusal on a resumed loop-mode run,
@@ -106,3 +120,62 @@ def test_force_dirty_help_documents_resume_escape():
     normalized = " ".join(build_parser().format_help().split())
     assert "resumed loop-mode run (--resume)" in normalized
     assert "--force-dirty is likewise the only escape" in normalized
+
+
+# ---------------------------------------------------------------------------
+# --config mutex: PR_DOC, other one-shot modes, and review-loop-only flags
+# ---------------------------------------------------------------------------
+
+_CONFIG_MUTEX_FLAGS = (
+    ("--gc", ["--gc"]),
+    ("--metrics", ["--metrics"]),
+    ("--base", ["--base", "main"]),
+    ("--scope", ["--scope", "local"]),
+    ("--max-rounds", ["--max-rounds", "1"]),
+    ("--preset", ["--preset", "cheap"]),
+    ("--worktree-base", ["--worktree-base", "/tmp/wb"]),
+)
+
+
+@pytest.mark.parametrize(
+    "flag,extra_argv", _CONFIG_MUTEX_FLAGS, ids=[m[0] for m in _CONFIG_MUTEX_FLAGS]
+)
+def test_config_mutex_with_other_flags(tmp_path, capsys, flag, extra_argv):
+    """--config rejects review-loop-only and other one-shot flags (exit 2)."""
+    rc = main(["--repo-root", str(tmp_path), "--config", "list", *extra_argv])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--config cannot be combined with" in err
+
+
+def test_config_mutex_with_pr_doc(tmp_path, capsys):
+    """--config rejects a PR_DOC positional (exit 2); positional must precede --config."""
+    rc = main(["--repo-root", str(tmp_path), "pr.md", "--config", "list"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--config cannot be combined with a PR_DOC positional argument" in err
+
+
+def test_repo_flag_without_config_set_is_usage_error(tmp_path, capsys):
+    """--repo is meaningful only with --config set; reject it elsewhere."""
+    rc = main(["--repo-root", str(tmp_path), "--repo", "--config", "list"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--repo is meaningful only with --config set" in err
+
+
+def test_repo_flag_without_config_is_usage_error(tmp_path, capsys):
+    """--repo with no --config at all is also a usage error."""
+    rc = main(["--repo-root", str(tmp_path), "--repo"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--repo is meaningful only with --config set" in err
+
+
+def test_config_mutex_with_install_skill(tmp_path, capsys):
+    """--config cannot be combined with --install-skill: the installer mutates the harness skill
+    directory and exits 0, silently ignoring the config request."""
+    rc = main(["--repo-root", str(tmp_path), "--config", "list", "--install-skill", "codex"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--config cannot be combined with --install-skill" in err

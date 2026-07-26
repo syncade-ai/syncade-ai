@@ -13,12 +13,17 @@ no flags uses the shipped defaults documented here.
 For a single run, values resolve lowest-to-highest:
 
 ```
-built-in defaults  <  --preset  <  .syncade/config.toml  <  CLI flags
+defaults  <  --preset  <  ~/.syncade/config.toml (global)  <  .syncade/config.toml (repo)  <  CLI flags
 ```
 
 - **`--preset cheap|balanced|thorough`** supplies a bundled base config (see [Presets](#presets)).
-- **`.syncade/config.toml`** deep-merges on top of the preset (your file wins per key; a preset knob
-  you don't set survives).
+- **`~/.syncade/config.toml`** (global) — machine-wide defaults applied in every repo. Absent by
+  default; edit it with [`syncade --config`](#editing-config-with-syncade---config).
+- **`.syncade/config.toml`** (repo) — per-project overrides for the repo you run in.
+- Each higher layer merges onto the one below, **except the paired sections** — `[producer]`,
+  `[synthesizer]`, `[drafter]`, `[auditor]`, and the `[[reviewers]]` list — which **replace
+  wholesale**, so a provider/model pair can never split across layers. `[loop]` scalar knobs merge
+  key-by-key (a repo can bump `max_rounds` and inherit the rest).
 - **CLI flags** (`--max-rounds`, `--budget-tokens`, `--budget-usd`, `--timeout`, `--reviewer-model`
   / `--reviewer-thinking` / `--reviewer-timeout NAME=VALUE`, `--worktree-base`) win last, per knob.
 
@@ -36,6 +41,47 @@ cheaper, lenient panel is the panel-leniency hazard, and a preset must not reint
 | `cheap` | `max_rounds = 1` — single pass, no producer loop | unchanged (proven panel) |
 | `balanced` | the shipped defaults (byte-identical to zero-config) | unchanged (proven panel) |
 | `thorough` | `max_rounds = 3` + `timeout_seconds = 3600` (double) | unchanged (proven panel) |
+
+## Editing config with `syncade --config`
+
+Instead of hand-editing the TOML, `syncade --config` inspects and edits it:
+
+| command | what it does |
+|---|---|
+| `syncade --config` | interactive arrow-menu (terminal only) — ↑/↓ to a row, Enter to edit a field or drill into an actor / Advanced section, Esc to go back, `t` toggle edit target (global⇄repo), `s` save, `q` quit |
+| `syncade --config list` | print each surfaced (common) setting with its value and the layer that set it (default / global / repo) |
+| `syncade --config list --all` | print the **full settable surface** — every actor/section field (incl. advanced retry/gc/checks and CLI-only knobs), each with value, layer, dotted key, and an `overrides global <value>` note where the repo layer masks a different global value |
+| `syncade --config get <key>` | print one resolved value |
+| `syncade --config set <key> <value>` | write the value to the global `~/.syncade/config.toml` |
+| `syncade --config set <key> <value> --repo` | write to the current repo's `.syncade/config.toml` instead |
+
+The top screen lists the producer, each reviewer, the judge, and an **Advanced…** entry; Enter on
+one **drills in** to that actor's fields (model, thinking, permissions, auth — plus timeout for the
+producer and reviewers; the cold judge has none) or the
+Advanced retry / gc / review / checks screens, and Esc backs up — so every actor and Advanced field
+is reachable from the menu, not just the common knobs. (A few settable fields stay CLI-only via
+`--config set` by design — the cold `drafter` / `auditor`, `loop.budget_tokens` /
+`loop.test_command` / `loop.test_timeout_seconds`, each actor's `api_key_env`, and `worktree_base`.)
+In the menu, **`t`** switches the edit target between the global `~/.syncade/config.toml` and the
+current repo's `.syncade/config.toml` (repo is available only inside a git repo). A row is flagged
+**`shadowed by <layer>`** when a higher layer overrides it — so a global edit that a repo section
+would mask (or vice-versa) is visible before you make it, not a silent no-op. Editing at the target
+whose layer supplies the effective value always takes effect.
+
+Settable keys: **any scalar field reachable as a flat dotted path** —
+every actor's `provider` / `model` / `thinking` / `permissions` / `auth`; `timeout_seconds` for
+`producer` and `reviewers.<i>` only (cold actors — `synthesizer`, `drafter`, `auditor` — have no
+timeout field); `reviewers.<i>.*` and `checks.<i>.*` by index, the `[loop]` / `[review]` /
+`[retry]` / `[gc]` scalars, and top-level `worktree_base`. The value is coerced to the field's type (int / float /
+bool / one-of-a-fixed-set / comma-separated list / string), and an empty value clears an optional
+field. `set` validates the file it writes and refuses an invalid value (**exit 50**) without
+touching disk; setting a paired role's `provider` re-derives its `model` in the same write. Adding
+or removing `[[reviewers]]` / `[[checks]]` *entries* is not a `set` operation — `set` edits existing
+entries by index. The `[pricing]` model table (`pricing.models.<model>.*`) is a dict-keyed roster, not
+a flat path, so those fields are **not** `set`-reachable — edit them in the TOML directly.
+Outside a terminal (piped / CI / inside a harness) the menu form degrades to exit 60 — use the
+`list`/`get`/`set` verbs there. In Claude Code / Codex the `/syncade` skill maps natural language
+("change my producer to gpt-5", "set rounds to 2") onto these same commands.
 
 ## Top level — `[.]`
 
@@ -63,7 +109,7 @@ below; `worktree_base` is the one top-level scalar.
 <!-- config-fields: LoopConfig -->
 | Field | Type | Default | What it does |
 |---|---|---|---|
-| `max_rounds` | int, 1–3 | `3` | Max rounds of (reviewers → synth → optional test → producer-if-NO-SHIP). SHIP ends the loop early. `1` = single-pass, no producer. `--max-rounds` overrides. |
+| `max_rounds` | int, 1–10 | `3` | Max rounds of (reviewers → synth → optional test → producer-if-NO-SHIP). SHIP ends the loop early. `1` = single-pass, no producer. `--max-rounds` overrides. Ceiling raised 3→10; budget/timeout are the real runaway guards. |
 | `timeout_seconds` | float > 0 | `1800` | Per-reviewer wall-clock cap (SIGKILL past it). `--timeout` overrides. Must be finite. |
 | `budget_tokens` | int > 0 or unset | unset | Optional token ceiling; aborts the loop at a dispatch boundary (exit 25). A hard cap. `--budget-tokens` overrides. |
 | `budget_usd` | float > 0 or unset | unset | Optional API-equivalent-cost ceiling. Softer than tokens (an unpriced actor is uncounted). `--budget-usd` overrides. |
@@ -91,7 +137,7 @@ rest default. Overridable per-run by name: `--reviewer-model NAME=…`, `--revie
 | `provider` | string | required | Model provider (`openai`, `anthropic`, …); resolved against the adapter registry at dispatch. |
 | `model` | string | required | Model identifier within the provider. |
 | `thinking` | `low`/`medium`/`high`/`xhigh`/`max` | `high` | Reasoning-effort tier. Drives audit rigor — do not lower it for cost. |
-| `permissions` | `safe`/`trusted-execute`/`yolo` | `trusted-execute` | Tool-permission tier. `trusted-execute` runs unattended but keeps the OS sandbox scoped to the worktree. |
+| `permissions` | `trusted-execute`/`yolo` | `trusted-execute` | Tool-permission tier. `trusted-execute` runs unattended but keeps the OS sandbox scoped to the worktree. `safe` is rejected — it prompts and would hang a headless reviewer. |
 | `adversarial_lens` | bool | `false` | When true, the reviewer's prompt carries the enumerate-then-attack edge-case block. |
 | `template` | basename or unset | unset | Optional prompt template basename overriding provider-based selection. |
 | `auth` | `auto`/`subscription`/`api` | `auto` | Which account pays. See [auth](#authentication-fields). |

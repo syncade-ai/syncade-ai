@@ -171,12 +171,11 @@ def test_no_removed_config_error_when_field_omitted(tmp_path, capsys):
     (tmp_path / ".syncade").mkdir()
     (tmp_path / ".syncade" / "config.toml").write_text(
         '[[reviewers]]\nname = "rv1"\nprovider = "not-a-real-provider"\nmodel = "x"\n'
-        # PR-8: ``le=3`` caps max_rounds at 3 — pre-PR-8 this used
-        # ``max_rounds = 5``. Use 3 (the boundary) so the test
-        # actually reaches the registry-lookup failure path (exit 50)
-        # rather than short-circuiting at schema validation (also
-        # exit 50, but a different code path that doesn't exercise
-        # the deprecation-callback semantics this test pins).
+        # Use 3 (a valid value within [1, 10]) so the test reaches the
+        # registry-lookup failure path (exit 50) rather than
+        # short-circuiting at schema validation (also exit 50, but a
+        # different code path that doesn't exercise the
+        # deprecation-callback semantics this test pins).
         "[loop]\nmax_rounds = 3\n"  # mention loop but NOT the deprecated key
     )
     pr_doc = tmp_path / "pr.md"

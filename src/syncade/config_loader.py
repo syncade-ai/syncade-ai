@@ -31,17 +31,52 @@ class ConfigError(Exception):
     """
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge ``override`` onto ``base`` (override wins); nested tables merge key-by-key,
-    scalars and lists replace wholesale. Used to layer ``.syncade/config.toml`` over a ``--preset``
-    base so a user who sets one loop knob keeps the preset's other knobs."""
+# Top-level tables whose provider/model form a PAIR (config.py re-derives model from provider). A
+# higher layer that names one of these replaces it WHOLESALE, so the pair can never split across
+# layers (global sets anthropic/claude, repo overrides provider=openai -> a consistent openai pair,
+# never openai + a claude model). Everything else merges key-by-key; lists/scalars replace.
+_PAIRED_SECTIONS = frozenset({"producer", "synthesizer", "drafter", "auditor"})
+
+
+def _deep_merge(base: dict, override: dict, *, _top_level: bool = True) -> dict:
+    """Merge ``override`` onto ``base`` (override wins). Tables merge key-by-key EXCEPT the
+    TOP-LEVEL paired sections (:data:`_PAIRED_SECTIONS`), which replace wholesale; lists and scalars
+    replace. Layers the chain: defaults < ``--preset`` < global (``~/.syncade``) < repo
+    (``.syncade``). The paired-section rule is TOP-LEVEL ONLY (D2): ``_top_level=False`` on recurse
+    so a nested table that merely SHARES a paired name (e.g. a ``[pricing.models.producer]`` for a
+    model named ``producer``) still key-merges instead of being wholesale-replaced."""
     out = dict(base)
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = _deep_merge(out[key], value)
+        if _top_level and key in _PAIRED_SECTIONS:
+            out[key] = value
+        elif isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value, _top_level=False)
         else:
             out[key] = value
     return out
+
+
+def _default_global_config_path() -> Path:
+    """``~/.syncade/config.toml`` — the global config layer. A function (not a constant) so tests
+    can monkeypatch it to an isolated path without touching ``$HOME``."""
+    return Path.home() / ".syncade" / "config.toml"
+
+
+def _read_toml(path: Path) -> dict:
+    """Parse ``path`` to a dict; ``{}`` if it is absent. Read/parse failures raise
+    :class:`ConfigError` naming ``path``, so a bad global vs repo file is unambiguous."""
+    try:
+        if not path.is_file():
+            return {}
+    except OSError as exc:
+        raise ConfigError(f"Failed to inspect {path}: {exc}") from exc
+    try:
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    except OSError as exc:
+        raise ConfigError(f"Failed to read {path}: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"Failed to parse {path}: {exc}") from exc
 
 
 def load_config(
@@ -51,6 +86,8 @@ def load_config(
     check_api_keys: bool = True,
     deprecation_callback=None,
     env: dict[str, str] | None = None,
+    global_config_path: Path | None = None,
+    include_repo: bool = True,
 ) -> SyncadeConfig:
     """Load and validate ``<repo_root>/.syncade/config.toml``.
 
@@ -59,9 +96,11 @@ def load_config(
     - If the file is missing, returns :class:`SyncadeConfig` with all PRD
       defaults applied (or the ``preset`` base, if given). No warning is
       emitted — zero-config is a supported and expected mode.
-    - ``preset`` (``--preset``) supplies a bundled BASE config; the user's
-      ``.syncade/config.toml`` deep-merges ON TOP of it (user wins), so the
-      precedence is defaults < preset < user file < CLI flags.
+    - Precedence is defaults < ``preset`` < ``~/.syncade/config.toml`` (global) <
+      the repo's ``.syncade/config.toml`` < CLI flags. Each layer deep-merges onto
+      the one below (higher wins), except the paired sections replace wholesale
+      (see :func:`_deep_merge`). A missing layer is skipped; with no global and no
+      repo file, the result is byte-identical to zero-config today.
     - If the file exists but is syntactically invalid TOML, raises
       :class:`ConfigError` referencing the parse error.
     - If the file parses but fails schema validation (unknown field,
@@ -83,34 +122,36 @@ def load_config(
             parameter rather than a global read, so tests can exercise the check without
             mutating process state — and so the env-dependence of config loading is
             visible in the signature.
+        global_config_path: The global layer (defaults to ``~/.syncade/config.toml``). Tests pass
+            an explicit path to exercise or isolate it; production uses the default.
+        include_repo: When ``True`` (default), the repo layer (``<repo_root>/.syncade/config.toml``)
+            participates. ``False`` drops it — used by ``--config`` when the cwd is NOT inside a git
+            repo. ``--config`` inspects the CURRENT state (no repo → no repo layer), so a stray
+            ``cwd/.syncade/config.toml`` is not read as the repo layer. (A *review* run differs: it
+            ``git init``s the dir first and then DOES read that file; ``--config`` surfaces that
+            divergence as a note rather than silently adopting or ignoring the file.)
     """
-    base = load_preset(preset) if preset else {}
+    global_path = (
+        global_config_path if global_config_path is not None else _default_global_config_path()
+    )
+    repo_path = repo_root / CONFIG_RELATIVE_PATH
 
-    config_path = repo_root / CONFIG_RELATIVE_PATH
-    try:
-        config_exists = config_path.is_file()
-    except OSError as exc:
-        raise ConfigError(f"Failed to inspect {config_path}: {exc}") from exc
-    if not config_exists:
-        # No user file: the preset (or {}) is the whole config. model_validate({}) reproduces
-        # SyncadeConfig() exactly, so zero-config + no preset stays byte-identical.
-        return SyncadeConfig.model_validate(base)
-
-    try:
-        with config_path.open("rb") as f:
-            raw = tomllib.load(f)
-    except OSError as exc:
-        raise ConfigError(f"Failed to read {config_path}: {exc}") from exc
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"Failed to parse {config_path}: {exc}") from exc
-
-    raw = _deep_merge(base, raw)  # preset is the base; the user file wins per-key.
+    # defaults(< preset) < global < repo. A missing layer contributes {} and is not blamed on error.
+    raw = load_preset(preset) if preset else {}
+    sources: list[Path] = []
+    layer_paths = (global_path, repo_path) if include_repo else (global_path,)
+    for path in layer_paths:
+        layer = _read_toml(path)
+        if layer:
+            raw = _deep_merge(raw, layer)
+            sources.append(path)
+    where = " + ".join(str(p) for p in sources) or "configuration"
 
     try:
         config = SyncadeConfig.model_validate(raw)
     except ValidationError as exc:
         raise ConfigError(
-            f"Invalid configuration in {config_path}:\n{_format_validation_errors(exc)}"
+            f"Invalid configuration in {where}:\n{_format_validation_errors(exc)}"
         ) from exc
 
     # auth = "api" with no key in the env is a CONFIG error, not a runtime one. Left to
@@ -124,7 +165,7 @@ def load_config(
         if problems:
             raise ConfigError(
                 "Invalid configuration in {}:\n{}".format(
-                    config_path, "\n".join(f"  - {p}" for p in problems)
+                    where, "\n".join(f"  - {p}" for p in problems)
                 )
             )
     return config

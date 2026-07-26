@@ -21,17 +21,17 @@ class LoopConfig(BaseModel):
     max_rounds: int = Field(
         default=3,
         ge=1,
-        le=3,
+        le=10,
         description=(
             "Per-run maximum rounds of (reviewers → synthesizer → "
             "optional test → producer-if-NO-SHIP). The loop terminates "
             "as soon as SHIP fires (exit 0) at any round — "
-            "``max_rounds`` is the ceiling, not a target. PRD Appendix "
-            "C caps this at 3; values outside [1, 3] are rejected at "
-            "config load. Set to 1 for single-pass operation with no "
-            "producer subprocess. "
-            "Runaway protection: rounds is the outer cap; "
-            "budget_tokens/budget_usd add optional token/cost ceilings (PR-v2-11)."
+            "``max_rounds`` is the ceiling, not a target. Bounded to "
+            "[1, 10] (PR-v2-31, raised from 3); values outside that range "
+            "are rejected at config load. 10 is a typo-ceiling, not the "
+            "safety mechanism — budget_tokens/budget_usd (PR-v2-11) and the "
+            "per-round timeout are the real runaway guards. Set to 1 for "
+            "single-pass operation with no producer subprocess."
         ),
     )
     timeout_seconds: float = Field(

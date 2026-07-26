@@ -81,21 +81,20 @@ def _positive_int(value: str) -> int:
 
 def _max_rounds(value: str) -> int:
     """argparse ``type`` for ``--max-rounds``: an integer in
-    ``[1, 3]``.
+    ``[1, 10]``.
 
-    Mirrors :class:`~syncade.config.LoopConfig`'s ``ge=1, le=3``
+    Mirrors :class:`~syncade.config.LoopConfig`'s ``ge=1, le=10``
     bounds at the CLI boundary so ``--max-rounds 0`` /
-    ``--max-rounds 4`` are rejected up front (exit 2) rather than
+    ``--max-rounds 11`` are rejected up front (exit 2) rather than
     surfacing the same error as a config-loaded value (exit 50). The
     distinction matters because the CLI flag is the immediate cause
     of the rejection — argparse's exit-2 path with the type name
     in the error message is more legible than the schema's
     ``ValidationError`` rendered through ``ConfigError``.
 
-    PRD Appendix C caps ``max_rounds`` at 3; values outside that
-    range are rejected at config-load. v1 has no plan to widen the
-    range — rounds is the only runaway-protection knob and 3 is
-    the cap.
+    The ceiling was raised from 3 to 10 (PR-v2-31); it is a
+    typo-guard, not the runaway-protection mechanism —
+    budget_tokens/budget_usd and the per-round timeout are.
     """
     try:
         rounds = int(value)
@@ -103,10 +102,8 @@ def _max_rounds(value: str) -> int:
         raise argparse.ArgumentTypeError(
             f"--max-rounds must be an integer (got {value!r})"
         ) from None
-    if rounds < 1 or rounds > 3:
-        raise argparse.ArgumentTypeError(
-            f"--max-rounds must be in [1, 3] (got {value!r}; PRD Appendix C caps max_rounds at 3)"
-        )
+    if rounds < 1 or rounds > 10:
+        raise argparse.ArgumentTypeError(f"--max-rounds must be in [1, 10] (got {value!r})")
     return rounds
 
 
@@ -262,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=_max_rounds,
         default=None,
         help="Per-run maximum rounds of (reviewers → synthesizer → "
-        "optional test → producer-if-NO-SHIP). Must be in [1, 3]. "
+        "optional test → producer-if-NO-SHIP). Must be in [1, 10]. "
         "Overrides `[loop] max_rounds` in .syncade/config.toml. "
         "Default 3. Set to 1 for single-pass review without producer "
         "code changes.",
@@ -392,6 +389,29 @@ def build_parser() -> argparse.ArgumentParser:
         "directories (~/.claude/skills and $CODEX_HOME/skills), then exit. Works from a "
         "pip install (no checkout needed). Default target 'all'; pass 'claude' or 'codex' "
         "to install just one.",
+    )
+    parser.add_argument(
+        "--config",
+        nargs="*",
+        default=None,
+        metavar="ARG",
+        help="Inspect or edit configuration, then exit. `--config` (no verb) opens an interactive "
+        "arrow-key menu. `--config list` shows the effective settings and which layer "
+        "(default/global/repo) set each; `--config get <key>` prints one value. "
+        "`--config set <key> <value>` writes the global ~/.syncade/config.toml (or the "
+        "repo's with --repo).",
+    )
+    parser.add_argument(
+        "--repo",
+        action="store_true",
+        help="With `--config set`, target the current repo's .syncade/config.toml instead of the "
+        "global ~/.syncade/config.toml.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="With `--config list`, show the FULL settable surface — every actor/section field, "
+        "including advanced retry/gc/checks and CLI-only knobs — not just the curated common set.",
     )
     parser.add_argument(
         "--draft-spec",

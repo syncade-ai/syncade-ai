@@ -1,6 +1,6 @@
 ---
 name: syncade
-description: 'Run the syncade external blind multi-judge review orchestrator from inside Codex. Use when the operator asks to run syncade on a PR brief, "review this PR for 2 rounds against main", "review path/to/pr.md since last review", references the syncade review loop, or asks to dogfood a PR brief. The skill resolves the spec source: tier A (a brief path) or tier B (an OpenSpec change via --openspec), with --scope selecting the diff base (a modifier, not a spec). If there is no brief at all it degrades gracefully (asks for a brief or --openspec) — drafting a spec from the Codex session is a follow-up. The interactive Codex agent is the operator''s UI; syncade spawns its own reviewer/producer subprocesses with process isolation from this session.'
+description: 'Run the syncade external blind multi-judge review orchestrator from inside Codex. Use when the operator asks to run syncade on a PR brief, "review this PR for 2 rounds against main", "review path/to/pr.md since last review", references the syncade review loop, or asks to dogfood a PR brief. The skill resolves the spec source: tier A (a brief path) or tier B (an OpenSpec change via --openspec), with --scope selecting the diff base (a modifier, not a spec). If there is no brief at all it degrades gracefully (asks for a brief or --openspec) — drafting a spec from the Codex session is a follow-up. The interactive Codex agent is the operator''s UI; syncade spawns its own reviewer/producer subprocesses with process isolation from this session. It ALSO handles configuration requests — "/syncade config", "change my producer to gpt-5", "set rounds to 2", "cap cost at $5", "show my config" — which it maps to `syncade --config` to inspect or edit settings (models, rounds, timeout, cost cap) and never runs a review for.'
 ---
 
 # syncade — review orchestrator bridge (Codex)
@@ -41,6 +41,10 @@ session for one of syncade's subprocesses.
 - Operator asks to dogfood a PR brief that lives under your repo.
 - Operator says "review this PR", "run the syncade loop", or
   references `loop-summary.md` / "round N producer commit".
+- Operator wants to inspect or change syncade's own settings (models, rounds,
+  timeout, cost cap): "/syncade config", "change my producer to gpt-5", "set
+  rounds to 2", "show my config". This is a CONFIG intent, not a review — see
+  **Configuring syncade** below.
 
 Do NOT use this skill when:
 
@@ -53,6 +57,64 @@ Do NOT use this skill when:
 - The operator only wants a spec audit of the brief — they run
   `syncade --spec-audit <pr-doc>` from a terminal. `--spec-audit` is a
   MANUAL opt-in diagnostic; this skill does not run it automatically.
+
+## Configuring syncade (a separate, non-review intent)
+
+Some requests EDIT or SHOW syncade's own settings rather than running a review:
+`/syncade config`, or natural language like "change my producer to gpt-5", "set rounds
+to 2", "cap cost at $5", "use gpt-5.5 for the judge", "show my config". These map to the
+`syncade --config` CLI and MUST NOT enter the review loop — handle them here and stop.
+
+Division of labour: **browsing belongs in a terminal, changing belongs here.** The real menu is
+the curses TUI, which cannot run in this pane (a skill emits text; it has no input loop, and the
+harness's own menu chrome is not available to it). Do not fake one with a wide table.
+
+**"Show me / let me browse my config"** — point at the terminal FIRST:
+
+```
+For the full menu — arrow keys, Enter to drill into any actor or Advanced section,
+`t` to switch global<->repo, `s` to save:
+
+    syncade --config
+
+It needs a real terminal, so it can't run in this pane.
+```
+
+Then render a COMPACT summary from `syncade --config list` so the state is visible here anyway:
+the common knobs (Producer / Reviewers / Judge models, Rounds, Time per round, Cost cap), each with
+its value and the layer that set it (default / global / repo). Use `syncade --config list --all`
+when they ask about a field outside that set (it prints every settable field with its value, layer,
+an `overrides global <value>` note where the repo masks a different global value, and the dotted
+`[key]`). Keep it SCANNABLE — a short list, not a report: no wide tables, no wall of caveats.
+
+**A specific change in natural language** — "change the producer to anthropic sonnet 4.6 at medium
+effort", "set rounds to 2", "cap cost at $5". THIS is the thing worth doing in-pane; just do it:
+
+1. Map it to one or more `syncade --config set <key> <value>` commands. Common keys:
+
+   | change | key |
+   |---|---|
+   | producer / reviewer / judge model | `producer.model` / `reviewers.<i>.model` / `synthesizer.model` |
+   | a role's provider (re-derives its model) | `producer.provider` / `reviewers.<i>.provider` / `synthesizer.provider` |
+   | thinking / effort | `producer.thinking` / `reviewers.<i>.thinking` / `synthesizer.thinking` |
+   | rounds (1–10) | `loop.max_rounds` |
+   | time per round (seconds) | `loop.timeout_seconds` |
+   | cost cap (USD) | `loop.budget_usd` |
+   | anything else | the `[key]` shown by `syncade --config list --all` |
+
+   Append `--repo` to write the repo's `.syncade/config.toml` instead of the global
+   `~/.syncade/config.toml`. If a requested model belongs to a different provider than the role
+   uses (e.g. "gpt-5" on an `anthropic` producer), set the provider FIRST
+   (`... set producer.provider openai`, which re-derives the model), then the model.
+2. **Shadow check:** look at the field's row in `syncade --config list --all`. If it is set by
+   `repo` (or carries an `overrides global` note) and you are about to write GLOBAL, the edit
+   WON'T take effect for runs in this repo — say so and offer `--repo` before writing.
+3. **Confirm:** print the exact `syncade --config set …` command(s), wait for `go`, run them.
+4. Re-run `syncade --config list --all` and show the row(s) that changed, so the effect is visible.
+
+`set` REFUSES an invalid value (exit 50, file untouched) and an unknown key (exit 2) — surface
+that error verbatim. Ask ONE concise question if a value is ambiguous (e.g. which provider/tier
+"opus" means).
 
 ## Workflow (Step 0 + seven steps)
 
@@ -76,7 +138,7 @@ skill only maps natural language onto the CLI's flags. Derive four values:
 ```
 PR_DOC          the spec source: EITHER a readable markdown file (the
                   spec/contract) OR an OpenSpec change (see OPENSPEC) — exactly one
-MAX_ROUNDS      optional — integer in [1, 3]
+MAX_ROUNDS      optional — integer in [1, 10]
 BASE_REF        optional — an explicit git ref (mutually exclusive with SCOPE)
 SCOPE           optional — one of everything|local|since-last-review
                   (mutually exclusive with BASE_REF)
@@ -113,7 +175,7 @@ If zero or more than one candidate results at every step, **ask one concise
 question naming the ambiguity, then stop** (do not run auth-check/selfcheck).
 
 **MAX_ROUNDS parsing:** `for 1 round` / `for 2 rounds` / `max rounds 3` →
-`--max-rounds N`; `single pass` → `--max-rounds 1`. Valid values are **1, 2, 3**
+`--max-rounds N`; `single pass` → `--max-rounds 1`. Valid values are **1–10**
 — anything else, ask for a valid count and stop. If no round count is given,
 **omit `--max-rounds`** (the operator's `.syncade/config.toml` stays
 authoritative).

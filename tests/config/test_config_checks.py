@@ -8,18 +8,19 @@ from pydantic import ValidationError
 from syncade.config import SyncadeConfig
 
 
-def test_loop_max_rounds_four_rejected_above_cap():
-    """PR-8: PRD Appendix C caps max_rounds at 3. Values > 3 are
-    rejected at config-load (``le=3``) — exit 50 at the CLI."""
-    with pytest.raises(ValidationError) as exc_info:
-        SyncadeConfig(loop={"max_rounds": 4})
-    assert "max_rounds" in str(exc_info.value)
+def test_loop_max_rounds_ten_accepted():
+    """PR-v2-31: the max_rounds ceiling is 10 (raised from 3). 10 loads
+    cleanly; budget_usd/budget_tokens + per-round timeout are the real
+    runaway guards, so 10 is a typo-ceiling, not the safety mechanism."""
+    cfg = SyncadeConfig(loop={"max_rounds": 10})
+    assert cfg.loop.max_rounds == 10
 
 
-def test_loop_max_rounds_five_rejected():
-    """Belt-and-braces: even further past the cap is also rejected."""
+def test_loop_max_rounds_eleven_rejected_above_cap():
+    """PR-v2-31: 11 is past the ceiling (``le=10``) — rejected at
+    config-load, exit 50 at the CLI."""
     with pytest.raises(ValidationError) as exc_info:
-        SyncadeConfig(loop={"max_rounds": 5})
+        SyncadeConfig(loop={"max_rounds": 11})
     assert "max_rounds" in str(exc_info.value)
 
 

@@ -158,7 +158,9 @@ class TestBuildInvocation:
 
     def test_permissions_safe_is_refused(self, tmp_path):
         adapter = CodexAdapter()
-        config = _make_config(permissions="safe")
+        # ReviewerPermissions rejects 'safe' at config-load; model_copy bypasses validation so we
+        # can still exercise the adapter's belt-and-braces guard against a schema-bypassing caller.
+        config = _make_config().model_copy(update={"permissions": "safe"})
         with pytest.raises(ValueError) as exc_info:
             adapter.build_invocation(config, tmp_path, "x")
         msg = str(exc_info.value)

@@ -1,7 +1,7 @@
 """Worktree-scoped Python environment for subprocess legs.
 
 **The bleed this closes.** ``pip install -e .`` drops an editable-install
-``.pth`` (``__editable__.syncade-0.1.0.pth``) into the venv's site-packages
+``.pth`` (``__editable__.syncade-<version>.pth``) into the venv's site-packages
 containing a bare path to the operator's MAIN repo ``src``. A bare-path ``.pth``
 line is processed by :mod:`site` at interpreter startup and added to
 ``sys.path`` — **cwd-independent**. So every worktree subprocess (reviewers,

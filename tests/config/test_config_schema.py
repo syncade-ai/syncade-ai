@@ -397,12 +397,11 @@ def test_reviewer_adversarial_lens_defaults_false_and_accepts_true():
 
 
 def test_reviewer_unknown_permission_value_rejected():
-    """The reviewer ``Permissions`` Literal stays a closed set after
-    PR-17: a typo'd / unknown permission value (here a near-miss of
-    ``trusted-execute``) is rejected at config-load. ``safe`` itself
-    remains schema-valid for reviewers — it's the adapter
-    ``_validate_permissions`` that refuses it for headless dispatch,
-    pinned by the adapter test suites."""
+    """A typo'd / unknown permission value (here a near-miss of
+    ``trusted-execute``) is rejected at config-load by the
+    ``ReviewerPermissions`` Literal (``trusted-execute`` / ``yolo`` only;
+    ``safe`` is excluded from reviewer permissions since it hangs headless
+    dispatch — pinned by ``test_reviewer_permissions.py``)."""
     with pytest.raises(ValidationError) as exc_info:
         SyncadeConfig(
             reviewers=[
@@ -660,8 +659,9 @@ def test_loop_max_rounds_two_accepted():
 
 
 def test_loop_max_rounds_three_accepted_boundary():
-    """PR-8 boundary: 3 is the PRD cap (Appendix C). ``le=3`` accepts
-    it; anything above is rejected."""
+    """3 is the default and a common config; still valid under the
+    raised ``le=10`` ceiling (PR-v2-31; the 10/11 boundary is covered in
+    test_config_checks)."""
     cfg = SyncadeConfig(loop={"max_rounds": 3})
     assert cfg.loop.max_rounds == 3
 

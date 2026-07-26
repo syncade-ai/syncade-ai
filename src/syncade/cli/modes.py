@@ -65,6 +65,95 @@ def _reject_diff_base_flags(args, mode_flag: str) -> int | None:
     return None
 
 
+def _extract_config_operands(
+    argv: list[str],
+) -> tuple[list[str] | None, list[str], bool]:
+    """Extract ``--config`` operands from raw argv before argparse consumes them.
+
+    Returns ``(operands, cleaned_argv, has_prefix_repo)``:
+
+    - ``operands``: ``None`` when ``--config`` is absent; otherwise the verb + data
+      tokens taken directly from raw argv so dash-prefixed values like ``-custom``
+      pass through where ``nargs="*"`` would stop.
+    - ``cleaned_argv``: argv with those operands removed so argparse can parse the
+      structural flags without interference.
+    - ``has_prefix_repo``: ``True`` when ``--repo`` precedes ``--config`` — the
+      forbidden prefix form (D1: ``--repo`` must trail the key/value).
+    """
+    try:
+        cfg_pos = argv.index("--config")
+    except ValueError:
+        return None, argv, False
+    has_prefix_repo = "--repo" in argv[:cfg_pos]
+    _verbs_n: dict[str, int] = {"set": 2, "get": 1, "list": 0}
+    operands: list[str] = []
+    pos = cfg_pos + 1
+    if pos < len(argv):
+        verb = argv[pos]
+        operands = [verb]
+        for _ in range(_verbs_n.get(verb, 0)):
+            pos += 1
+            # Stop consuming when a double-dash token occupies a missing-value slot so
+            # "--config set producer.model --repo" (and any other --flag) is rejected
+            # rather than silently writing model="--flag" to the config file.
+            if pos < len(argv) and not argv[pos].startswith("--"):
+                operands.append(argv[pos])
+    new_argv = argv[: cfg_pos + 1] + argv[cfg_pos + 1 + len(operands) :]
+    return operands, new_argv, has_prefix_repo
+
+
+def _reject_config_mode_conflicts(args) -> int | None:
+    """Reject flags incompatible with ``--config`` mode.
+
+    ``--repo`` is meaningful only with ``--config set``; ``--config`` itself is
+    mutually exclusive with PR_DOC, every other one-shot mode, and the
+    review-loop-only flags (``--base``/``--scope`` select the diff base and
+    ``--config`` renders no diff; ``--max-rounds``/``--timeout``/``--preset`` are
+    loop-level overrides ignored by the config inspector, which would mislead
+    operators into thinking the effective config they see reflects those overrides).
+
+    Returns the exit code on a violation, ``None`` when clean.
+    """
+    if getattr(args, "all", False) and not (
+        args.config is not None and args.config and args.config[0] == "list"
+    ):
+        print("[syncade] error: --all is meaningful only with --config list", file=sys.stderr)
+        return CLI_USAGE_ERROR
+    if getattr(args, "repo", False) and (
+        args.config is None or not args.config or args.config[0] != "set"
+    ):
+        print("[syncade] error: --repo is meaningful only with --config set", file=sys.stderr)
+        return CLI_USAGE_ERROR
+    if args.config is not None:
+        for _flag, _used in (
+            ("a PR_DOC positional argument", bool(args.pr_doc)),
+            ("--resume", bool(args.resume)),
+            ("--selfcheck", args.selfcheck),
+            ("--auth-check", args.auth_check),
+            ("--spec-audit", bool(args.spec_audit)),
+            ("--draft-spec", args.draft_spec),
+            ("--openspec", args.openspec is not None),
+            ("--gc", args.gc),
+            ("--metrics", args.metrics),
+            ("--base", args.base is not None),
+            ("--scope", args.scope is not None),
+            ("--max-rounds", args.max_rounds is not None),
+            ("--timeout", args.timeout is not None),
+            ("--preset", args.preset is not None),
+            ("--worktree-base", args.worktree_base is not None),
+            ("--force-dirty", getattr(args, "force_dirty", False)),
+            ("--allow-default-branch", getattr(args, "allow_default_branch", False)),
+            ("--install-skill", args.install_skill is not None),
+        ):
+            if _used:
+                print(
+                    f"[syncade] error: --config cannot be combined with {_flag}",
+                    file=sys.stderr,
+                )
+                return CLI_USAGE_ERROR
+    return None
+
+
 def _run_selfcheck(args) -> int:
     """Dispatch ``syncade --selfcheck``.
 

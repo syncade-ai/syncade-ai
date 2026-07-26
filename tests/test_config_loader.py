@@ -50,9 +50,8 @@ max_rounds = 2
     )
     cfg = load_config(tmp_path)
     assert cfg.producer.model == "claude-opus-4-7"
-    # PR-8: ``le=3`` rejects values above 3; pre-PR-8 the test used
-    # max_rounds=7 (when the schema only enforced ``ge=1``). Use 2
-    # to verify override flow with a value inside the new range.
+    # max_rounds=2 is an in-range override; this test exercises override
+    # flow, not the bound.
     assert cfg.loop.max_rounds == 2
     # untouched defaults survive
     assert cfg.producer.thinking == "medium"
@@ -80,14 +79,14 @@ model = "gpt-5-codex"
 
 
 def test_max_rounds_above_cap_rejected_at_config_load(tmp_path):
-    """PR-8: PRD Appendix C caps max_rounds at 3; ``le=3`` rejects
-    above-cap values at config-load with a clean ConfigError that
-    maps to exit 50."""
+    """PR-v2-31: the ceiling is 10 (``le=10``, raised from 3); an
+    above-cap value is rejected at config-load with a clean ConfigError
+    that maps to exit 50."""
     _write_config(
         tmp_path,
         """
 [loop]
-max_rounds = 5
+max_rounds = 11
 """,
     )
     with pytest.raises(ConfigError) as exc_info:
@@ -228,9 +227,8 @@ class TestRemovedConfigFields:
     def test_callback_not_fired_when_removed_fields_omitted(self, tmp_path):
         _write_config(
             tmp_path,
-            # PR-8: ``le=3`` caps max_rounds at 3; pre-PR-8 this used
-            # ``max_rounds = 5`` (which loaded cleanly under ``ge=1``
-            # only). Use 2 — still a different loop key, but in-range.
+            # max_rounds=2 is an in-range loop key (this test checks the
+            # deprecation callback, not the bound).
             "[loop]\nmax_rounds = 2\n",
         )
         warnings: list[str] = []
@@ -253,10 +251,8 @@ class TestRemovedConfigFields:
 
     def test_partial_path_does_not_trigger(self, tmp_path):
         """``[loop]`` section without removed keys does not warn."""
-        # PR-8: pre-PR-8 used ``max_rounds = 4``; with ``le=3`` that's
-        # now rejected at config-load. Use 3 (the boundary) so the
-        # depth-correctness check stays meaningful without violating
-        # the new cap.
+        # max_rounds=3 is an in-range loop key (this test checks the
+        # depth-correctness of the deprecation path, not the bound).
         _write_config(tmp_path, "[loop]\nmax_rounds = 3\n")
         warnings: list[str] = []
         load_config(tmp_path, deprecation_callback=warnings.append)

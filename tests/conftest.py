@@ -20,3 +20,12 @@ import pytest
 def _neutral_harness(monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_global_config(monkeypatch, tmp_path_factory):
+    """No test may pick up a developer's real ``~/.syncade/config.toml`` — that global layer would
+    leak into every default-assertion, exactly like the harness markers above. Point the resolver at
+    an absent path; tests that exercise the global layer pass an explicit ``global_config_path``."""
+    absent = tmp_path_factory.mktemp("no-global-config") / "config.toml"
+    monkeypatch.setattr("syncade.config_loader._default_global_config_path", lambda: absent)

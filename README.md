@@ -2,15 +2,37 @@
 
 **A blind, multi-judge code-review orchestrator for AI-assisted coding.**
 
-Point syncade at a short spec and it reviews your changes the way a careful team would: it
-spawns fresh, isolated CLI subprocesses — two **blind reviewers**, a **cold synthesizer**
-that consolidates their findings into one mechanical verdict, and, on NO-SHIP, a
-**producer** that attempts a fix and commits it — looping up to three rounds until it ships
-or runs out of budget. The verdict comes back in the same Claude Code or Codex session; you
-never open another terminal or copy-paste between tools.
+## Why syncade
 
-The reviewers never see each other's output, the producer's narrative, or your live
-session. That process isolation is the core property, not an implementation detail.
+Most of your code is now written by an AI — and the thing "reviewing" it is usually the same AI,
+or you skimming a diff you didn't write. That's the problem: **a model reviewing its own work
+shares its own blind spots.** An IDE assistant reviews with the very context that produced the bug.
+A PR bot is a single model with no adversarial structure. A "review this file" prompt is one model,
+one shot, no gate. None of them can tell you *no* in a way you can trust.
+
+syncade is built so the review **can't be rubber-stamped**:
+
+- **Blind and isolated.** Reviewers run as fresh CLI subprocesses with zero shared context — not your
+  session, not each other, not the producer's narrative. A blind spot in the session that *wrote* the
+  code is not shared by the judges. This is the core property, not an implementation detail.
+- **The verdict is mechanical.** Ship / no-ship is an exit code computed from the consolidated
+  findings plus your own tests and checks — an LLM never decides it directly. No "looks good to me."
+- **Many judges, one cold synthesizer.** Several independent reviewers, consolidated by a cold judge
+  that sees only their structured output; unanimous blockers can't be dismissed. Diversify the panel
+  across prompts *and* models so one model's blind spot can't sink the verdict.
+- **It closes the loop.** On no-ship a producer attempts a fix and commits, and the loop runs again —
+  it converges to a shippable state instead of just handing you a report.
+
+The result is a second opinion you didn't write, can't rubber-stamp, and can act on.
+
+## How it fits your flow
+
+Point syncade at a short spec and it reviews your changes the way a careful team would: it
+spawns fresh, isolated CLI subprocesses — **blind reviewers**, a **cold synthesizer** that
+consolidates their findings into one mechanical verdict, and, on NO-SHIP, a **producer** that
+attempts a fix and commits it — looping up to three rounds by default until it ships or runs out of
+budget. The verdict comes back in the same Claude Code or Codex session; you never open another
+terminal or copy-paste between tools.
 
 ## Install
 
@@ -67,10 +89,18 @@ Each round of `syncade <brief>`:
 It ships the moment a round is clean, or stops at `max_rounds` (default 3), a budget
 ceiling, or a producer stall.
 
-**On diversity:** the shipping default panel is two OpenAI `gpt-5.5` reviewers running
-*different prompts* — **cross-prompt, not yet cross-model**. Under Claude Code the producer
-is Anthropic, so the panel does judge a different model than the producer wrote. A second
-lab (a generic OpenAI-compatible adapter, then Gemini) is the next milestone.
+**Cross-prompt and cross-model.** Reviewer diversity is the point — a blind spot shared by every
+judge is a blind spot in the verdict. The default panel is two `codex` (OpenAI `gpt-5.5`) reviewers
+running *different prompts* — a standard reviewer and an adversarial one — so it's **cross-prompt** out
+of the box. And every actor is now fully configurable: set the provider and model per reviewer to run
+**cross-model / cross-lab** (e.g. one OpenAI reviewer + one Anthropic reviewer) whenever you want a
+second lab's perspective.
+
+**We recommend `codex` (OpenAI) models as your blind reviewers.** In our own dogfooding they review
+harder and ship less leniently than the alternatives — we offlined an Anthropic reviewer and reverted
+a `gpt-5.6` panel after both audited too leniently (see [the dogfood history](the dogfood history)).
+So the recommended default stays two codex reviewers; reach for cross-model deliberately, not by
+default.
 
 ## The verdict is an exit code
 
@@ -94,19 +124,38 @@ Zero-config works out of the box. To customize, add `.syncade/config.toml`:
 
 ```toml
 [loop]
-max_rounds = 3
+max_rounds = 3                  # recommended default; hard ceiling is 10
+timeout_seconds = 1800          # per round, recommended ~30 min; set higher for big diffs
 test_command = "pytest -q"      # optional third convergence leg
 
 [[reviewers]]
 name = "codex-reviewer"
-provider = "openai"
+provider = "openai"             # codex/OpenAI recommended for blind review; swap per reviewer for cross-model
 model = "gpt-5.5"
 thinking = "xhigh"
 ```
 
+**Rounds & time budget.** We recommend **3 rounds** at **~30 minutes each** — enough for the producer
+to converge on most PRs without runaway cost. You can raise `max_rounds` up to **10** and set any
+per-round `timeout_seconds`; the real runaway guards are the budget ceilings (`budget_usd` /
+`budget_tokens`), not the round cap. Per-invocation: `syncade --max-rounds N`, `--budget-usd N`.
+
 Every reachable knob — reviewers, producer, the cold actors, retry, GC, budgets — is in
 **[docs/config-reference.md](docs/config-reference.md)**, and three bundled presets
 (`--preset cheap | balanced | thorough`) cover the common cases.
+
+Prefer not to hand-edit TOML? `syncade --config` opens an arrow-key menu that **drills in** to every
+actor and Advanced section (Producer / Reviewer / Judge → model, thinking, permissions, auth — plus
+timeout for Producer/Reviewers; Advanced… → retry / gc / review / checks); `syncade --config set <key> <value>` sets **any** scalar
+field on any actor/section (the scriptable form, one shared resolver); `--config list` shows the common
+surfaced settings with the layer that set it, and `--config list --all` dumps the **full** settable
+surface (every field, with layer + `overrides global` shadow notes + the dotted key). A bad key exits 2,
+a bad value exits 50 — never a broken file. Edits go to a machine-wide **`~/.syncade/config.toml`** by
+default — set "my producer is Opus everywhere" once — with precedence `defaults → global → repo
+`.syncade/config.toml` → CLI flags`; in the menu, `t` switches the edit target and a `shadowed by
+<layer>` flag warns when a higher layer would mask your edit. Add `--repo` to target the current repo
+instead. Inside Claude Code / Codex, the `/syncade` skill renders that same surface as a **conversational
+config menu** — browse and edit by chatting, no terminal needed.
 
 **Billing caveat.** The two CLIs resolve credentials *oppositely* — `claude` lets
 `ANTHROPIC_API_KEY` override your login, while `codex` ignores `OPENAI_API_KEY` and uses

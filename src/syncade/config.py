@@ -32,7 +32,7 @@ from syncade.config_producer import (
     _invoking_harness,
 )
 from syncade.config_retry import RetryConfig
-from syncade.config_types import Permissions, Thinking
+from syncade.config_types import Permissions, ReviewerPermissions, Thinking
 from syncade.diff_filter import REVIEWER_STRIP_FILES
 from syncade.pricing_config import PricingConfig
 from syncade.worktree import DEFAULT_WORKTREE_BASE, TEST_WORKTREE_NAME
@@ -49,6 +49,7 @@ __all__ = [
     "ProducerProvider",
     "ReviewConfig",
     "ReviewerConfig",
+    "ReviewerPermissions",
     "SyncadeConfig",
     "SynthesizerConfig",
     "Thinking",
@@ -127,7 +128,7 @@ class ReviewerConfig(AuthedActor):
             "test_thinking_canonical_source_no_duplicate_enumerations``."
         ),
     )
-    permissions: Permissions = Field(
+    permissions: ReviewerPermissions = Field(
         default="trusted-execute",
         description=(
             "Tool-permission tier for this reviewer. ``trusted-execute`` is the "
@@ -142,8 +143,9 @@ class ReviewerConfig(AuthedActor):
             "the repo and run its test/lint commands inside the worktree. "
             "(``yolo`` and ``trusted-execute`` are identical on Anthropic — both "
             "are ``bypassPermissions``; the distinction only bites on Codex, "
-            "which is the default reviewer provider.) ``safe`` is rejected by "
-            "the real adapters: it prompts, so it hangs a headless subprocess."
+            "which is the default reviewer provider.) ``safe`` is not offered: "
+            "it prompts, so it would hang a headless subprocess — rejected at "
+            "config-load (and again by the adapters as belt-and-braces)."
         ),
     )
     adversarial_lens: bool = Field(

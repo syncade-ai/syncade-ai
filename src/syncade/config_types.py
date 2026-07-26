@@ -48,5 +48,12 @@ Anthropic and the unchanged ``-s workspace-write -c approval_policy=never``
 on Codex. The old ``trusted`` value was provider-asymmetric and is no longer
 accepted."""
 
+ReviewerPermissions = Literal["trusted-execute", "yolo"]
+"""Reviewer permission tiers — the runnable subset of :data:`Permissions`. ``safe`` is excluded:
+the real reviewer adapters refuse it (it prompts, so it hangs a headless subprocess), so it is
+rejected at config-load rather than only at dispatch — mirroring
+:data:`~syncade.config_producer.ProducerPermissions`. The adapters keep their own ``safe`` guard as
+belt-and-braces for callers that bypass the schema (e.g. ``model_construct``)."""
+
 # LoopConfig moved to config_loop; it is imported above for
 # SyncadeConfig's ``loop`` field.

@@ -115,7 +115,7 @@ fresh subprocess with no repo-wide view — it fixes exactly the sites you
 name and no others. So if you report one instance of a defect that lives in
 five places, the producer fixes that one, next round's reviewer finds the
 second, and the loop peels one layer per round — and can exhaust the
-3-round cap on a defect a single exhaustive finding would have closed in one
+round cap on a defect a single exhaustive finding would have closed in one
 round.
 
 The reproduction bar is unchanged, not relaxed: actually run the grep and
