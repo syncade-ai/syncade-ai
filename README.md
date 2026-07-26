@@ -1,29 +1,43 @@
 # syncade
 
-**A blind, multi-judge code-review orchestrator for AI-assisted coding.**
+**A blind, cross-model review loop that catches and fixes the bugs your coding agent can't see in
+its own work.**
+
+syncade reviews your changes with a panel of blind reviewers that share none of the context, prompt,
+or model that wrote the code, consolidates their findings with a cold judge, and returns a ship /
+no-ship decision as a mechanical exit code. On no-ship it fixes the code and reviews again, looping
+until your change either ships or runs out of budget. It runs without leaving your Claude Code or
+Codex session.
 
 ## Why syncade
 
-Most of your code is now written by an AI — and the thing "reviewing" it is usually the same AI,
-or you skimming a diff you didn't write. That's the problem: **a model reviewing its own work
-shares its own blind spots.** An IDE assistant reviews with the very context that produced the bug.
-A PR bot is a single model with no adversarial structure. A "review this file" prompt is one model,
-one shot, no gate. None of them can tell you *no* in a way you can trust.
+The model that writes your code is the worst reviewer of it. It reviews with the same context that
+produced the bug, so a wrong assumption in the code is a wrong assumption in the review: it can't see
+the gap between what the spec says and what it actually wrote. It's anchored to work it just committed
+to, so review turns into rationalization instead of scrutiny. And by the end of a long session the
+real diff is buried under thousands of tokens of its own narrative. That is why bugs sail past the
+harness and land in your PR.
 
-syncade is built so the review **can't be rubber-stamped**:
+Stacking more of the same doesn't help. An IDE assistant, a PR bot, a "review this file" prompt: each
+is one model, one lens, one failure distribution. Every model has systematic blind spots, whole
+categories of bug it reliably misses, and when the same model writes and reviews, those blind spots
+pass straight through.
 
-- **Blind and isolated.** Reviewers run as fresh CLI subprocesses with zero shared context — not your
-  session, not each other, not the producer's narrative. A blind spot in the session that *wrote* the
-  code is not shared by the judges. This is the core property, not an implementation detail.
-- **The verdict is mechanical.** Ship / no-ship is an exit code computed from the consolidated
-  findings plus your own tests and checks — an LLM never decides it directly. No "looks good to me."
-- **Many judges, one cold synthesizer.** Several independent reviewers, consolidated by a cold judge
-  that sees only their structured output; unanimous blockers can't be dismissed. Diversify the panel
-  across prompts *and* models so one model's blind spot can't sink the verdict.
-- **It closes the loop.** On no-ship a producer attempts a fix and commits, and the loop runs again —
-  it converges to a shippable state instead of just handing you a report.
+syncade attacks the code from outside that failure distribution:
 
-The result is a second opinion you didn't write, can't rubber-stamp, and can act on.
+- **Blind and isolated.** Reviewers run as fresh CLI subprocesses with zero shared context: not your
+  session, not each other, not the producer's narrative. They start from the diff and the spec, so the
+  gap between the two is visible to them and invisible to whatever wrote the code.
+- **Cross-prompt and cross-model by design.** A bug survives only if every judge misses it. Independent
+  reviewers running different prompts (a standard pass and an adversarial one) and different models
+  from different labs have far less overlap in what they miss, so the surviving set shrinks toward
+  zero.
+- **It finds and fixes.** On a no-ship verdict a producer attempts the fix and commits, then the loop
+  runs again, converging to a shippable state instead of just handing you a report.
+- **The verdict is mechanical.** Ship or no-ship is an exit code computed from the consolidated
+  findings plus your own tests and checks, so an LLM never decides it directly.
+
+The result is a review that finds what the tool that wrote your code structurally cannot.
 
 ## How it fits your flow
 
@@ -98,8 +112,8 @@ second lab's perspective.
 
 **We recommend `codex` (OpenAI) models as your blind reviewers.** In our own dogfooding they review
 harder and ship less leniently than the alternatives — we offlined an Anthropic reviewer and reverted
-a `gpt-5.6` panel after both audited too leniently (see [the dogfood history](the dogfood history)).
-So the recommended default stays two codex reviewers; reach for cross-model deliberately, not by
+a `gpt-5.6` panel after both audited too leniently. So the recommended default stays two codex
+reviewers; reach for cross-model deliberately, not by
 default.
 
 ## The verdict is an exit code
