@@ -22,7 +22,6 @@ def test_default_config_matches_prd():
     assert cfg.producer.timeout_seconds is None
     assert cfg.loop.max_rounds == 3
     assert cfg.loop.timeout_seconds == 1800
-    assert cfg.review.include_producer_summary is False
     assert cfg.review.strip_repo_context_files == ["CLAUDE.md", "AGENTS.md"]
 
 
@@ -226,6 +225,11 @@ _THINKING_DRIFT_ALLOWLIST: tuple[str, ...] = (
     # commit notes may have enumerated values literally; that's
     # the historical record and shouldn't be retroactively edited.
     "your repo",
+    # Same rationale, for the retired-docs archive (2026-07-27 moved
+    # the finished review/PR corpus under ``docs/docs-archive/``,
+    # which carried the old `your repo` tree out from under the
+    # exemption above). Archived text is frozen by definition.
+    "docs/docs-archive/",
     # The architecture description in ``CLAUDE.md`` reproduces the
     # ``Thinking = Literal[...]`` type signature once as part of
     # the ``syncade.config`` section. The PR-9 Task 3 note in

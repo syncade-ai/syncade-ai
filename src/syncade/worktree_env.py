@@ -124,4 +124,10 @@ def worktree_scoped_env(worktree_path: Path) -> dict[str, str]:
     if existing:
         scoped_entries.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(scoped_entries)
+    # Any git command run inside a worktree subprocess must see the ORIGINAL
+    # object graph.  `refs/replace/*` lives in the shared common dir and is
+    # writable from a producer worktree, so without this flag a reviewer doing
+    # `git show HEAD:f.py` or a test doing `git diff HEAD` would silently read
+    # replacement objects rather than the objects named by the snapshot OID.
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     return env

@@ -37,6 +37,7 @@ from tests.doctor._helpers import (
     _ok_auth,
     _repo_on,
     _repo_unborn,
+    _repo_with_second_commit,
     _which_missing,
     _which_none,
 )
@@ -220,6 +221,26 @@ class TestBranchCheck:
         )
         assert branch.status == "ok"
         assert "commits nothing" in branch.detail
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"base_ref": "HEAD", "max_rounds": 3},
+            {"scope": "everything", "max_rounds": 3},
+        ],
+    )
+    def test_known_empty_based_diff_on_default_branch_is_green(self, tmp_path, kwargs):
+        """Known-empty based/scoped diff on default branch is green: guard is N/A."""
+        repo = _repo_on(tmp_path / "m", "main")
+        branch = next(
+            c for c in doctor.collect_checks(SyncadeConfig(), repo, **kwargs) if c.name == "branch"
+        )
+        assert branch.status == "ok", "doctor refused a known-empty based/scoped run on main"
+
+    def test_reviewable_based_diff_on_default_branch_is_red(self, tmp_path):
+        repo, base = _repo_with_second_commit(tmp_path / "m")
+        chk = doctor.collect_checks(SyncadeConfig(), repo, base_ref=base, max_rounds=3)
+        assert next(c for c in chk if c.name == "branch").status == "red"
 
     def test_dirty_tree_loop_is_red(self, healthy_env):
         (healthy_env / "README.md").write_text("modified\n")  # tracked-modified

@@ -96,3 +96,113 @@ class TestUnanimousBlockerDistinctKeying:
         )
 
         assert _consensus_lines(finding, dispatch) == ["**Consensus:** 1 of 2 reviewers  "]
+
+
+class TestUnanimousBlockerMixedProvenance:
+    """2026-07-27 audit rank 1 (A C-01 / B C1): a third, lower-severity
+    provenance entry must not disarm the guard.
+
+    The predicate used to be ``all(p.original_severity == "blocker")``
+    over raw provenance, so ``[r1:blocker, r2:blocker, r1:minor]`` — a
+    shape the synthesizer reaches by merging a reviewer's own smaller
+    note about the same concern — turned a locked unanimous blocker
+    into a dismissible finding, i.e. a false SHIP. Coverage is now
+    counted over the blocker-severity entries only, which makes the
+    predicate monotone: extra provenance can add coverage, never
+    remove it.
+    """
+
+    def test_extra_minor_entry_from_counted_reviewer_does_not_unlock_dismissal(self) -> None:
+        """The audit's exact repro: [r1:blocker, r2:blocker, r1:minor]."""
+        with pytest.raises(ValidationError) as exc_info:
+            ConsolidatedFinding(
+                **_finding(
+                    severity="blocker",
+                    provenance=[
+                        _provenance(reviewer_name="claude-reviewer", original_index=0),
+                        _provenance(reviewer_name="codex-reviewer", original_index=0),
+                        _provenance(
+                            reviewer_name="claude-reviewer",
+                            original_index=1,
+                            original_severity="minor",
+                            original_description="nullability nit on the same column",
+                        ),
+                    ],
+                    dismissed=True,
+                    dismissal_rationale="one of them called it minor, so it's minor",
+                )
+            )
+        message = str(exc_info.value)
+        assert "unanimous-blocker" in message
+        # Counted over blocker entries only: 2, not 3 raw entries and not 1.
+        assert "by 2 reviewers" in message
+        # The message enumerates the blocker provenance, so it cannot claim
+        # the minor entry was raised "@blocker".
+        assert message.count("@blocker") == 2
+
+    def test_extra_minor_entry_does_not_unlock_downgrade(self) -> None:
+        """Same shape, the other deactivation path (finding A2 covers
+        dismissal AND downgrade; the bypass reopened both)."""
+        with pytest.raises(ValidationError) as exc_info:
+            ConsolidatedFinding(
+                **_finding(
+                    severity="minor",
+                    provenance=[
+                        _provenance(reviewer_name="claude-reviewer", original_index=0),
+                        _provenance(reviewer_name="codex-reviewer", original_index=0),
+                        _provenance(
+                            reviewer_name="claude-reviewer",
+                            original_index=1,
+                            original_severity="nit",
+                            original_description="style nit on the same line",
+                        ),
+                    ],
+                    severity_change_rationale="downgrading, two of three entries agree",
+                )
+            )
+        assert "unanimous-blocker" in str(exc_info.value)
+
+    def test_third_distinct_reviewer_at_minor_does_not_unlock(self) -> None:
+        """The extra entry belonging to an UNCOUNTED reviewer is the
+        same bypass — two distinct reviewers still said blocker."""
+        with pytest.raises(ValidationError):
+            ConsolidatedFinding(
+                **_finding(
+                    severity="blocker",
+                    provenance=[
+                        _provenance(reviewer_name="claude-reviewer"),
+                        _provenance(reviewer_name="codex-reviewer"),
+                        _provenance(
+                            reviewer_name="gemini-reviewer",
+                            original_severity="minor",
+                            original_description="probably fine, flagging lightly",
+                        ),
+                    ],
+                    dismissed=True,
+                    dismissal_rationale="the third reviewer downgraded it",
+                )
+            )
+
+    def test_genuine_single_blocker_reviewer_stays_dismissible(self) -> None:
+        """Negative control: the fix must not over-lock. Only ONE
+        reviewer said blocker, so this was never unanimous and the
+        synthesizer keeps its authority to dismiss it."""
+        cf = ConsolidatedFinding(
+            **_finding(
+                severity="blocker",
+                provenance=[
+                    _provenance(reviewer_name="claude-reviewer"),
+                    _provenance(
+                        reviewer_name="codex-reviewer",
+                        original_severity="minor",
+                        original_description="minor style concern on the same line",
+                    ),
+                ],
+                dismissed=True,
+                dismissal_rationale=(
+                    "only one reviewer called this a blocker and the spec "
+                    "explicitly exempts the pattern in §3.2"
+                ),
+            )
+        )
+        assert cf.dismissed is True

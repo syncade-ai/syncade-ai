@@ -57,9 +57,17 @@ class ResolvedBase:
 
 def _git(repo_root: Path, *args: str) -> tuple[int, str, str]:
     """Run ``git <args>`` in ``repo_root`` → (rc, stdout, stderr). Mirrors
-    :func:`syncade.snapshot._git` (own copy to keep this a standalone module)."""
+    :func:`syncade.snapshot._git` (own copy to keep this a standalone module).
+
+    ``--no-replace-objects`` is prepended unconditionally: merge-base and
+    is-ancestor traversals are graph-sensitive operations, and a
+    producer-writable ``refs/replace/*`` ref can substitute a different
+    ancestor chain, poisoning scope resolution and ancestry checks.
+    """
     try:
-        result = run_subprocess(["git", *args], cwd=repo_root, timeout=_GIT_TIMEOUT_SECONDS)
+        result = run_subprocess(
+            ["git", "--no-replace-objects", *args], cwd=repo_root, timeout=_GIT_TIMEOUT_SECONDS
+        )
     except SubprocessNotFoundError as exc:
         raise BaseResolutionError(
             "git binary not found on PATH — install git to use syncade"

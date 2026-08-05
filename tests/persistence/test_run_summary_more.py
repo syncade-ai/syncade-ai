@@ -385,3 +385,94 @@ class TestPersistRunSummary:
         assert "**Coverage gaps:**" not in codex_section
         assert "**Dismissed concerns:**" not in codex_section
         assert "**Error:** SubprocessTimeoutError" in codex_section
+
+
+class TestZeroDispatchSummarySections:
+    """Regression: no_changes_to_review and fail_closed_headers must not
+    render 'reviewer failed' in the Synthesizer or Test Suite sections.
+
+    Both early-exit paths dispatch zero reviewers; claiming a reviewer
+    failed is dishonest and was the bug reported in PR-h-02d."""
+
+    def _empty_dispatch(self) -> DispatchResult:
+        return DispatchResult(results=[], total_duration_seconds=0.0)
+
+    def test_no_changes_synthesizer_section_honest(self, tmp_path):
+        from tests.persistence._helpers import (
+            _FIXED_STARTED_AT,
+            _make_round_dir,
+            _snapshot,
+        )
+
+        text = persist_run_summary(
+            _make_round_dir(tmp_path),
+            _snapshot(),
+            self._empty_dispatch(),
+            exit_code=0,
+            started_at=_FIXED_STARTED_AT,
+            synth_result=None,
+            no_changes_to_review=True,
+        ).read_text()
+        synth_section = text.split("## Synthesizer")[1].split("## Test Suite")[0]
+        assert "not applicable" in synth_section
+        assert "a reviewer failed" not in synth_section
+
+    def test_no_changes_test_suite_section_honest(self, tmp_path):
+        from tests.persistence._helpers import (
+            _FIXED_STARTED_AT,
+            _make_round_dir,
+            _snapshot,
+        )
+
+        text = persist_run_summary(
+            _make_round_dir(tmp_path),
+            _snapshot(),
+            self._empty_dispatch(),
+            exit_code=0,
+            started_at=_FIXED_STARTED_AT,
+            synth_result=None,
+            no_changes_to_review=True,
+        ).read_text()
+        test_section = text.split("## Test Suite")[1].split("## Next steps")[0]
+        assert "not applicable" in test_section
+        assert "a reviewer failed" not in test_section
+
+    def test_diff_malformed_synthesizer_section_honest(self, tmp_path):
+        from tests.persistence._helpers import (
+            _FIXED_STARTED_AT,
+            _make_round_dir,
+            _snapshot,
+        )
+
+        text = persist_run_summary(
+            _make_round_dir(tmp_path),
+            _snapshot(),
+            self._empty_dispatch(),
+            exit_code=60,
+            started_at=_FIXED_STARTED_AT,
+            synth_result=None,
+            fail_closed_headers=["diff --git a/bad.py b/bad.py"],
+        ).read_text()
+        synth_section = text.split("## Synthesizer")[1].split("## Test Suite")[0]
+        assert "not applicable" in synth_section
+        assert "a reviewer failed" not in synth_section
+
+    def test_diff_malformed_test_suite_section_honest(self, tmp_path):
+        from tests.persistence._helpers import (
+            _FIXED_STARTED_AT,
+            _make_round_dir,
+            _snapshot,
+        )
+
+        text = persist_run_summary(
+            _make_round_dir(tmp_path),
+            _snapshot(),
+            self._empty_dispatch(),
+            exit_code=60,
+            started_at=_FIXED_STARTED_AT,
+            synth_result=None,
+            fail_closed_headers=["diff --git a/bad.py b/bad.py"],
+        ).read_text()
+        test_section = text.split("## Test Suite")[1].split("## Next steps")[0]
+        assert "not applicable" in test_section
+        assert "a reviewer failed" not in test_section

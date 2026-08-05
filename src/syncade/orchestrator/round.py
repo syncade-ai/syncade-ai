@@ -11,7 +11,11 @@ from syncade import run_status
 from syncade.adapters.base import ReviewerAdapter
 from syncade.adapters.producer import ProducerAdapter
 from syncade.config import SyncadeConfig
-from syncade.diff_filter import filter_diff_for_reviewer
+from syncade.diff_filter import (
+    concealed_destinations,
+    filter_diff_for_reviewer,
+    unidentifiable_sections,
+)
 from syncade.dispatcher import DispatchResult, dispatch_reviewers
 from syncade.exit_codes import SUCCESS, WORKTREE_ERROR
 from syncade.findings import get_findings_schema_string
@@ -38,6 +42,10 @@ from .prior_round import load_prior_reviewer_response_text
 from .results import RoundArtifacts, RoundResult, TestSkipReason
 from .reviewer_template_failure import _reviewer_template_failure_result
 from .round_checks import _run_checks_leg
+from .round_no_changes import (
+    _fail_closed_refusal_result,
+    _no_changes_to_review_result,
+)
 from .verdict import _compute_exit_code
 
 _NO_DIFF_SENTINEL: str = "(diff not provided; review against the full repo state at HEAD)"
@@ -167,6 +175,54 @@ def _run_one_round(
     dispatch a producer based on ``round_exit_code``.
 
     """
+    # --- Pre-dispatch diff checks (PR-h-02d) ------------------------
+    # Both checks run before any worktree is provisioned — zero subprocesses
+    # is the whole point (acceptance claim 1). Priority: D2 (unidentifiable)
+    # before D1/D3 (known-empty), because a diff with BOTH conditions is a
+    # refusal, not a no-changes exit (we could not read it → cannot ship it).
+    # Unidentifiable headers are only a problem when strip_repo_context_files is
+    # non-empty: with an empty strip list every section is kept byte-for-byte, so
+    # an undecodable header cannot hide any change from the reviewer.
+    _unidentifiable = (
+        unidentifiable_sections(snapshot.diff_text)
+        if config.review.strip_repo_context_files
+        else []
+    )
+    if _unidentifiable:
+        return _fail_closed_refusal_result(
+            round_idx=round_idx,
+            snapshot=snapshot,
+            round_dir=round_dir,
+            config=config,
+            started_at=started_at,
+            resumed_under_drift=resumed_under_drift,
+            unidentifiable=_unidentifiable,
+            logger=logger,
+        )
+    _filtered_for_check = filter_diff_for_reviewer(
+        snapshot.diff_text, config.review.strip_repo_context_files
+    )
+    # A drop is only legitimate when the DESTINATION is a strip target. A boundary
+    # rename (`git mv CLAUDE.md app.py`) empties the filtered diff while concealing a
+    # path a reviewer must see — concluding "nothing to review" there is a false SHIP
+    # over a real change (PR-h-02c.5).
+    _concealed = concealed_destinations(snapshot.diff_text, config.review.strip_repo_context_files)
+    if snapshot.base_oid is not None and not _filtered_for_check and not _concealed:
+        # D1: base resolved + empty diff (no real changes).
+        # D3: all sections were legitimate repo-context — same outcome.
+        logger.event(
+            "diff is empty after filtering — base resolved but no reviewable changes; "
+            "terminating without dispatching reviewers (no_changes_to_review)"
+        )
+        return _no_changes_to_review_result(
+            round_idx=round_idx,
+            snapshot=snapshot,
+            round_dir=round_dir,
+            config=config,
+            started_at=started_at,
+            resumed_under_drift=resumed_under_drift,
+        )
+
     # --- Render reviewer prompt(s) ----------------------------------
     # Template load + render runs BEFORE any worktree is provisioned. A
     # malformed operator override (`.syncade/templates/reviewer.md` with an

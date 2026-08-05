@@ -326,3 +326,126 @@ class TestDurationMeasurement:
         result = run_subprocess(["sleep", "0.3"])
         assert result.returncode == 0
         assert 0.25 < result.duration_seconds < 1.5
+
+
+def _replace_poisoned_repo(tmp_path: Path) -> tuple[Path, str, str]:
+    """A repo where ``refs/replace/<real>`` points at an unrelated commit.
+
+    Returns ``(repo, real_sha, evil_sha)``. The real commit's subject is
+    ``REAL subject`` and its tree holds ``keep.txt``; the replacement's are
+    ``LIE subject`` / ``evil.txt``.
+    """
+
+    def g(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    g("init", "-q", "-b", "main")
+    g("config", "user.email", "t@t")
+    g("config", "user.name", "t")
+    (tmp_path / "keep.txt").write_text("real content\n")
+    g("add", "-A")
+    g("commit", "-qm", "REAL subject")
+    real = g("rev-parse", "HEAD")
+    g("checkout", "-q", "--orphan", "evil")
+    g("rm", "-rqf", ".")
+    (tmp_path / "evil.txt").write_text("attacker content\n")
+    g("add", "-A")
+    g("commit", "-qm", "LIE subject")
+    evil = g("rev-parse", "HEAD")
+    g("checkout", "-q", "main")
+    g("replace", "-f", real, evil)
+    return tmp_path, real, evil
+
+
+class TestGitReplaceObjectsHardening:
+    """``refs/replace/*`` is producer-writable and substitutes objects on read.
+
+    Every case CALIBRATES first — it asserts plain ``git`` really is fooled by
+    the fixture before asserting that :func:`run_subprocess` is not. A fixture
+    that cannot fool raw git would make these pass for the wrong reason.
+    """
+
+    def test_commit_subject_is_not_substituted(self, tmp_path):
+        repo, real, _ = _replace_poisoned_repo(tmp_path)
+        argv = ["git", "log", "-1", "--pretty=format:%s", real]
+
+        # Calibration: plain git IS poisoned here.  Run without the var this
+        # module's own run_subprocess injects so the calibration reflects raw git
+        # behavior, not the hardened behavior we are testing.
+        _raw_env = {k: v for k, v in os.environ.items() if k != "GIT_NO_REPLACE_OBJECTS"}
+        raw = subprocess.run(argv, cwd=repo, capture_output=True, text=True, env=_raw_env)
+        assert raw.stdout.strip() == "LIE subject", "fixture does not fool raw git"
+
+        assert run_subprocess(argv, cwd=repo).stdout.strip() == "REAL subject"
+
+    def test_reset_hard_restores_the_real_tree(self, tmp_path):
+        repo, real, _ = _replace_poisoned_repo(tmp_path)
+        (repo / "keep.txt").write_text("uncommitted junk\n")
+
+        run_subprocess(["git", "reset", "--hard", real], cwd=repo)
+
+        # The producer-retry reset (PR-v2-22) must resume from OUR starting
+        # state, never from a tree the replacement supplied.
+        assert (repo / "keep.txt").read_text() == "real content\n"
+        assert not (repo / "evil.txt").exists()
+
+    def test_ancestry_check_sees_the_true_graph(self, tmp_path):
+        """The fast-forward-only branch-advance invariant rests on this.
+
+        Needs the INVERSE replacement direction from the other cases: the
+        unrelated commit is replaced BY a real descendant, so the ancestry
+        check passes on the substitute while ``update-ref`` would move the
+        branch to the literal (unrelated) SHA.
+        """
+
+        def g(*args: str) -> str:
+            return subprocess.run(
+                ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+            ).stdout.strip()
+
+        g("init", "-q", "-b", "main")
+        g("config", "user.email", "t@t")
+        g("config", "user.name", "t")
+        (tmp_path / "a.txt").write_text("base\n")
+        g("add", "-A")
+        g("commit", "-qm", "start")
+        start = g("rev-parse", "HEAD")
+        (tmp_path / "a.txt").write_text("next\n")
+        g("add", "-A")
+        g("commit", "-qm", "descendant")
+        descendant = g("rev-parse", "HEAD")
+        g("checkout", "-q", "--orphan", "evil")
+        g("rm", "-rqf", ".")
+        (tmp_path / "evil.txt").write_text("unrelated\n")
+        g("add", "-A")
+        g("commit", "-qm", "unrelated")
+        unrelated = g("rev-parse", "HEAD")
+        g("checkout", "-q", "main")
+        g("replace", "-f", unrelated, descendant)
+
+        argv = ["git", "merge-base", "--is-ancestor", start, unrelated]
+        _raw_env = {k: v for k, v in os.environ.items() if k != "GIT_NO_REPLACE_OBJECTS"}
+        result = subprocess.run(argv, cwd=tmp_path, env=_raw_env)
+        assert result.returncode == 0, "fixture does not fool raw git"
+
+        assert run_subprocess(argv, cwd=tmp_path).returncode == 1
+
+    def test_non_git_children_keep_their_environment(self):
+        """The test/check legs share this helper — do not touch their env.
+
+        The assertion checks that the parent value is PRESERVED, not that the
+        variable is absent.  When syncade's own worktree env sets
+        ``GIT_NO_REPLACE_OBJECTS=1``, a non-git child must still see that value.
+        """
+        script = r"import os; print(os.environ.get('GIT_NO_REPLACE_OBJECTS', 'unset'))"
+        expected = os.environ.get("GIT_NO_REPLACE_OBJECTS", "unset")
+        assert run_subprocess([sys.executable, "-c", script]).stdout.strip() == expected
+
+    def test_explicit_env_is_augmented_not_replaced(self):
+        env = {"PATH": os.environ.get("PATH", ""), "MARKER": "kept"}
+        result = run_subprocess(["git", "--version"], env=env, timeout=30)
+        assert result.returncode == 0
+        # The caller's dict survives; we only add our key to a copy of it.
+        assert env == {"PATH": os.environ.get("PATH", ""), "MARKER": "kept"}

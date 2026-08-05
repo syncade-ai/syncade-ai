@@ -275,3 +275,62 @@ class TestDecisionNeededMarkdownNeutralization:
             "## The producer's rationale (reproduction-backed)\n\n````text\n# fake rationale"
             in text
         )
+
+    def test_decision_needed_includes_failing_blocking_check(self, tmp_path):
+        """When check_results has a failing blocking check, decision-needed.md
+        must include a 'Co-failing blocking checks' section so the operator
+        knows the check must also pass after resume, not just the producer decision."""
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        escalation = ProducerEscalation(
+            finding_indices=[0],
+            finding="the finding",
+            decision="the decision",
+            options=["option A"],
+            rationale="the rationale",
+        )
+        check = _TestRunResult(
+            exit_code=1,
+            outcome="failed",
+            duration_seconds=0.5,
+            stdout="lint errors\n",
+            stderr="",
+            name="lint",
+            severity="blocking",
+        )
+
+        text = persist_decision_needed(
+            run_dir,
+            round_idx=0,
+            escalation=escalation,
+            run_id="run-1",
+            check_results=[check],
+        ).read_text()
+
+        assert "## Co-failing blocking checks" in text
+        assert "**lint**" in text
+        assert "FAIL" in text
+        assert "rerun" in text
+
+    def test_decision_needed_no_check_section_when_no_failing_checks(self, tmp_path):
+        """When there are no failing blocking checks, 'Co-failing blocking checks'
+        must not appear in decision-needed.md."""
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        escalation = ProducerEscalation(
+            finding_indices=[0],
+            finding="the finding",
+            decision="the decision",
+            options=["option A"],
+            rationale="the rationale",
+        )
+
+        text = persist_decision_needed(
+            run_dir,
+            round_idx=0,
+            escalation=escalation,
+            run_id="run-1",
+            check_results=[],
+        ).read_text()
+
+        assert "Co-failing blocking checks" not in text

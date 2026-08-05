@@ -25,24 +25,26 @@ class LoopConfig(BaseModel):
         description=(
             "Per-run maximum rounds of (reviewers → synthesizer → "
             "optional test → producer-if-NO-SHIP). The loop terminates "
-            "as soon as SHIP fires (exit 0) at any round — "
+            "as soon as SHIP fires (exit 0, termination_reason='ship') "
+            "at any round, or the diff is known-empty before dispatch "
+            "(exit 0, termination_reason='no_changes_to_review') — "
             "``max_rounds`` is the ceiling, not a target. Bounded to "
             "[1, 10] (PR-v2-31, raised from 3); values outside that range "
             "are rejected at config load. 10 is a typo-ceiling, not the "
             "safety mechanism — budget_tokens/budget_usd (PR-v2-11) and the "
-            "per-round timeout are the real runaway guards. Set to 1 for "
+            "per-subprocess timeout are the real runaway guards. Set to 1 for "
             "single-pass operation with no producer subprocess."
         ),
     )
     timeout_seconds: float = Field(
         default=1800,
         gt=0,
-        description="Per-reviewer wall-clock timeout in seconds. The dispatcher "
-        "SIGKILLs any reviewer subprocess that exceeds this. Default 1800 "
-        "(30 minutes) — sized for a thorough real review. Must be > 0 and "
-        "finite (NaN and infinity rejected via a field_validator; pydantic's "
-        "gt=0 admits both unaided). The CLI's --timeout flag overrides this "
-        "per-invocation.",
+        description="Per-subprocess wall-clock timeout in seconds. The fallback "
+        "wall-clock cap for every leg: each reviewer, the judge, the test run, "
+        "each mechanical check, and the producer. Default 1800 (30 minutes) — "
+        "sized for a thorough real review. Must be > 0 and finite (NaN and "
+        "infinity rejected via a field_validator; pydantic's gt=0 admits both "
+        "unaided). The CLI's --timeout flag overrides this per-invocation.",
     )
     budget_tokens: int | None = Field(
         default=None,
@@ -86,7 +88,9 @@ class LoopConfig(BaseModel):
             "CLAUDE.md/AGENTS.md stripped). Non-zero exit → exit 30 "
             "(treated as a blocker); subprocess failure (binary missing, "
             "timeout) → exit 40. Unset (default) skips the test leg "
-            "entirely — exit 0 reflects synth-clean only. The string "
+            "entirely — exit 0 reflects synth-clean "
+            "(termination_reason='ship') only; a no_changes_to_review "
+            "early exit takes exit 0 regardless of this setting. The string "
             "is passed verbatim to ``sh -c`` so operators can use pipes, "
             "env exports, and multi-command sequences "
             '(``"npm test && playwright test"``). shell=True is '

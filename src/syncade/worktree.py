@@ -227,8 +227,12 @@ class WorktreeManager:
             raise WorktreeError(
                 f"git worktree add failed: could not create run_dir {self.run_dir}: {exc}"
             ) from exc
+        # `refs/replace/*` lives in the shared common dir and is writable from a
+        # producer worktree. Without --no-replace-objects, `git worktree add <sha>`
+        # checks out the replacement object while `Snapshot.commit_sha` names the
+        # original — a backdoored commit reviewed as its benign replacement.
         result = _run_git(
-            ["git", "worktree", "add", str(target), commit_sha],
+            ["git", "--no-replace-objects", "worktree", "add", str(target), commit_sha],
             cwd=self._repo_root,
             error_prefix="git worktree add failed",
         )

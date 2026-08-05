@@ -199,17 +199,26 @@ def read_run(run_dir: Path | str) -> tuple[RunRow, list[ReviewerStatRow]] | None
         )
 
     _tok, _cost = _sum_usage()
+    _termination_reason = _text_or_none(manifest.get("termination_reason"))
+    # no_changes_to_review / producer_emptied_diff exit 0 but are NOT SHIPs — the
+    # final round dispatched no reviewers. producer_emptied_diff additionally had
+    # prior rounds spend model work, but the final verdict is still no-review.
+    _verdict = (
+        "NO-CHANGE"
+        if _termination_reason in ("no_changes_to_review", "producer_emptied_diff")
+        else _VERDICT_BY_EXIT.get(exit_code, "UNKNOWN")
+    )
 
     row = RunRow(
         run_id=run_id,
-        verdict=_VERDICT_BY_EXIT.get(exit_code, "UNKNOWN"),
+        verdict=_verdict,
         rounds_executed=len(rounds),
         blockers=_sum("active_blocker_count"),
         minors=_sum("active_minor_count"),
         nits=_sum("active_nit_count"),
         dismissed=_sum("dismissed_count"),
         final_exit_code=exit_code,
-        termination_reason=_text_or_none(manifest.get("termination_reason")),
+        termination_reason=_termination_reason,
         operator_branch=_text_or_none(init.get("operator_branch")),
         handoff=1 if (run_dir / "handoff.md").exists() else 0,
         decision_needed=1 if (run_dir / "decision-needed.md").exists() else 0,

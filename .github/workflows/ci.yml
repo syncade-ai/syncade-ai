@@ -54,5 +54,11 @@ jobs:
       - name: Check for private identifiers (leak gate)
         run: scripts/check-no-private-identifiers.sh
 
+      # On the dev tree this verifies the PUBLIC SNAPSHOT this tree would produce (it stages +
+      # scrubs, then scans). It was the only repo gate missing from CI, because before PR-h-03
+      # item 7 a raw dev-tree scan was unavoidably red.
+      - name: Check for internal references (public leak gate)
+        run: scripts/check-no-internal-refs.sh
+
       - name: Check whitespace errors
         run: git diff --check

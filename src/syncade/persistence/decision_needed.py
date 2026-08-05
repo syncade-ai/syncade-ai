@@ -22,10 +22,14 @@ write) and the reader (resume) share one source of truth.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from syncade.producer_escalation import ProducerEscalation
 
 from ._atomic import atomic_write_text
+
+if TYPE_CHECKING:
+    from syncade.test_runner import TestRunResult
 
 DECISION_NEEDED_FILENAME = "decision-needed.md"
 """The operator-facing escalation checkpoint, at the run root."""
@@ -43,6 +47,8 @@ def persist_decision_needed(
     round_idx: int,
     escalation: ProducerEscalation,
     run_id: str,
+    branch_advanced: bool = False,
+    check_results: list[TestRunResult] | None = None,
 ) -> Path:
     """Write ``<run_dir>/decision-needed.md`` for an honored escalation.
 
@@ -57,6 +63,14 @@ def persist_decision_needed(
         escalation: The structured :class:`ProducerEscalation` the
             producer emitted.
         run_id: The run-id, for the heading + the resume command.
+        branch_advanced: Whether an EARLIER round in this run already
+            fast-forwarded the branch. Passed in from the loop's cumulative
+            state rather than assumed: a multi-round run can reach this
+            state after a prior producer round landed commits.
+        check_results: The mechanical-check results from this round, if any.
+            Failing blocking checks are listed in the document so the operator
+            knows that resuming addresses the producer question but the checks
+            will still rerun and must also pass.
 
     Returns:
         Path of the written ``decision-needed.md``.
@@ -67,14 +81,21 @@ def persist_decision_needed(
     if not run_dir.is_dir():
         raise FileNotFoundError(f"run_dir does not exist: {run_dir}")
 
+    _branch_note = (
+        "**Your branch was already advanced** by an earlier round in this "
+        "run — producer commits from that round are on it. Nothing was "
+        "advanced for THIS round."
+        if branch_advanced
+        else "No branch was advanced."
+    )
     lines: list[str] = [
         f"# Decision needed — Syncade run {run_id}",
         "",
         f"The producer escalated a finding in round {round_idx} that it "
         "determined is an **operator decision** — a spec/design conflict it "
         "cannot resolve in code without a human ruling, not a defect it can "
-        "fix. The loop checkpointed and terminated (exit 10); no branch was "
-        "advanced and the mechanical verdict is unchanged (still NO-SHIP).",
+        f"fix. The loop checkpointed and terminated (exit 10); {_branch_note} "
+        "The mechanical verdict is unchanged (still NO-SHIP).",
         "",
         "## The finding",
         "",
@@ -94,6 +115,31 @@ def persist_decision_needed(
         "",
         *_md_text_block_lines(escalation.rationale),
         "",
+    ]
+
+    failing_blocking_checks = [
+        c for c in (check_results or []) if c.severity == "blocking" and c.outcome != "passed"
+    ]
+    if failing_blocking_checks:
+        lines += [
+            "## Co-failing blocking checks",
+            "",
+            "These blocking mechanical checks also failed this round. Resuming "
+            "addresses the producer decision above, but the checks rerun on "
+            "resume and must also pass before the round can SHIP:",
+            "",
+        ]
+        for c in failing_blocking_checks:
+            status = "FAIL" if c.outcome == "failed" else "ERROR"
+            lines.append(f"- **{c.name}**: {status} (exit {c.exit_code})")
+            if c.name:
+                lines.append(
+                    f"  Output: `{c.name}.check.stdout` / `{c.name}.check.stderr` "
+                    f"in `round-{round_idx}/`"
+                )
+        lines.append("")
+
+    lines += [
         "## How to continue",
         "",
         f"1. Decide, then write your decision (the option you chose plus any "
@@ -135,3 +181,109 @@ def read_operator_decision(run_dir: Path) -> str | None:
         return None
     text = decision_path.read_text(encoding="utf-8").strip()
     return text or None
+
+
+def persist_deactivated_blockers_decision_needed(
+    run_dir: Path,
+    *,
+    round_idx: int,
+    run_id: str,
+    deactivated: list[tuple[str, str, str]],
+    branch_advanced: bool = False,
+) -> Path:
+    """Write ``decision-needed.md`` for a PR-h-01 increment-D escalation.
+
+    The other escalation in this module is the producer's: it argues a case and
+    asks the operator to choose. This one has no advocate. Two or more distinct
+    reviewers independently raised blockers, the synthesizer ruled every one of
+    them out, and nothing checked whether those rulings were right — so the
+    round is neither a defensible SHIP nor a mechanical NO-SHIP.
+
+    The document's whole job is to put the reviewers' own words in front of the
+    operator next to what the synthesizer did with them, because that
+    comparison is the decision. Quotes are verbatim: provenance text is
+    cross-checked against the source reviewer's finding
+    (``syncade.synthesizer.validation``), so what is printed here is what the
+    reviewer actually wrote.
+
+    Args:
+        run_dir: Top-level run directory (``<repo>/.syncade/runs/<id>/``).
+        round_idx: The 0-indexed round that escalated.
+        run_id: The run-id, for the heading.
+        deactivated: ``(reviewer_name, verbatim_finding_text, disposition)``
+            per deactivated source blocker, where ``disposition`` describes how
+            the synthesizer removed it (e.g. ``dismissed: <rationale>``).
+        branch_advanced: Whether an EARLIER round in this run already
+            fast-forwarded the branch. Passed in rather than assumed: a
+            multi-round run can reach this state after a producer round
+            landed commits, and telling an operator their branch is untouched
+            when it is not is exactly the kind of wrong that gets acted on.
+
+    Returns:
+        Path of the written ``decision-needed.md``.
+
+    Raises:
+        FileNotFoundError: If ``run_dir`` does not exist.
+    """
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"run_dir does not exist: {run_dir}")
+
+    reviewers = sorted({name for name, _, _ in deactivated})
+    lines: list[str] = [
+        f"# Decision needed — Syncade run {run_id}",
+        "",
+        f"In round {round_idx}, **{len(reviewers)} independent reviewers "
+        f"({', '.join(reviewers)}) each raised at least one blocker, and the "
+        "synthesizer deactivated every one of them** — by dismissal, by "
+        "downgrade, or by splitting one concern into separate single-reviewer "
+        "findings it could then rule out individually.",
+        "",
+        (
+            "That may be entirely correct. But independent corroboration is the "
+            "strongest signal this tool produces, and a machine should not "
+            "discard all of it silently. The loop terminated at exit 10 rather "
+            "than reporting a SHIP it cannot justify."
+        ),
+        "",
+        (
+            "**Your branch was already advanced** by an earlier round in this "
+            "run — producer commits from that round are on it. Nothing was "
+            "advanced for THIS round."
+            if branch_advanced
+            else "No branch was advanced."
+        ),
+        "",
+        "## What each reviewer actually said",
+        "",
+        "Quoted verbatim from the reviewers' own output — not the synthesizer's restatement of it.",
+        "",
+    ]
+    for idx, (reviewer, text, disposition) in enumerate(deactivated, start=1):
+        lines.extend(
+            [
+                f"### {idx}. {reviewer} — blocker",
+                "",
+                *_md_text_block_lines(text),
+                "",
+                f"**Synthesizer's disposition:** {disposition}",
+                "",
+            ]
+        )
+    lines += [
+        "## How to continue",
+        "",
+        "Read the quotes above and decide whether the synthesizer was right.",
+        "",
+        "- **It was right** — the concerns really are false positives. This "
+        "round is a SHIP; nothing is blocking you.",
+        "- **It was wrong about any of them** — that concern is real and "
+        "unfixed. Address it and re-run.",
+        "",
+        "The full consolidated view, including each dismissal rationale in "
+        f"context, is in `round-{round_idx}/findings.md`.",
+        "",
+    ]
+
+    path = run_dir / DECISION_NEEDED_FILENAME
+    atomic_write_text(path, "\n".join(lines))
+    return path

@@ -11,8 +11,31 @@ import json
 from pathlib import Path
 
 from syncade.persistence import RUN_INIT_FILENAME
+from syncade.persistence.decision_needed import DECISION_NEEDED_FILENAME
 
 from .resume_types import _RESUMABLE_EXIT_CODES, LOOP_MANIFEST_FILENAME, ResumeError
+
+# Unique heading written only by persist_deactivated_blockers_decision_needed,
+# never by the producer-escalation persist_decision_needed. When loop-manifest.json
+# is missing (partial-finalization window: decision-needed.md written before manifest),
+# this marker lets us identify the non-resumable shape without the manifest.
+_DEACTIVATED_BLOCKERS_MARKER = "## What each reviewer actually said"
+
+
+def _decision_needed_is_deactivated_shape(run_dir: Path) -> bool:
+    """Return True when ``decision-needed.md`` exists and carries the
+    blockers-all-deactivated marker (meaning the run is NOT resumable).
+
+    Used when ``loop-manifest.json`` is missing — the normal eligibility
+    predicate — to close the partial-finalization window where
+    ``decision-needed.md`` is written before ``loop-manifest.json`` is.
+    """
+    dn_path = run_dir / DECISION_NEEDED_FILENAME
+    try:
+        text = dn_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return _DEACTIVATED_BLOCKERS_MARKER in text
 
 
 def find_resumable_runs(runs_root: Path) -> list[str]:
@@ -61,7 +84,12 @@ def find_resumable_runs(runs_root: Path) -> list[str]:
             continue
         loop_manifest_path = entry / LOOP_MANIFEST_FILENAME
         if not loop_manifest_path.is_file():
-            # Interrupted run — eligible.
+            # Missing manifest: usually an interrupted run — eligible, UNLESS
+            # decision-needed.md already carries the blockers-all-deactivated
+            # shape (written before the manifest in that path). That shape is
+            # non-resumable even without the manifest to confirm it.
+            if _decision_needed_is_deactivated_shape(entry):
+                continue
             eligible.append(entry.name)
             continue
         try:
@@ -73,8 +101,15 @@ def find_resumable_runs(runs_root: Path) -> list[str]:
             eligible.append(entry.name)
             continue
         exit_code = data.get("final_exit_code")
-        if isinstance(exit_code, int) and exit_code in _RESUMABLE_EXIT_CODES:
-            eligible.append(entry.name)
+        if not (isinstance(exit_code, int) and exit_code in _RESUMABLE_EXIT_CODES):
+            continue
+        # Exit 10 with blockers_all_deactivated is not resumable: no producer
+        # ran, no blocker is active, and resume would re-review unchanged code.
+        # plan_resume also refuses this shape, but excluding it here prevents
+        # it from shadowing an older decision_needed run in --resume latest.
+        if exit_code == 10 and data.get("termination_reason") == "blockers_all_deactivated":
+            continue
+        eligible.append(entry.name)
 
     eligible.sort(reverse=True)
     return eligible

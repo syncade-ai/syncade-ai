@@ -62,13 +62,14 @@ def _strip_files(worktree_path: Path, names: list[str]) -> None:
         # Refuse to escape the worktree root. We silently skip
         # rather than raising, mirroring how missing files are
         # handled — both are "no eligible basename matches".
-        if (
-            not name
-            or name in (".", "..")
-            or "/" in name
-            or "\\" in name
-            or Path(name).is_absolute()
-        ):
+        #
+        # A backslash is NOT an escape vector here (PR-h-02c item 2 / D2): on
+        # POSIX it is a legal filename character that cannot separate paths,
+        # so the `/`, `..`, and is_absolute() checks below already close every
+        # way out of the worktree. Rejecting it bought nothing and silently
+        # dropped a legitimate strip target — `back\slash.md` survived into
+        # the reviewer worktree, which is the leak this PR exists to close.
+        if not name or name in (".", "..") or "/" in name or Path(name).is_absolute():
             continue
         strip_basenames.add(name)
     if not strip_basenames:

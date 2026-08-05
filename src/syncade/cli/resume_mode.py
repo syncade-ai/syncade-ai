@@ -178,20 +178,36 @@ def _run_resume(args) -> int:
     # resumed run silently falls back to /tmp/syncade even when the run relocated its worktrees.
     config = apply_worktree_base_override(config, args)
 
-    # Default-branch refusal (PR-v2-26) BEFORE auth_gate probes codex. will_commit uses the
-    # EFFECTIVE cap run_review will use — a single-pass resume (effective == 1) commits
-    # nothing and is exempt; a multi-round resume commits and is guarded. Deriving it from
+    # Default-branch refusal (PR-v2-26, D1(c)). will_commit uses the EFFECTIVE cap
+    # run_review will use — a single-pass resume (effective == 1) commits nothing and is
+    # exempt; a multi-round resume with a base defers to run_review (auth probe first);
+    # only a baseless multi-round resume is refused here before auth. Deriving it from
     # the current config/CLI max_rounds alone would be wrong: a run launched at max_rounds=3
     # but resumed with the config drifted to 1 still commits (effective == 3).
     from syncade.orchestrator.branch_guard import current_branch_name, guard_default_branch
 
     effective_max_rounds = max(config.loop.max_rounds, plan.max_rounds)
+    # Refuse ONLY when we can PROVE the resumed run commits (D1(c), PR-h-02d.5) — the same
+    # inversion as the fresh path. Literal `base_oid == HEAD` equality was too narrow: a
+    # resumed run whose pinned base is NOT HEAD but whose diff filters empty takes the
+    # no_changes_to_review path, and refusing it before auth diverged from run_review.
+    #
+    # `two_dot=True` is correct and NOT the merge-base hazard the previous comment warned
+    # about: plan.base_oid is the ALREADY-RESOLVED effective diff base, and a resumed run
+    # re-snapshots with three_dot=False against it (loop.py). So the literal `base..HEAD`
+    # range is exactly what run_review will diff — re-deriving a merge base here is what
+    # would be wrong.
+    from .resolve import _cli_proves_commit
+
+    _resume_will_commit = effective_max_rounds > 1 and _cli_proves_commit(
+        repo_root, plan.base_oid, config.review.strip_repo_context_files, two_dot=True
+    )
     try:
         guard_default_branch(
             repo_root,
             current_branch_name(repo_root),
             allow=args.allow_default_branch,
-            will_commit=effective_max_rounds > 1,
+            will_commit=_resume_will_commit,
         )
     except WorktreeError as exc:
         print(f"[syncade] worktree error: {exc}", file=sys.stderr)
@@ -215,7 +231,7 @@ def _run_resume(args) -> int:
                 repo_root=repo_root,
                 pr_doc_path=plan.pr_doc_path,
                 config=config,
-                base_ref=plan.base_ref,
+                base_ref=plan.base_oid if plan.base_oid is not None else plan.base_ref,
                 timeout_seconds=args.timeout,
                 logger=logger,
                 force_dirty=args.force_dirty,

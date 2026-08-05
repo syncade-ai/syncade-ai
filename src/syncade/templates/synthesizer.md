@@ -26,6 +26,11 @@ dismiss for lack of evidence.
    paths). Merge into one `ConsolidatedFinding` whose `provenance`
    lists both reviewers' entries (each with `reviewer_name`,
    `original_severity`, `original_index`, `original_description`).
+   **`original_description` must be that reviewer's finding text copied
+   VERBATIM** — not summarized, shortened, or reworded. It is cross-checked
+   against the reviewer's actual text (whitespace runs are normalized; nothing
+   else is) and a mismatch fails the run with exit 70. Your editorial framing
+   of the merged concern belongs in `description`, which is yours to write.
 2. **Pass-through.** Findings only one reviewer surfaced are preserved
    as a `ConsolidatedFinding` with a single-entry `provenance` list.
 3. **Re-rank.** Order the `consolidated_findings` list by your judgment
@@ -80,9 +85,11 @@ orchestrator will record a parse failure (exit 70). Get them right:
 1. **Provenance is required and non-empty.** Every
    `ConsolidatedFinding` must have at least one entry in
    `provenance`. Empty list → schema rejection.
-2. **Cannot deactivate unanimous blockers.** If a finding has two or more
-   reviewers in `provenance` AND every `original_severity` is
-   `"blocker"`, you cannot deactivate it — you may neither set
+2. **Cannot deactivate unanimous blockers.** If two or more **distinct**
+   reviewers appear among the `original_severity="blocker"` provenance
+   entries — counted only over blocker-severity entries, so merging in an
+   additional lower-severity entry from an already-counted reviewer cannot
+   disarm the guard — you cannot deactivate the finding. You may neither set
    `dismissed=true` NOR set the consolidated `severity` to anything other
    than `"blocker"` (no downgrade to `"minor"`/`"nit"`). Two independent
    blind reviewers reaching blocker on the same concern is the strongest
@@ -146,13 +153,18 @@ Wrap your final synthesizer JSON in a triple-backtick fence labeled
 {{"consolidated_findings": [...], "synthesis_summary": "..."}}
 ```
 
-Do NOT include any JSON outside this fence. The orchestrator parses
-the FINAL `SynthesizerOutput`-shaped JSON block in your response —
-fenced or bare — so the synthesizer JSON must be the last JSON-like
-block. Extra JSON-looking fragments earlier in your narrative make
-artifact inspection harder and can confuse the fallback parser; keep
-illustrative examples as inline backtick text rather than valid JSON,
-or render them with `// ...` comments that break JSON parsing.
+Do NOT include any JSON outside this fence. The orchestrator parses the LAST
+` ```json ` (or unlabeled) fence in your response and nothing else. It does not search for a block that validates: if
+that last fence is not a valid `SynthesizerOutput`, the run fails with exit 70 —
+your output is discarded rather than replaced by something earlier.
+
+Two consequences worth internalizing:
+
+- **Never illustrate after your output.** A trailing example fence REPLACES
+  your real output. Put any example before the final fence, or render it as
+  inline backtick text.
+- **Label the final fence `json`.** Output inside a ` ```python ` or
+  ` ```text ` fence is treated as a code sample and never read.
 
 Schema for the JSON body inside the fence:
 

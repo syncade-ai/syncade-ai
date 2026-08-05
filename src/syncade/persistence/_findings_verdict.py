@@ -9,6 +9,7 @@ surfaces always agree about the overall run outcome.
 
 from __future__ import annotations
 
+from syncade.dispatcher import DispatchResult
 from syncade.synthesis import SynthesizerOutput, has_active_blocker
 from syncade.test_runner import TestRunResult
 
@@ -18,6 +19,7 @@ def _compute_findings_md_verdict(
     test_result: TestRunResult | None,
     test_skip_reason: str | None = None,
     blocking_check_results: list[TestRunResult] | None = None,
+    dispatch_result: DispatchResult | None = None,
 ) -> tuple[str, str]:
     """Derive the findings.md headline verdict from the synth's findings.
 
@@ -141,6 +143,24 @@ def _compute_findings_md_verdict(
             f"{failed_checks[0].exit_code} (synthesizer was clean)",
         )
 
+    # DECISION NEEDED — every gate is clean, but two or more distinct reviewers
+    # each raised a blocker and the synthesizer deactivated all of them
+    # (PR-h-01 increment D → exit 10). Printing SHIP here would contradict both
+    # the exit code and decision-needed.md, which says in as many words that the
+    # loop refused to report a SHIP it cannot justify. findings.md is the
+    # most-read artifact, so this is the surface where that contradiction does
+    # the most damage.
+    #
+    # This bug class has now regressed three times (T1.6 failed test leg, then
+    # failed blocking check, then this) for one reason: a new exit code was
+    # added without a matching branch here. If you add a fourth, add it here.
+    if _multi_reviewer_blockers_all_deactivated(dispatch_result):
+        return (
+            "DECISION NEEDED",
+            "2+ reviewers each raised a blocker and all were deactivated; "
+            "see decision-needed.md (exit 10)",
+        )
+
     # SHIP — synth clean and every mechanical gate passed or was skipped.
     if test_result is None:
         # Test leg skipped — configured off (test_command_unset) OR a
@@ -151,4 +171,31 @@ def _compute_findings_md_verdict(
     return (
         "SHIP",
         "mechanical, from consolidated_findings + test re-run passed",
+    )
+
+
+def _multi_reviewer_blockers_all_deactivated(dispatch_result: DispatchResult | None) -> bool:
+    """Mirror of :func:`syncade.orchestrator.verdict._multi_reviewer_blockers_all_deactivated`
+    for the render surface.
+
+    Deliberately NOT imported from the orchestrator: ``persistence`` must not
+    depend on ``orchestrator`` (which imports persistence), and the predicate is
+    one set comprehension. The behavioural tie is enforced by test, not by a
+    shared import — see ``tests/persistence/test_findings_md_verdict.py``.
+
+    Callers reach this only after every gate is clean and
+    ``has_active_blocker`` is False, so "all deactivated" needs no separate
+    check, exactly as on the orchestrator side.
+    """
+    if dispatch_result is None:
+        return False
+    return (
+        len(
+            {
+                r.reviewer_name
+                for r in dispatch_result.successes
+                if r.output is not None and any(f.severity == "blocker" for f in r.output.findings)
+            }
+        )
+        >= 2
     )

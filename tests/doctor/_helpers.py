@@ -38,6 +38,15 @@ def _head(repo) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
+def _repo_with_second_commit(path) -> tuple:
+    """A 2-commit repo on ``main`` (origin/HEAD=main). Returns (repo, parent_sha)."""
+    repo = _repo_on(path, "main")
+    (repo / "y").write_text("new\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "y")
+    return repo, _git(repo, "rev-parse", "HEAD~1")
+
+
 def _repo_on(path, branch: str):
     """A committed repo whose authoritative default (origin/HEAD) is ``main``, checked out
     on ``branch`` (which may BE ``main``)."""

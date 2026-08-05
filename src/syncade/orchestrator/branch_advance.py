@@ -105,9 +105,13 @@ def _advance_branch_ref(
     # etc.) and we shouldn't blindly fast-forward — AND we shouldn't
     # continue the loop, because the next round would see stale
     # code at the original starting SHA.
+    # `--no-replace-objects` prevents a refs/replace/* ref on the producer's
+    # ending SHA from substituting a fake commit whose parent is starting_sha,
+    # which would make --is-ancestor return 0 for an actual non-descendant.
     is_ancestor = _run_git(
         [
             "git",
+            "--no-replace-objects",
             "merge-base",
             "--is-ancestor",
             producer_result.starting_sha,

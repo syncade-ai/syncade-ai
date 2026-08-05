@@ -64,8 +64,10 @@ syncade --install-skill        # Claude Code + Codex; or: --install-skill claude
 
 **Requirements**
 - **Python 3.11+**, on **macOS or Linux** (on Windows, use WSL).
-- The provider CLIs syncade drives, on your `PATH` and authenticated: **`claude`**
-  (Anthropic) and **`codex`** (OpenAI). The default roster uses both.
+- **`codex`** (OpenAI), on your `PATH` and authenticated — required for the default
+  reviewers and judge. **`claude`** (Anthropic) is additionally required if you run from
+  inside Claude Code (where the default producer uses Anthropic); in a plain terminal or
+  Codex, all actors resolve to OpenAI.
 - `git`. (`lsof` is optional — only `syncade --gc` uses it.)
 
 Check your setup any time with `syncade --doctor`.
@@ -74,15 +76,22 @@ Check your setup any time with `syncade --doctor`.
 
 ```bash
 cd your-git-repo
-syncade --doctor                 # green/red readiness check (CLIs, auth, worktree) — costs $0
+syncade --doctor --quick         # green/red readiness check (CLIs, worktree) — skips auth probe; no live provider calls
 syncade path/to/brief.md         # run the review loop against a short markdown spec
 ```
 
-Or, from inside Claude Code / Codex once the skill is installed:
+Or, from inside Claude Code once the skill is installed:
 
 ```
 /syncade path/to/brief.md
 /syncade review what I just did          # drafts a spec from the session, then reviews
+/syncade dogfood the brief for 2 rounds
+```
+
+From inside Codex (draft-from-session is a follow-up; supply a brief or OpenSpec):
+
+```
+/syncade path/to/brief.md
 /syncade dogfood the brief for 2 rounds
 ```
 
@@ -122,8 +131,8 @@ The verdict is mechanical — the LLMs never decide the exit code directly.
 
 | Code | Meaning |
 |---|---|
-| `0`  | SHIP |
-| `10` | Clarification or operator decision needed |
+| `0`  | SHIP — or nothing to review (`termination_reason: no_changes_to_review` in `loop-manifest.json`) |
+| `10` | Clarification or operator decision needed (see `decision-needed.md`) |
 | `20` | Max rounds reached, still NO-SHIP |
 | `25` | Budget (token/dollar) ceiling hit |
 | `30` | Findings present, test failed, or producer stalled |
@@ -139,7 +148,7 @@ Zero-config works out of the box. To customize, add `.syncade/config.toml`:
 ```toml
 [loop]
 max_rounds = 3                  # recommended default; hard ceiling is 10
-timeout_seconds = 1800          # per round, recommended ~30 min; set higher for big diffs
+timeout_seconds = 1800          # per SUBPROCESS, not per round; see below
 test_command = "pytest -q"      # optional third convergence leg
 
 [[reviewers]]
@@ -149,10 +158,15 @@ model = "gpt-5.5"
 thinking = "xhigh"
 ```
 
-**Rounds & time budget.** We recommend **3 rounds** at **~30 minutes each** — enough for the producer
-to converge on most PRs without runaway cost. You can raise `max_rounds` up to **10** and set any
-per-round `timeout_seconds`; the real runaway guards are the budget ceilings (`budget_usd` /
-`budget_tokens`), not the round cap. Per-invocation: `syncade --max-rounds N`, `--budget-usd N`.
+**Rounds & time budget.** We recommend **3 rounds**, and `timeout_seconds` around **~30 minutes**.
+
+`timeout_seconds` is a cap on **each subprocess**, not on a round. It is the fallback wall clock for
+every leg — each reviewer, the judge, the test run, each mechanical check, and the producer — so a
+round's worst case is a multiple of it. With two reviewers (parallel, so they count once), a test
+command and three checks, one round can run **7×** the configured value before anything times out.
+Size it as "how long may a single model call take", and use the budget ceilings (`budget_usd` /
+`budget_tokens`) as the actual runaway guard. You can raise `max_rounds` up to **10**; the round cap
+is a typo-guard, not a spend guard. Per-invocation: `syncade --max-rounds N`, `--budget-usd N`.
 
 Every reachable knob — reviewers, producer, the cold actors, retry, GC, budgets — is in
 **[docs/config-reference.md](docs/config-reference.md)**, and three bundled presets

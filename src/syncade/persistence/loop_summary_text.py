@@ -22,6 +22,23 @@ _LOOP_NEXT_STEPS: dict[str, str] = {
         "directory carries the consolidated review (zero "
         "blockers); the operator's repo is ready to push."
     ),
+    "no_changes_to_review": (
+        "- The diff resolved to empty before any reviewer was dispatched: "
+        "the base ref resolved but no reviewable changes were found "
+        "(either no files changed, or every changed file was a repo-context "
+        "file stripped from the reviewer diff). No model work was spent. "
+        "If you expected changes to be reviewed, check that the correct "
+        "`--base` / `--scope` is specified and that the changed files are "
+        "not all listed in `strip_repo_context_files`."
+    ),
+    "producer_emptied_diff": (
+        "- The producer's commits in a prior round removed all reviewable "
+        "changes: the diff from the original base to the current HEAD is now "
+        "empty (all sections were either legitimate repo-context files or the "
+        "producer reverted the reviewable changes). Prior rounds DID spend "
+        "model work. If this is unexpected, inspect the per-round commit series "
+        "in `loop-summary.md` and the producer's commits on your branch."
+    ),
     "findings_present": (
         "- The single-pass run found remaining work. Read the round's "
         "`findings.md` for the active blockers or failed checks, address them, "
@@ -106,17 +123,38 @@ _LOOP_NEXT_STEPS: dict[str, str] = {
         "- A NO-SHIP round's producer ESCALATED a finding it determined "
         "is an operator decision (a spec/design conflict), not a code "
         "defect it can fix. The loop checkpointed and terminated (exit "
-        "10) WITHOUT advancing any branch. Read `decision-needed.md` at "
-        "the run root for the producer's case + concrete options; record "
-        "your decision in `decision.txt` and run `syncade --resume "
-        "<run-id>` to continue (the escalated round re-runs with your "
-        "decision fed to the producer). The mechanical verdict is "
-        "unchanged — the finding stays open until the decision is applied."
+        "10). Read `decision-needed.md` at the run root for the "
+        "producer's case + concrete options; record your decision in "
+        "`decision.txt` and run `syncade --resume <run-id>` to continue "
+        "(the escalated round re-runs with your decision fed to the "
+        "producer). The mechanical verdict is unchanged — the finding "
+        "stays open until the decision is applied."
+    ),
+    "blockers_all_deactivated": (
+        "- Two or more independent reviewers EACH raised a blocker, and the "
+        "synthesizer deactivated every one of them (dismissed, downgraded, or "
+        "split into separate single-reviewer findings). That may be correct, "
+        "but discarding all independent corroboration is not a call the "
+        "mechanical verdict will make silently, so the loop terminated at exit "
+        "10 instead of reporting a SHIP it cannot justify. No producer ran. "
+        "Read `decision-needed.md` at the run root: it quotes what each "
+        "reviewer actually said next to what the synthesizer did with it. If "
+        "the synthesizer was right, this round is effectively a SHIP; if it "
+        "was wrong about any one of them, that concern is real and unfixed. "
+        "There is nothing to resume — no blocker is active for a producer to "
+        "fix, so `decision.txt` and `--resume` do not apply here."
     ),
     "worktree_error": (
         "- A worktree could not be provisioned. Common cause: "
         "stale `<worktree_base>/<run-id>/` from a prior interrupted "
         "run. The loop did not advance any branch."
+    ),
+    "diff_malformed": (
+        "- The reviewer-facing diff had section(s) with unidentifiable "
+        "headers (unparseable, malformed C-quoted escape, or invalid UTF-8). "
+        "The dropped headers are in the refusing round's `diff-refused.txt` and "
+        "in its `manifest.json` under `diff_filter_refusal_headers`. "
+        "No model cost was incurred."
     ),
     "parse_failure": (
         "- A reviewer or synthesizer ran cleanly but its output "
@@ -138,10 +176,14 @@ reason rather than per-round exit code."""
 
 def _round_verdict_label(round_result) -> str:
     """Human-readable verdict label for one round."""
+    if getattr(round_result, "no_changes_to_review", False):
+        return "nothing to review"
     if round_result.round_exit_code == 0:
         return "SHIP"
     if round_result.round_exit_code == 30:
         return "NO-SHIP"
+    if round_result.round_exit_code == 10:
+        return "DECISION NEEDED"
     return f"ERROR (exit {round_result.round_exit_code})"
 
 
@@ -183,6 +225,13 @@ def _producer_commit_subject(repo_root: Path | None, ending_sha: str) -> str:
 
 _EMPTY_SERIES_REASON_NOTES: dict[str, str] = {
     "ship": "- (no producer commits — round 0 shipped without needing a fix)",
+    "no_changes_to_review": (
+        "- (no producer commits — the diff was empty; no reviewers or producer were dispatched)"
+    ),
+    "producer_emptied_diff": (
+        "- (see prior-round producer commits above"
+        " — they reduced the reviewable change set to empty)"
+    ),
     "findings_present": "- (no producer commits — single-pass run ended with findings present)",
     "max_rounds_reached": (
         "- (no producer commits landed — every producer round stalled or errored before committing)"
@@ -215,8 +264,15 @@ _EMPTY_SERIES_REASON_NOTES: dict[str, str] = {
         "- (no producer commits — the producer escalated a finding for an "
         "operator decision instead of committing a fix)"
     ),
+    "blockers_all_deactivated": (
+        "- (no producer commits — the round ended at the reviewers/synthesizer "
+        "stage; no producer ran)"
+    ),
     "worktree_error": (
         "- (no producer commits — worktree provisioning failed before any producer round could run)"
+    ),
+    "diff_malformed": (
+        "- (no producer commits — the diff filter refused the run before any reviewer dispatched)"
     ),
     "parse_failure": (
         "- (no producer commits — a reviewer / synthesizer output "

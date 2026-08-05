@@ -424,3 +424,46 @@ class TestManifestRetriedAnnotation:
         )
         manifest = json.loads(path.read_text())
         assert manifest["retried"] == 5  # 3 reviewer + 2 synth
+
+
+class TestStreamDisconnectIsTransient:
+    """The most common real transient we hit, and it matched no marker.
+
+    codex reports a dropped response stream as `stream disconnected before
+    completion: error sending request for url (...)` with NO HTTP status, so
+    neither the status gate nor any existing substring caught it. Two dogfood
+    runs died at exit 40 — losing every remaining round — because the bounded
+    retry that exists for precisely this case never fired. Verbatim message
+    from `.syncade/runs/2026-07-30T08-16-56/round-1/codex-reviewer.error.txt`.
+    """
+
+    _REAL = (
+        "codex failed (rc=1): stream disconnected before completion: "
+        "error sending request for url (https://chatgpt.com/backend-api/codex/responses)"
+    )
+
+    def test_recorded_stream_disconnect_is_retried(self) -> None:
+        exc = ReviewerInvocationError(self._REAL, returncode=1, stdout="", stderr="")
+        assert retry.is_transient_api_error(exc) is True
+
+    def test_matches_on_stderr_too(self) -> None:
+        exc = ReviewerInvocationError(
+            "codex failed (rc=1)", returncode=1, stdout="", stderr=self._REAL
+        )
+        assert retry.is_transient_api_error(exc) is True
+
+    def test_a_concrete_4xx_status_still_wins(self) -> None:
+        """A status-bearing error is a terminal provider verdict even if the
+        text happens to contain a transient-looking phrase."""
+        exc = ReviewerInvocationError(
+            self._REAL, returncode=1, stdout="", stderr="", api_error_status=401
+        )
+        assert retry.is_transient_api_error(exc) is False
+
+    def test_timeout_type_gate_still_wins(self) -> None:
+        """A wall-clock timeout is the budget, not a blip — the type gate must
+        keep firing before the substring scan."""
+        from syncade.process import SubprocessTimeoutError
+
+        exc = SubprocessTimeoutError("codex timed out", stdout="", stderr="", timeout=1800.0)
+        assert retry.is_transient_api_error(exc) is False

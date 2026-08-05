@@ -70,6 +70,12 @@ def _round_manifest_indicates_phase_failure(manifest: dict) -> bool:
     escalation, because the operator's decision now lets the round
     proceed. Either way we drop + retry rather than re-use partial state.
     """
+    # A diff_malformed round must be retried: the diff-filter refused
+    # the run before any reviewer was dispatched, so the round is
+    # incomplete. A resumed attempt may succeed if the underlying
+    # issue (malformed git path headers) is gone.
+    if manifest.get("diff_filter_refusal_headers") is not None:
+        return True
     try:
         for reviewer in manifest.get("reviewers") or []:
             if reviewer["outcome"] != "success":
@@ -292,6 +298,7 @@ def plan_resume(
     """
     if not run_dir.is_dir():
         raise ResumeError(f"run directory does not exist: {run_dir}")
+    _refuse_if_blockers_all_deactivated(run_dir)
     run_init_path = run_dir / RUN_INIT_FILENAME
     if not run_init_path.is_file():
         raise ResumeError(f"{RUN_INIT_FILENAME} missing in {run_dir} — cannot resume")
@@ -318,6 +325,26 @@ def plan_resume(
         )
     operator_branch = run_init.get("operator_branch")
     base_ref = run_init.get("base_ref")
+    base_oid = run_init.get("base_oid")
+    if base_oid is not None and (
+        not isinstance(base_oid, str) or not is_full_git_object_id(base_oid)
+    ):
+        raise ResumeError(
+            f"{run_init_path} has a malformed base_oid {base_oid!r}; "
+            f"expected a full SHA-1/SHA-256 object ID or null"
+        )
+    # A legacy run (pre-review-identity fix) recorded base_ref but never pinned
+    # base_oid. Resuming it would re-resolve the symbolic ref under three-dot
+    # semantics, producing a different diff than the earlier rounds reviewed.
+    # Refuse so the operator starts a fresh run with a stable base instead.
+    if base_oid is None and base_ref is not None:
+        raise ResumeError(
+            f"{run_init_path} has no base_oid (recorded before the review-identity "
+            f"fix). Resuming it would review a different diff than earlier rounds: "
+            f"earlier rounds used {base_ref!r} with two-dot semantics; a resume "
+            f"would use three-dot semantics instead. Start a fresh run instead: "
+            f"syncade --base {base_ref!r} <PR_DOC>"
+        )
     if operator_branch is not None and not isinstance(operator_branch, str):
         raise ResumeError(
             f"{run_init_path} has malformed operator_branch "
@@ -464,5 +491,59 @@ def plan_resume(
         syncade_version=syncade_version,
         config_snapshot_path=run_init_path,
         base_ref=base_ref,
+        base_oid=base_oid,
         budget_aborted_before_producer_round=budget_aborted_before_producer_round,
+    )
+
+
+def _refuse_if_blockers_all_deactivated(run_dir: Path) -> None:
+    """Refuse to resume a run that ended because every reviewer blocker was
+    deactivated (PR-h-01 increment D).
+
+    There is nothing to continue: no producer ran, no blocker is active for one
+    to fix, and the tree is unchanged — so a resume re-reviews byte-identical
+    code and deterministically reproduces the same exit 10, at the cost of a
+    full reviewer panel plus the judge. Worse, ``decision.txt`` is silently
+    ignored on this path (the resume decision reader is keyed to an escalated
+    PRODUCER round), so an operator following the old producer-escalation
+    instructions would pay for a round that cannot use their answer.
+
+    The question this state poses — was the synthesizer right to rule those
+    blockers out? — is answered by reading, then either accepting the round or
+    fixing the concern and starting a fresh run.
+    """
+    loop_manifest_path = run_dir / LOOP_MANIFEST_FILENAME
+    if not loop_manifest_path.is_file():
+        # Manifest missing: usually interrupted, but the blockers-all-deactivated
+        # decision-needed.md is written BEFORE the manifest. Check the marker so
+        # a partial-finalization window doesn't reopen the non-resumable path.
+        from syncade.orchestrator.resume_target import _decision_needed_is_deactivated_shape
+
+        if not _decision_needed_is_deactivated_shape(run_dir):
+            return
+        raise ResumeError(
+            "this run ended at exit 10 because two or more reviewers each raised a "
+            "blocker and the synthesizer deactivated all of them — there is nothing "
+            "to resume. No producer ran, no blocker is active for one to fix, and "
+            "the tree has not changed, so resuming would re-run the full panel and "
+            "reproduce the same result. Read decision-needed.md in the run "
+            "directory: it quotes what each reviewer actually said next to what the "
+            "synthesizer did with it. If the synthesizer was right, the round is "
+            "effectively a SHIP; if not, fix the concern and start a fresh run."
+        )
+    try:
+        manifest = json.loads(loop_manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if manifest.get("termination_reason") != "blockers_all_deactivated":
+        return
+    raise ResumeError(
+        "this run ended at exit 10 because two or more reviewers each raised a "
+        "blocker and the synthesizer deactivated all of them — there is nothing "
+        "to resume. No producer ran, no blocker is active for one to fix, and "
+        "the tree has not changed, so resuming would re-run the full panel and "
+        "reproduce the same result. Read decision-needed.md in the run "
+        "directory: it quotes what each reviewer actually said next to what the "
+        "synthesizer did with it. If the synthesizer was right, the round is "
+        "effectively a SHIP; if not, fix the concern and start a fresh run."
     )

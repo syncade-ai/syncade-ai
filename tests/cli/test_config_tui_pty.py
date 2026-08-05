@@ -506,7 +506,7 @@ def test_tui_global_edit_of_shadowed_field_updates_screen_immediately(tmp_path):
         assert b"shadowed by repo" in acc
 
         # Default roster is 2 reviewers, so the rows are Producer, Reviewer 1, Reviewer 2, Judge,
-        # Rounds, then Time per round — 5 downs from the top.
+        # Rounds, then Time per subprocess — 5 downs from the top.
         for _ in range(5):
             os.write(master, b"j")
             acc += _drain(master, 0.1)
@@ -517,7 +517,7 @@ def test_tui_global_edit_of_shadowed_field_updates_screen_immediately(tmp_path):
         # The NEW value must be on the RECONSTRUCTED screen immediately, BEFORE any save — the core
         # bug. (curses diffs the update, so 3000.0 isn't contiguous in the raw bytes.)
         screen = _render_screen(acc)
-        time_line = next((ln for ln in screen.splitlines() if "Time per round" in ln), "")
+        time_line = next((ln for ln in screen.splitlines() if "Time per subprocess" in ln), "")
         assert "3000.0" in time_line, f"edit did not surface on the Time row: {time_line!r}"
         assert "1800.0" not in time_line  # the stale repo value is gone
         assert b"updated" in acc

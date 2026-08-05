@@ -86,7 +86,7 @@ def _settings(config):
     rows += [
         ("synthesizer.model", "Judge model", "synthesizer", None),
         ("loop.max_rounds", "Rounds (max)", "loop", "max_rounds"),
-        ("loop.timeout_seconds", "Time per round (s)", "loop", "timeout_seconds"),
+        ("loop.timeout_seconds", "Time per subprocess (s)", "loop", "timeout_seconds"),
         ("loop.budget_usd", "Cost cap (USD)", "loop", "budget_usd"),
     ]
     return rows
@@ -311,7 +311,7 @@ def _cmd_list(
         return 0
     for key, label, section, subkey in _settings(config):
         layer = _layer_of(global_raw, repo_raw, section, subkey)
-        print(f"  {label:<20} {_shown(config, key):<28} ({layer})  [{key}]")
+        print(f"  {label:<23} {_shown(config, key):<28} ({layer})  [{key}]")
     note = _ignored_repo_config_note(repo_root, in_git)
     if note:
         print(note, file=sys.stderr)

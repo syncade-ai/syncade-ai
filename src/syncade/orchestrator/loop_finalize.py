@@ -11,6 +11,7 @@ aggregate :class:`RunResult`, and returns it.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from syncade import run_status as _run_status
@@ -240,26 +241,35 @@ def _finalize_run(
         raise last_round.test_worktree_error
 
     # --- record the per-branch last-reviewed SHA --------------
-    # On a COMPLETED verdict (exits 0/20/30 — a real review happened), record
-    # the branch's run-end HEAD so a later `--scope since-last-review` bounds its
-    # diff to new work. Skipped on phase failures (40/50/60/70) and
-    # decision_needed (10, resume-pending), and on detached HEAD (no branch
-    if snapshot.branch is not None and final_exit_code in (
-        SUCCESS,
-        MAX_ROUNDS_REACHED,
-        FINDINGS_PRESENT,
+    # On a COMPLETED verdict where reviewers actually ran (exits 0/20/30, but NOT
+    # no_changes_to_review or producer_emptied_diff which are exit-0 with zero reviewers
+    # dispatched), record the SHA a reviewer saw so `--scope since-last-review` bounds its
+    # diff to new work. Skipped on phase failures (40/50/60/70), decision_needed (10,
+    # resume-pending), detached HEAD (no branch), and empty-diff terminals where no
+    # reviewer actually ran (recording an unreviewed anchor would silently skip real work
+    # on the next since-last-review diff).
+    _skip_reasons = ("no_changes_to_review", "producer_emptied_diff")
+    if (
+        snapshot.branch is not None
+        and final_exit_code in (SUCCESS, MAX_ROUNDS_REACHED, FINDINGS_PRESENT)
+        and termination_reason not in _skip_reasons
     ):
-        try:
+        # Record the SHA a reviewer ACTUALLY saw, not a re-read of the branch (R6).
+        # `last_round.snapshot` is the final round's — NOT the `snapshot` parameter, which
+        # is round 0's and differs on any multi-round run.
+        #
+        # Re-reading `refs/heads/<branch>` returned whatever the ref pointed at when the
+        # run ended, which is the reviewed SHA only because the TERMINAL round never runs a
+        # producer (loop_round_step.py special-cases `round_idx == max_rounds - 1`). When
+        # the ref moved anyway — a `producer_stalled` run whose fast-forward was refused, or
+        # an external commit landing mid-run — it recorded a SHA nobody reviewed, and
+        # `--scope since-last-review` then SKIPS that unreviewed work. Reading the value
+        # already in hand cannot drift.
+        _reviewed_sha = last_round.snapshot.commit_sha
+        if is_full_git_object_id(_reviewed_sha):
             from syncade.persistence import persist_last_reviewed as _persist_last_reviewed
-            from syncade.process import run_subprocess as _run_subprocess
 
-            _head = _run_subprocess(
-                ["git", "rev-parse", f"refs/heads/{snapshot.branch}"],
-                cwd=repo_root,
-                timeout=10.0,
-            )
-            _reviewed_sha = _head.stdout.strip()
-            if _head.returncode == 0 and is_full_git_object_id(_reviewed_sha):
+            try:
                 _persist_last_reviewed(
                     repo_root,
                     branch=snapshot.branch,
@@ -267,8 +277,21 @@ def _finalize_run(
                     run_id=run_id,
                     recorded_at_utc=completed_at.isoformat(),
                 )
-        except Exception:
-            pass
+            except OSError as exc:
+                # Narrowed from `except Exception: pass` (audit rank 17). Only a real I/O
+                # failure is tolerable here — losing last-reviewed costs a wider next diff,
+                # never a wrong verdict, so it must not abort a completed run. Anything
+                # else (a bug in the writer, a bad SHA) is a defect and must surface.
+                #
+                # Printed directly to stderr, NOT via logger.warning, which is suppressed
+                # in --quiet mode. A persistence failure must be visible regardless of
+                # verbosity — the operator needs to know the anchor was not updated.
+                print(
+                    f"[syncade] warning: could not record last-reviewed SHA for "
+                    f"{snapshot.branch}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     # --- Do NOT touch the operator's working tree -----
     # The design is explicit ("Notes for the implementing agent"):

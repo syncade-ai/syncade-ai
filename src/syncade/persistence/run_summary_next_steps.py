@@ -87,6 +87,32 @@ _NEXT_STEPS_FALLBACK = (
     "- See `manifest.json` and the per-reviewer files in this directory\n  for details."
 )
 
+_NEXT_STEPS_60_DIFF_MALFORMED = (
+    "- The diff contained section(s) whose headers could not be identified\n"
+    "  (unparseable header, malformed C-quoted escape, or invalid UTF-8 in a\n"
+    "  path). Syncade refused to continue because it could not determine whether\n"
+    "  these sections are real changes or repo-context files to strip — treating\n"
+    "  an unreadable change as 'nothing to review' would be a false SHIP.\n"
+    "  The dropped headers are listed in `diff-refused.txt` in this round's\n"
+    "  directory and in `manifest.json` under `diff_filter_refusal_headers`.\n"
+    "  Common causes: binary paths with non-UTF-8 bytes; git C-quoting of\n"
+    "  unusual characters. If the unreadable sections are repo-context files,\n"
+    "  add their basenames to `strip_repo_context_files` in\n"
+    "  `.syncade/config.toml`; if they are real changes you need reviewed,\n"
+    "  the diff encoding itself may need investigation (e.g. a misconfigured\n"
+    "  `core.quotepath` or a non-UTF-8 filename)."
+)
+
+_NEXT_STEPS_NO_CHANGES = (
+    "- The diff resolved to empty before any reviewer was dispatched: "
+    "the base ref resolved but no reviewable changes were found "
+    "(either no files changed, or every changed file was a repo-context "
+    "file stripped from the reviewer diff). No model work was spent. "
+    "If you expected changes to be reviewed, check that the correct "
+    "`--base` / `--scope` is specified and that the changed files are "
+    "not all listed in `strip_repo_context_files`."
+)
+
 # Variant for exit 40 when the failing subprocess was the synthesizer
 # (every reviewer succeeded; the synth phase ran and failed). Point the operator
 # at synthesizer.error.txt / .stderr first, not at reviewer files which are clean
@@ -209,6 +235,9 @@ def _resolve_next_steps(
     test_result: TestRunResult | None = None,
     test_skip_reason: str | None = None,
     check_results: list[TestRunResult] | None = None,
+    *,
+    no_changes_to_review: bool = False,
+    fail_closed_headers: list[str] | None = None,
 ) -> str:
     """Pick the right Next-steps content for the given exit code +
     synthesizer outcome + test outcome + test-skip reason.
@@ -253,6 +282,11 @@ def _resolve_next_steps(
     # otherwise point at the wrong artifact. Returns None for every
     # non-check-driven round (including all zero-check rounds), keeping the
     # rest of this routing byte-identical.
+    if fail_closed_headers is not None:
+        return _NEXT_STEPS_60_DIFF_MALFORMED
+    if no_changes_to_review:
+        return _NEXT_STEPS_NO_CHANGES
+
     check_override = check_aware_next_steps(exit_code, synth_result, test_result, check_results)
     if check_override is not None:
         return check_override
@@ -281,6 +315,7 @@ def _resolve_next_steps_with_producer(
     exit_code: int,
     producer_result: ProducerResult,
     escalation_honored: bool = False,
+    branch_already_advanced: bool = False,
 ) -> str:
     """Next-steps guidance for a per-round
     summary.md AFTER a producer ran on this round.
@@ -332,11 +367,18 @@ def _resolve_next_steps_with_producer(
             f"re-run."
         )
     if producer_result.outcome == "escalated" and escalation_honored:
+        _branch_note = (
+            "An earlier round already advanced your branch — producer "
+            "commits from that round are on it. This round's producer "
+            "did not commit."
+            if branch_already_advanced
+            else "No branch was advanced by this round."
+        )
         return (
             "- The producer ESCALATED a finding it determined is an operator "
             "decision (a spec/design conflict), not a code defect. The loop "
-            "checkpointed and terminated (exit 10) WITHOUT advancing any "
-            "branch. Read `decision-needed.md` at the run root for the "
+            f"checkpointed and terminated (exit 10). {_branch_note} "
+            "Read `decision-needed.md` at the run root for the "
             "producer's case + concrete options, record your decision in "
             "`decision.txt`, and run `syncade --resume <run-id>` — the "
             "escalated round re-runs with your decision fed to the producer."

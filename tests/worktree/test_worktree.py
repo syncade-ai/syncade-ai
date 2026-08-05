@@ -12,6 +12,7 @@ import datetime as _datetime
 import re
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -120,7 +121,7 @@ class TestCreate:
         def fake_run_subprocess(argv, *, cwd=None, env=None, timeout=None, input_text=None):
             del env, input_text
             calls.append((argv, cwd, timeout))
-            if argv[:3] == ["git", "worktree", "add"]:
+            if argv[:4] == ["git", "--no-replace-objects", "worktree", "add"]:
                 return SubprocessResult(0, "", "", 0.0)
             if argv == ["git", "rev-parse", "HEAD"]:
                 return SubprocessResult(0, f"{sha}\n", "", 0.0)
@@ -138,7 +139,11 @@ class TestCreate:
 
             assert wt.commit_sha == sha
             assert calls[:2] == [
-                (["git", "worktree", "add", str(wt.path), sha], repo_path, 30.0),
+                (
+                    ["git", "--no-replace-objects", "worktree", "add", str(wt.path), sha],
+                    repo_path,
+                    30.0,
+                ),
                 (["git", "rev-parse", "HEAD"], wt.path, 30.0),
             ]
         finally:
@@ -388,3 +393,40 @@ class TestCreate:
         # No git registration created
         listing = _git(repo_path, "worktree", "list").stdout
         assert "claude-reviewer" not in listing
+
+    def test_create_replacement_ref_cannot_substitute_checkout_content(
+        self, tmp_path: Path, base_dir: Path
+    ) -> None:
+        """A `refs/replace/*` ref swaps one object for another at every lookup.
+        Pre-fix: `git worktree add <sha>` without --no-replace-objects checked
+        out the benign replacement while `commit_sha` named the original, so a
+        backdoored commit was reviewed as its benign replacement.
+
+        The worktree must contain the ORIGINAL content, not the replacement."""
+        from tests.worktree._helpers import _make_repo
+
+        repo_path = tmp_path / "repo"
+        _make_repo(repo_path, {"s.py": "BACKDOOR\n"})
+        bad_sha = _git(repo_path, "rev-parse", "HEAD").stdout.strip()
+
+        # Create a benign replacement commit
+        (repo_path / "s.py").write_text("tidy\n")
+        _git(repo_path, "add", "-A")
+        _git(repo_path, "commit", "-m", "benign replacement")
+        benign_sha = _git(repo_path, "rev-parse", "HEAD").stdout.strip()
+
+        # Reset back to the backdoored commit and install the replace ref
+        _git(repo_path, "reset", "-q", "--hard", bad_sha)
+        _git(repo_path, "replace", "-f", bad_sha, benign_sha)
+
+        mgr = WorktreeManager(repo_path, "run-replace", base_dir=base_dir)
+        wt = mgr.create("reviewer", bad_sha)
+        try:
+            content = (wt.path / "s.py").read_text()
+            assert content == "BACKDOOR\n", (
+                "replacement ref substituted checkout content — "
+                f"got {content!r}, expected 'BACKDOOR\\n'"
+            )
+            assert wt.commit_sha == bad_sha
+        finally:
+            mgr.cleanup_all()

@@ -38,6 +38,7 @@ _HANDOFF_TERMINATION_REASON_LABELS: dict[str, str] = {
     "synth_failure": "synthesizer failure",
     "test_subprocess_error": "test subprocess error",
     "worktree_error": "worktree provisioning error",
+    "diff_malformed": "diff filter refusal (unidentifiable headers)",
     "parse_failure": "output parse failure",
     "config_error": "config error",
 }

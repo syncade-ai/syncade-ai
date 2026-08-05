@@ -7,48 +7,19 @@ grouped by ``severity``. Any field not listed here is rejected
 of being silently absorbed.
 
 ``parse_reviewer_output`` is the main entry point. It accepts bare JSON,
-markdown-fenced JSON, or JSON embedded in prose. The candidate-extraction
-strategy lives in the shared helper :func:`_extract_json_candidates`,
-which is also used by :func:`syncade.synthesis.parse_synthesizer_output` so the
-parser hardening is not duplicated across parsers. The strategy:
-
-1. **Collect all candidates with their document positions.** Every
-   ``json``-labeled or unlabeled ` ``` ` fence and every top-level JSON
-   object decoded by :meth:`json.JSONDecoder.raw_decode` becomes a
-   ``(start_pos, content)`` candidate.
-2. **Try in REVERSE document position order.** The latest candidate
-   wins — preserving the "real verdict at the end" property whether
-   it's a fence or a bare JSON block. A fenced *example* earlier in
-   the response cannot mask a real bare-JSON verdict at the end.
-3. **Each candidate must pass BOTH** ``json.loads`` AND
-   :meth:`ReviewerOutput.model_validate`. Fragments that look JSON-shaped but
-   aren't real verdicts (JSX object-literal syntax, schema illustrations,
-   pseudocode) fail one or both checks and the parser keeps scanning.
-4. **Whole-string fallback** as a final attempt for the no-narrative
-   case; kept defensively even though raw decoding normally finds this shape.
-
-The raw decoder scan is a find-then-parse-or-skip loop. When a ``{`` does not
-start valid JSON, the scanner advances past that ``{`` and keeps looking — so
-an unmatched ``{`` in prose ("``if (x) { do something``") doesn't swallow the
-rest of the document and starve the parser of later candidates.
-
-Fence regex tolerates CRLF line endings (``\\r?\\n``); fences with
-non-empty, non-``json`` labels (``json5``, ``python``,
-``my-language``, etc.) don't match the regex and can still be found by the raw
-decoder when their contents are valid JSON objects.
+markdown-fenced JSON, or JSON embedded in prose. Verdict-block selection and
+its failure semantics live in :mod:`syncade.findings_json`, shared with the
+synthesizer, spec-audit, and spec-draft parsers so they cannot drift; every
+clause of the rule there is the scar of a reproduced false SHIP.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-# the pure JSON-candidate scanners live in findings_json; _extract_json_candidates
-# is re-exported here so syncade.findings._extract_json_candidates is unchanged
-# (shared by the reviewer/synth/spec-audit/spec-draft parsers).
-from syncade.findings_json import _extract_json_candidates
+from syncade.findings_json import decode_and_validate
 
 Severity = Literal["blocker", "minor", "nit"]
 """Per-finding severity classification, per PRD Appendix B."""
@@ -60,11 +31,11 @@ Verdict = Literal["SHIP", "NO-SHIP"]
 class ReviewerOutputError(Exception):
     """Raised when reviewer stdout can't be parsed as a :class:`ReviewerOutput`.
 
-    The message includes the count of candidate blocks attempted, a
-    truncated snippet of the first attempted block, and a hint pointing
-    at the reviewer's ``.stdout`` artifact so the CLI can surface a
-    useful error via exit code 70 (``REVIEWER_OUTPUT_UNPARSEABLE``)
-    without further introspection.
+    The message names which block was selected as the verdict (the last
+    ``json`` fence, or the whole response), why it was rejected, and the
+    reviewer's ``.stdout`` artifact — so the CLI can surface a useful error via
+    exit code 70 (``REVIEWER_OUTPUT_UNPARSEABLE``) without further
+    introspection.
     """
 
 
@@ -251,100 +222,17 @@ def get_findings_schema_string() -> str:
     )
 
 
-def _try_parse_and_validate(text: str) -> ReviewerOutput | None:
-    """Try ``json.loads(text)`` then :meth:`ReviewerOutput.model_validate`.
-
-    Returns the validated :class:`ReviewerOutput` on success, ``None``
-    on any failure. The two-step combined check is the discriminator
-    used by :func:`parse_reviewer_output` to decide "is this the verdict
-    block?" — fragments that look JSON-shaped but aren't real verdicts
-    return ``None`` and the parser keeps scanning.
-
-    Validation failure is treated as "not the verdict" rather than
-    re-raised: a reviewer that emits a stray ``{"draft": "..."}``
-    object in narrative shouldn't blow up the run. The real verdict
-    at the end of the response is what the user wants.
-    """
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    try:
-        return ReviewerOutput.model_validate(parsed)
-    except ValidationError:
-        return None
-
-
 def parse_reviewer_output(raw: str) -> ReviewerOutput:
     """Parse a reviewer's raw stdout text into a :class:`ReviewerOutput`.
 
-    Strategy:
-
-    1. Call :func:`_extract_json_candidates` to collect every fenced
-       ``json``/unlabeled block AND every raw-decoded top-level JSON object
-       as ``(start_pos, content)`` candidates, sorted
-       by ``start_pos`` descending — the LATEST candidate in the
-       document is tried first. This preserves the "real verdict at
-       the end" property whether the verdict is a fence or a bare JSON
-       block, and prevents an EARLIER fenced example from masking a
-       LATER real verdict . The extractor is shared
-       with :func:`syncade.synthesis.parse_synthesizer_output`.
-    2. Return the first candidate that passes BOTH ``json.loads`` AND
-       :meth:`ReviewerOutput.model_validate`. Fragments that look JSON-shaped
-       but aren't real verdicts (``{{ color:
-       'var(--mm-amber)' }}``, schema illustrations, pseudocode) fail
-       one or both checks and the parser keeps trying earlier
-       candidates.
-    3. Whole-string fallback (``json.loads(raw.strip())``) for the
-       pure-JSON-no-narrative case where nothing else matched.
-
-    The raw-decoder scan recovers from unmatched ``{`` in prose: an unfinished
-    ``if (x) { do something`` doesn't swallow the rest of the document; the
-    scanner advances past the unmatched ``{`` and keeps looking for later JSON
-    objects.
-
-    Raises :class:`ReviewerOutputError` only when no candidate
-    validates anywhere. The message includes the count of candidates
-    attempted, a truncated snippet of the first attempted candidate
-    (the latest-position one — the one most likely intended as the
-    verdict), and a pointer at the reviewer's ``.stdout`` file — so
-    the user surfacing exit code 70 knows where the raw response is
-    and has at least one concrete fragment to inspect.
+    Selection, failure semantics, and the reasons for both live in
+    :mod:`syncade.findings_json`; this is the reviewer's binding of them.
     """
-    candidates = _extract_json_candidates(raw)
-
-    for _, content in candidates:
-        result = _try_parse_and_validate(content.strip())
-        if result is not None:
-            return result
-
-    # Whole-string fallback: covers pure-JSON-no-narrative if anything slipped
-    # past candidate extraction.
-    stripped = raw.strip()
-    if stripped:
-        result = _try_parse_and_validate(stripped)
-        if result is not None:
-            return result
-
-    # Nothing validated — surface a diagnostic message with attempt
-    # count, a snippet of the FIRST attempted candidate (i.e. the
-    # latest-position candidate, since we sort descending and try in
-    # that order — that's the most likely "intended verdict" the
-    # reviewer wrote at the end of their response), and a pointer
-    # at the .stdout artifact. Falls back to a slice of raw when
-    # there were no candidates at all.
-    if candidates:
-        # candidates is sorted DESC by position, so [0] is the latest
-        # (first-attempted) candidate — which is the most likely
-        # "intended verdict" the reviewer wrote at the end of their
-        # response.
-        snippet_source = candidates[0][1]
-    else:
-        snippet_source = raw
-    snippet = snippet_source[:200]
-    raise ReviewerOutputError(
-        f"reviewer output had no parseable ReviewerOutput JSON "
-        f"(attempted {len(candidates)} candidate block(s); first "
-        f"attempted snippet: {snippet!r}); the raw response is "
-        f"preserved at <reviewer>.stdout in the run directory."
+    return decode_and_validate(
+        raw,
+        validate=ReviewerOutput.model_validate,
+        error=ReviewerOutputError,
+        label="reviewer",
+        model_name="ReviewerOutput",
+        artifact="the reviewer's .stdout in the round directory",
     )

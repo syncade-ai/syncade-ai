@@ -72,6 +72,15 @@ _TRANSIENT_MARKERS = (
     "timeout",
     "econnreset",
     "etimedout",
+    # A provider dropping the response stream mid-flight. Empirically the most
+    # common real transient we hit, and it matched NONE of the markers above:
+    # codex reports it as `stream disconnected before completion: error sending
+    # request for url (...)` with no HTTP status, so the status gate cannot
+    # catch it either. Two dogfood runs died at exit 40 — losing every
+    # remaining round — because the retry that exists for exactly this case
+    # never fired.
+    "stream disconnected",
+    "error sending request",
 )
 
 

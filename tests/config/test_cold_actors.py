@@ -1,7 +1,7 @@
 """Tests for the three cold-actor config blocks (PR-v2-23).
 
 ``[synthesizer]`` / ``[drafter]`` / ``[auditor]`` — the judge, the ``--draft-spec``
-drafter, and the ``--audit`` auditor. All three were hardcoded to ``CodexAdapter``
+drafter, and the ``--spec-audit`` auditor. All three were hardcoded to ``CodexAdapter``
 with module-constant models, which made ``codex`` mandatory even for an
 all-Anthropic user. They are now registry-resolved and configurable.
 """

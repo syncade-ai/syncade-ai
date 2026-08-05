@@ -9,7 +9,7 @@ description: 'Run the syncade external blind multi-judge review orchestrator fro
 
 `/syncade <pr-doc>` runs the syncade review loop on a PR doc. Syncade
 dispatches blind reviewers (two Codex prompts by default — cross-prompt
-today, cross-lab next),
+and cross-lab, both available today by config),
 synthesizes their structured outputs cold, optionally re-runs tests,
 and (when `max_rounds > 1`) hands NO-SHIP findings to a producer
 subprocess that attempts to commit a fix. The loop runs until SHIP,
@@ -83,7 +83,7 @@ It needs a real terminal, so it can't run in this pane.
 ```
 
 Then render a COMPACT summary from `syncade --config list` so the state is visible here anyway:
-the common knobs (Producer / Reviewers / Judge models, Rounds, Time per round, Cost cap), each with
+the common knobs (Producer / Reviewers / Judge models, Rounds, Time per subprocess, Cost cap), each with
 its value and the layer that set it (default / global / repo). Use `syncade --config list --all`
 when they ask about a field outside that set (it prints every settable field with its value, layer,
 an `overrides global <value>` note where the repo masks a different global value, and the dotted
@@ -100,7 +100,7 @@ effort", "set rounds to 2", "cap cost at $5". THIS is the thing worth doing in-p
    | a role's provider (re-derives its model) | `producer.provider` / `reviewers.<i>.provider` / `synthesizer.provider` |
    | thinking / effort | `producer.thinking` / `reviewers.<i>.thinking` / `synthesizer.thinking` |
    | rounds (1–10) | `loop.max_rounds` |
-   | time per round (seconds) | `loop.timeout_seconds` |
+   | time per subprocess, all legs (seconds) | `loop.timeout_seconds` |
    | cost cap (USD) | `loop.budget_usd` |
    | anything else | the `[key]` shown by `syncade --config list --all` |
 
@@ -270,7 +270,7 @@ The only CLI flags this skill supports are `--base <ref>`, `--scope <token>`,
 `--openspec [<change-id>]`, `--draft-spec --transcript <path>`,
 `--max-rounds N`, `--budget-tokens N`, and `--budget-usd N`. If the
 operator's request includes any other flag (e.g. `--timeout`, `--quiet`,
-`--verbose`, `--force-dirty`, `--resume`, `--force-drift`), stop and respond:
+`--force-dirty`, `--resume`, `--force-drift`), stop and respond:
 
 ```
 [syncade] Unrecognized option: <flag>. Step 0 supports only --base <ref>,
@@ -442,11 +442,13 @@ Capture the exit code.
 
 Common exit codes the operator may see:
 
-- `0` — SHIP at some round; the producer either didn't run (round-0
-  SHIP) or did and converged.
-- `10` — clarification or operator decision needed; the loop
-  checkpointed and wrote `decision-needed.md` at the run root. Resolve
-  it (write your ruling into `decision.txt`) and `syncade --resume <run-id>`.
+- `0` — SHIP at some round, or no reviewable changes found (empty
+  diff). Check `termination_reason` in `loop-manifest.json`: `ship`
+  means reviewed and approved; `no_changes_to_review` means the diff
+  was empty before dispatch (no model cost incurred).
+- `10` — clarification or operator decision needed; the loop wrote
+  `decision-needed.md` at the run root. Read it and branch by the
+  heading — see Step 6 for the two shapes and how each continues.
 - `20` — max rounds reached without SHIP.
 - `25` — budget ceiling hit; loop stopped gracefully at a phase
   boundary (before a review bundle or a producer). Resume with
@@ -455,7 +457,7 @@ Common exit codes the operator may see:
   failed when reviewers shipped.
 - `40` — reviewer / synthesizer / producer subprocess error.
 - `50` — config error.
-- `60` — worktree / dirty-tree / loop-mode refusal.
+- `60` — worktree / dirty-tree / loop-mode refusal, or diff_malformed (unidentifiable headers, fail-closed).
 - `70` — reviewer or synthesizer output unparseable.
 
 (Full table in the exit-code contract above.)
@@ -471,7 +473,7 @@ Read it, then present in chat:
 ```
 [syncade] Run complete (exit <code>).
 
-Verdict: <SHIP / NO-SHIP / max-rounds-reached / error>
+Verdict: <SHIP / NOTHING TO REVIEW / NO-SHIP / max-rounds-reached / error>
 Rounds: <N> of <max>
 Termination: <termination_reason from loop-manifest.json>
 Final round duration: <s>
@@ -483,7 +485,7 @@ Per-round summary:
   ...
 
 Artifacts: <run-dir>
-- Top-level findings.md: <run-dir>/findings.md
+- Top-level findings.md: <run-dir>/findings.md (absent on NOTHING TO REVIEW runs — no reviewers ran)
 - Per-round artifacts: <run-dir>/round-N/
 ```
 
@@ -494,8 +496,11 @@ don't paraphrase from memory.
 skipping it is exactly how an escalation stalls unread. READ the file (don't paraphrase from memory,
 don't paste it whole); present the verdict + a plain-language why + a clickable path:
 
-- **Exit 10 (decision needed).** Read `<run-dir>/decision-needed.md`; present its
-  `## The decision you must make` paragraph and the resume path:
+- **Exit 10 (decision needed).** Read `<run-dir>/decision-needed.md`. It has TWO shapes; check
+  which headings it contains, because the continuation differs.
+
+  **(a) Producer escalation** — the file has a `## The decision you must make` section. Present
+  that paragraph and the resume path:
 
   ```
   [syncade] This run needs YOUR decision (exit 10) — the loop checkpointed, nothing shipped.
@@ -505,6 +510,22 @@ don't paste it whole); present the verdict + a plain-language why + a clickable 
 
   To continue: write your ruling into <run-dir>/decision.txt, then run
     syncade --resume <run-id>
+  ```
+
+  **(b) Reviewer blockers all deactivated** — the file has a `## What each reviewer actually
+  said` section. Two or more reviewers independently raised blockers and the synthesizer ruled
+  every one of them out. There is nothing to resume (no active blocker for a producer to fix)
+  and `decision.txt` does not apply — do NOT offer them. Present the reviewers' own words:
+
+  ```
+  [syncade] This run needs YOUR judgment (exit 10) — nothing shipped.
+
+  <N> reviewers each raised a blocker; the synthesizer dismissed or downgraded all of them.
+  What each reviewer said, and what the synthesizer did with it:
+    <run-dir>/decision-needed.md
+
+  If the synthesizer was right, this round is effectively a SHIP. If it was wrong about
+  any one of them, that concern is real and still unfixed.
   ```
 
 - **Exit 20 / 30 (NO-SHIP, work remaining).** If `<run-dir>/handoff.md` exists, read it and list each

@@ -29,6 +29,8 @@ from .loop_summary_text import (
 
 _TERMINATION_REASON_LABELS: dict[str, str] = {
     "ship": "SHIP",
+    "no_changes_to_review": "nothing to review",
+    "producer_emptied_diff": "nothing to review (producer emptied all changes)",
     "findings_present": "findings present",
     "max_rounds_reached": "max rounds reached",
     "budget_exceeded": "budget exceeded",
@@ -39,7 +41,9 @@ _TERMINATION_REASON_LABELS: dict[str, str] = {
     "test_subprocess_error": "test subprocess error",
     "check_subprocess_error": "blocking-check subprocess error",
     "decision_needed": "decision needed (producer escalation)",
+    "blockers_all_deactivated": "decision needed (reviewers' blockers all deactivated)",
     "worktree_error": "worktree provisioning error",
+    "diff_malformed": "diff filter refusal (unidentifiable headers)",
     "parse_failure": "output parse failure",
     "config_error": "config error",
 }
@@ -111,7 +115,14 @@ def persist_loop_summary(
     # Final verdict label — mirrors the findings.md verdict
     # convention: SHIP for exit 0, NO-SHIP for exit 30 (real
     # findings), ABORT for environmental failures (40 / 60).
-    if final_exit_code == 0:
+    # no_changes_to_review / producer_emptied_diff exit 0 but are NOT SHIPs — the
+    # final round dispatched no reviewers (no approval was rendered this round).
+    if final_exit_code == 0 and termination_reason in (
+        "no_changes_to_review",
+        "producer_emptied_diff",
+    ):
+        verdict_label = "NOTHING TO REVIEW"
+    elif final_exit_code == 0:
         verdict_label = "SHIP"
     elif final_exit_code == 30:
         verdict_label = "NO-SHIP"
@@ -179,7 +190,11 @@ def persist_loop_summary(
         lines.append(f"## Round {r.round_idx} — {round_verdict} ({round_duration_s:.1f}s)")
         lines.append("")
         # Reviewers — count consolidated findings or report failure
-        if r.dispatch_result is not None and r.dispatch_result.all_succeeded:
+        if getattr(r, "no_changes_to_review", False):
+            lines.append("- Reviewers: not dispatched (diff was empty before review)")
+        elif r.fail_closed_headers:
+            lines.append("- Reviewers: not dispatched (diff refused — unidentifiable headers)")
+        elif r.dispatch_result is not None and r.dispatch_result.all_succeeded:
             n_reviewers = len(r.dispatch_result.successes)
             lines.append(f"- Reviewers: {n_reviewers} succeeded")
         elif r.dispatch_result is not None:

@@ -54,13 +54,11 @@ interactive Codex agent then: resolves intent → validates the doc → runs
 
 ## Prerequisites
 
-- `codex` CLI (this harness) and `claude` CLI installed and authenticated — both
-  are syncade's default reviewer/producer subprocess providers (`codex login
-  status` reports logged in; `claude --version` works).
+- `codex` CLI (this harness) installed and authenticated (`codex login status`
+  reports logged in) — the default reviewers, judge, and producer all resolve to
+  OpenAI in a Codex / plain-terminal environment with no extra config.
 - `syncade` on `PATH` (`syncade --version` works from any directory — see the
   repo README's "Global install").
-- `<repo-root>/.syncade/config.toml` with at least one `[[reviewers]]` block and a
-  `[producer]` block.
 - macOS or Linux (the skill assumes `bash`/`zsh`).
 
 ## When to use vs. terminal

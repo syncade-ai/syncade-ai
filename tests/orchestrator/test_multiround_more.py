@@ -80,10 +80,94 @@ def test_advance_branch_ref_routes_git_calls_through_run_subprocess_with_timeout
     )
 
     assert status == "advanced"
+    expected_ancestor_argv = [
+        "git",
+        "--no-replace-objects",
+        "merge-base",
+        "--is-ancestor",
+        starting_sha,
+        ending_sha,
+    ]
     assert calls == [
-        (["git", "merge-base", "--is-ancestor", starting_sha, ending_sha], repo_root, 30.0),
+        (expected_ancestor_argv, repo_root, 30.0),
         (["git", "update-ref", "refs/heads/main", ending_sha, starting_sha], repo_root, 30.0),
     ]
+
+
+def test_advance_branch_ref_replace_ref_cannot_bypass_ancestor_check(tmp_path):
+    """A refs/replace/* on the producer's ending SHA must not trick the
+    is-ancestor check into accepting a non-descendant commit.
+
+    Attack: replace ending_sha with a fake commit whose parent IS starting_sha.
+    Without --no-replace-objects git sees ending_sha as a descendant of
+    starting_sha and allows the fast-forward; the real (unrelated) ending_sha
+    then lands on the branch.  With the flag the real graph is used."""
+    import os
+
+    _ENV = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+
+    def _g(cwd: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **_ENV},
+        ).stdout.strip()
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _g(repo, "init", "-q", "-b", "main")
+    _g(repo, "config", "commit.gpgsign", "false")
+    (repo / "a.txt").write_text("A\n")
+    _g(repo, "add", "-A")
+    _g(repo, "commit", "-m", "A")
+    starting_sha = _g(repo, "rev-parse", "HEAD")
+
+    # Create an orphan commit unrelated to main — this will be ending_sha.
+    _g(repo, "checkout", "--orphan", "orphan")
+    _g(repo, "rm", "-rf", "--cached", ".")
+    (repo / "orphan.txt").write_text("orphan\n")
+    _g(repo, "add", "-A")
+    _g(repo, "commit", "-m", "orphan")
+    ending_sha = _g(repo, "rev-parse", "HEAD")
+    _g(repo, "checkout", "-q", "main")
+
+    # Build a fake commit whose parent IS starting_sha and replace ending_sha with it.
+    fake_tree = _g(repo, "rev-parse", "HEAD^{tree}")
+    fake_commit = _g(repo, "commit-tree", fake_tree, "-p", starting_sha, "-m", "fake")
+    _g(repo, "update-ref", f"refs/replace/{ending_sha}", fake_commit)
+
+    snapshot = Snapshot(
+        repo_root=repo,
+        commit_sha=starting_sha,
+        branch="main",
+        base_ref=None,
+        diff_text="",
+        dirty_state="clean",
+    )
+    pr = ProducerResult(
+        outcome="committed",
+        starting_sha=starting_sha,
+        ending_sha=ending_sha,
+        duration_seconds=0.0,
+        output=ProducerOutput(narrative_text=""),
+        error=None,
+        raw_subprocess_result=None,
+    )
+
+    status = _advance_branch_ref(
+        repo_root=repo, snapshot=snapshot, producer_result=pr, logger=Logger("quiet")
+    )
+    assert status == "non_descendant", (
+        f"replacement ref bypassed the ancestor check: got {status!r}"
+    )
 
 
 class TestMultiRoundLoop:

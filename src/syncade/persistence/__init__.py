@@ -77,6 +77,9 @@ from .decision_needed import (
     OPERATOR_DECISION_FILENAME as OPERATOR_DECISION_FILENAME,
 )
 from .decision_needed import (
+    persist_deactivated_blockers_decision_needed as persist_deactivated_blockers_decision_needed,
+)
+from .decision_needed import (
     persist_decision_needed as persist_decision_needed,
 )
 from .decision_needed import (
@@ -161,6 +164,7 @@ __all__ = [
     "TestRunArtifactPaths",
     "persist_check_result",
     "persist_current_findings_md",
+    "persist_deactivated_blockers_decision_needed",
     "persist_decision_needed",
     "persist_findings_md",
     "read_operator_decision",

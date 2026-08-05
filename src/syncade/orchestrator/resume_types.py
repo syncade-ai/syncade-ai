@@ -134,6 +134,7 @@ class ResumePlan:
     syncade_version: str = ""
     config_snapshot_path: Path | None = None
     base_ref: str | None = None
+    base_oid: str | None = None
     budget_aborted_before_producer_round: int | None = None
 
 

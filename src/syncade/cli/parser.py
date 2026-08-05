@@ -94,7 +94,7 @@ def _max_rounds(value: str) -> int:
 
     The ceiling was raised from 3 to 10 (PR-v2-31); it is a
     typo-guard, not the runaway-protection mechanism —
-    budget_tokens/budget_usd and the per-round timeout are.
+    budget_tokens/budget_usd and the per-subprocess timeout are.
     """
     try:
         rounds = int(value)
@@ -196,7 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Start from a bundled config preset: `cheap` (single pass, no "
         "producer loop), `balanced` (the shipped defaults), or `thorough` "
-        "(full rounds + double the per-reviewer timeout). Your "
+        "(full rounds + double the per-subprocess timeout). Your "
         ".syncade/config.toml still layers on top (user file wins). Presets "
         "vary only rounds/timeout — never the reviewer model or effort tier.",
     )
@@ -249,8 +249,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         type=_positive_float,
         default=None,
-        help="Per-reviewer timeout in seconds (must be > 0). Overrides "
-        "`[loop] timeout_seconds` in .syncade/config.toml (default 1800, "
+        help="Per-subprocess timeout in seconds (must be > 0) — the fallback "
+        "wall-clock cap for every leg (reviewers, judge, test, checks, producer). "
+        "Overrides `[loop] timeout_seconds` in .syncade/config.toml (default 1800, "
         "i.e. 30 minutes).",
     )
     parser.add_argument(
@@ -315,6 +316,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override ONE reviewer's wall-clock timeout for this run (seconds, > 0). NAME is a "
         "reviewer's `name`; repeatable. Overrides that reviewer's `timeout_seconds` (else the "
         "loop timeout). Bad value or unknown NAME fails exit 50.",
+    )
+    parser.add_argument(
+        "--two-dot",
+        action="store_true",
+        help="Diff the literal <base>..HEAD range instead of from the branch "
+        "point (the default, equivalent to git's <base>...HEAD). Use when you "
+        "want everything between the two commits. WARNING: if your branch is "
+        "behind its base, commits that landed on the base but not on your "
+        "branch appear as DELETIONS in the reviewed diff, and the producer is "
+        "handed those phantom deletions as work.",
     )
     parser.add_argument(
         "--force-dirty",

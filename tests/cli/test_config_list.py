@@ -139,7 +139,7 @@ def test_list_all_shows_full_surface(tmp_path, monkeypatch, capsys):
         "producer.thinking",
         "retry.max_retries",
         "gc.keep",
-        "review.include_producer_summary",
+        "review.strip_repo_context_files",
         "drafter.model",  # cold actor (CLI-only in the TUI)
         "loop.budget_tokens",  # CLI-only loop knob
     ):

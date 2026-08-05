@@ -11,7 +11,7 @@ import sys
 
 from syncade.exit_codes import CLI_USAGE_ERROR
 
-from .modes import _reject_config_mode_conflicts
+from .modes import _reject_config_mode_conflicts, _reject_diff_base_flags
 
 
 def validate_command_shape(args, parser) -> int | None:
@@ -85,6 +85,16 @@ def validate_command_shape(args, parser) -> int | None:
             file=sys.stderr,
         )
         return 2
+    # --base "" is always invalid: take_snapshot treats an empty string as absent
+    # (``if base_ref:`` guard), silently falling back to the no-diff full-HEAD
+    # path. Catch it before any filesystem work so the operator gets a clear
+    # usage error rather than a silent wrong diff.
+    if args.base is not None and not args.base:
+        print(
+            "[syncade] error: --base requires a non-empty ref; got an empty string",
+            file=sys.stderr,
+        )
+        return CLI_USAGE_ERROR
     # --resume reuses the original run's base_ref from run-init.json.
     if args.resume and args.base is not None:
         print(
@@ -109,6 +119,30 @@ def validate_command_shape(args, parser) -> int | None:
             file=sys.stderr,
         )
         return 2
+    # --two-dot selects a diff RANGE, and a resumed run has no range left to
+    # select: run-init.json records the base OID the original run already
+    # resolved, so the resumed diff is taken against that pinned commit under
+    # either mode. Accepting the flag here would silently do nothing.
+    if args.two_dot and args.resume:
+        print(
+            "[syncade] error: --two-dot cannot be combined with --resume; the "
+            "resumed run diffs against the base OID recorded in run-init.json, "
+            "which the original run already resolved",
+            file=sys.stderr,
+        )
+        return 2
+    # --two-dot switches the diff mode from three-dot (branch-point) to literal
+    # two-dot (base..HEAD), so it is only meaningful when a base is also supplied.
+    # Without --base/--scope there is no range to switch, and the flag would be
+    # silently accepted but do nothing — reject it up front.
+    if args.two_dot and args.base is None and args.scope is None:
+        print(
+            "[syncade] error: --two-dot requires --base or --scope; it selects the "
+            "literal base..HEAD range instead of the default branch-point diff, "
+            "which only has meaning when a base is also provided",
+            file=sys.stderr,
+        )
+        return CLI_USAGE_ERROR
     # --force-drift only has meaning during resume.
     if args.force_drift and not args.resume:
         print(
@@ -291,6 +325,12 @@ def validate_command_shape(args, parser) -> int | None:
             file=sys.stderr,
         )
         return 2
+    # --install-skill is a file-copy one-shot mode; it renders no reviewer diff,
+    # so --base / --scope / --two-dot are meaningless and would be silently ignored.
+    if args.install_skill is not None:
+        rejection = _reject_diff_base_flags(args, "--install-skill")
+        if rejection is not None:
+            return rejection
     _config_conflict = _reject_config_mode_conflicts(args)
     if _config_conflict is not None:
         return _config_conflict

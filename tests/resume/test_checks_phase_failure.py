@@ -124,3 +124,31 @@ class TestChecksPhaseFailureClassification:
         # Persisted surface: the manifest that round would write.
         manifest = _clean_manifest_with_checks([_check_manifest_entry(check)])
         assert _round_manifest_indicates_phase_failure(manifest) is True
+
+
+class TestDiffMalformedPhaseFailure:
+    """Regression: a round with diff_filter_refusal_headers must be classified
+    as a phase failure so plan_resume retries it rather than treating it as a
+    cleanly-completed round that degenerates into a ResumeError."""
+
+    def _diff_malformed_manifest(self) -> dict:
+        return {
+            "reviewers": [],
+            "synthesizer": None,
+            "test_run": None,
+            "test_skip_reason": None,
+            "producer": None,
+            "round_exit_code": 60,
+            "diff_filter_refusal_headers": ["diff --git a/bad.py b/bad.py"],
+        }
+
+    def test_diff_filter_refusal_headers_is_phase_failure(self):
+        """A manifest with diff_filter_refusal_headers → phase failure (retry)."""
+        manifest = self._diff_malformed_manifest()
+        assert _round_manifest_indicates_phase_failure(manifest) is True
+
+    def test_absent_diff_filter_refusal_headers_not_phase_failure(self):
+        """None-valued diff_filter_refusal_headers does not trigger."""
+        manifest = self._diff_malformed_manifest()
+        manifest["diff_filter_refusal_headers"] = None
+        assert _round_manifest_indicates_phase_failure(manifest) is False

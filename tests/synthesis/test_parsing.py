@@ -360,7 +360,7 @@ class TestParseSynthesizerOutputRejects:
 
 class TestParseSynthesizerExtractorReuse:
     """Pin that the synthesizer parser benefits from the shared PR-5.6
-    hardening via :func:`_extract_json_candidates`. The reviewer
+    hardening via :mod:`syncade.findings_json`. The reviewer
     parser is the originating tested-against-reality home for these
     cases; the synthesizer test suite asserts the same shapes flow
     through unaltered.
@@ -369,7 +369,7 @@ class TestParseSynthesizerExtractorReuse:
     def test_inline_jsx_braces_then_real_synth_json_at_end(self) -> None:
         """Acme-style JSX trap, synthesizer-style. A JSX-shaped
         fragment in prose precedes the synthesizer's final output;
-        the position-sorted scan returns the latest-position
+        the selector returns the sole candidate
         validating candidate (the real synthesizer JSON), not the
         JSX (which fails json.loads)."""
         raw = (
@@ -389,16 +389,12 @@ class TestParseSynthesizerExtractorReuse:
         out = parse_synthesizer_output(raw)
         assert isinstance(out, SynthesizerOutput)
 
-    def test_multiple_fences_last_one_wins(self) -> None:
-        """Multiple JSON fences: the last is the real output, earlier
-        ones are illustrative examples in the narrative. Same rule
-        as the reviewer parser — position-sorted DESC iteration."""
-        example = _synth_json(
-            summary="this is the example, not the real output",
-        )
-        real = _synth_json(
-            summary="this is the actual synthesis output",
-        )
+    def test_multiple_json_fences_last_one_wins(self) -> None:
+        """Same rule as the reviewer parser: the LAST ```json fence is the
+        output. Multiple are not an error — the anthropic adapter joins every
+        result turn, so more than one is a normal shape."""
+        example = _synth_json(summary="this is the example, not the real output")
+        real = _synth_json(summary="this is the actual synthesis output")
         raw = (
             "Here's an example shape:\n\n"
             "```json\n" + example + "\n```\n\n"
@@ -445,38 +441,28 @@ class TestSharedExtractorIsActuallyShared:
     the same callable the reviewer parser uses, not a near-copy.
     """
 
-    def test_extractor_is_singular(self) -> None:
-        # If a future refactor accidentally re-creates a duplicate
-        # extractor in synthesis.py, this test surfaces it: both
-        # modules must reach the same function object.
-        from syncade import findings as findings_mod
-        from syncade import synthesis as synthesis_mod
-
-        assert findings_mod._extract_json_candidates is not None
-        # synthesis.py imports it at module load; the symbol is the
-        # imported reference, identical to the source.
-        assert synthesis_mod._extract_json_candidates is findings_mod._extract_json_candidates
-
-    def test_extractor_returns_desc_sorted_candidates(self) -> None:
-        from syncade.findings import _extract_json_candidates
+    def test_selector_returns_exactly_one_block_the_latest(self) -> None:
+        """PR-h-01: the selector returns ONE block, not a fallback chain,
+        and it is the latest by document position."""
+        from syncade.findings_json import _select_verdict_block
 
         raw = 'Early: {"id": "early"}\nLater: {"id": "later"}'
-        candidates = _extract_json_candidates(raw)
-        assert [content for _, content in candidates] == [
-            '{"id": "later"}',
-            '{"id": "early"}',
-        ]
-        positions = [c[0] for c in candidates]
-        assert positions == sorted(positions, reverse=True)
+        block, which = _select_verdict_block(raw)
+        assert block == '{"id": "later"}'
+        assert "bare JSON object" in which
 
-    def test_extractor_handles_braces_inside_strings_and_nested_objects(self) -> None:
-        from syncade.findings import _extract_json_candidates
+    def test_selector_handles_braces_inside_strings_and_nested_objects(self) -> None:
+        from syncade.findings_json import _select_verdict_block
 
         raw = 'noise {"message": "literal } and { braces", "nested": {"ok": true}} trailing'
-        candidates = _extract_json_candidates(raw)
-        assert candidates == [
-            (
-                raw.index("{"),
-                '{"message": "literal } and { braces", "nested": {"ok": true}}',
-            )
-        ]
+        block, _ = _select_verdict_block(raw)
+        assert block == '{"message": "literal } and { braces", "nested": {"ok": true}}'
+
+    def test_selector_ignores_objects_inside_labeled_fences(self) -> None:
+        """The code-sample mask is what stops a ```python illustration
+        from being reachable by the bare-object scan."""
+        from syncade.findings_json import _select_verdict_block
+
+        raw = '{"id": "real"}\n\nExample:\n```python\n{"id": "illustration"}\n```\n'
+        block, _ = _select_verdict_block(raw)
+        assert block == '{"id": "real"}'

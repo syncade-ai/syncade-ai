@@ -327,7 +327,7 @@ class TestSynthesizerPhase:
                             reviewer_name="rv1",
                             original_severity="blocker",
                             original_index=0,
-                            original_description="rv1 flagged",
+                            original_description="missing thing",
                         )
                     ],
                     dismissed=True,
@@ -382,7 +382,7 @@ class TestSynthesizerPhase:
                             reviewer_name="rv1",
                             original_severity="blocker",
                             original_index=0,
-                            original_description="comment redundant",
+                            original_description="missing thing",
                         )
                     ],
                     severity_change_rationale=(

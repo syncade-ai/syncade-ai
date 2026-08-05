@@ -51,7 +51,11 @@ def _reject_diff_base_flags(args, mode_flag: str) -> int | None:
     """
     offenders = [
         flag
-        for flag, used in (("--base", args.base is not None), ("--scope", args.scope is not None))
+        for flag, used in (
+            ("--base", args.base is not None),
+            ("--scope", args.scope is not None),
+            ("--two-dot", getattr(args, "two_dot", False)),
+        )
         if used
     ]
     if offenders:
@@ -141,6 +145,7 @@ def _reject_config_mode_conflicts(args) -> int | None:
             ("--timeout", args.timeout is not None),
             ("--preset", args.preset is not None),
             ("--worktree-base", args.worktree_base is not None),
+            ("--two-dot", getattr(args, "two_dot", False)),
             ("--force-dirty", getattr(args, "force_dirty", False)),
             ("--allow-default-branch", getattr(args, "allow_default_branch", False)),
             ("--install-skill", args.install_skill is not None),
@@ -463,10 +468,11 @@ def _run_draft_spec(args) -> int:
         base_ref = _resolve_scope_base(repo_root, args.scope, logger)
         if base_ref is None:
             return WORKTREE_ERROR
+    two_dot = getattr(args, "two_dot", False)
     diff = ""
     if base_ref is not None:
         try:
-            diff = take_snapshot(repo_root, base_ref=base_ref).diff_text
+            diff = take_snapshot(repo_root, base_ref=base_ref, three_dot=not two_dot).diff_text
         except SnapshotError as exc:
             print(f"[syncade] snapshot error: {exc}", file=sys.stderr)
             return WORKTREE_ERROR
@@ -516,9 +522,10 @@ def _run_draft_spec(args) -> int:
         f"{len(result.output.assumptions)} assumption(s); {result.duration_seconds:.1f}s)"
     )
     base_suffix = f" --base {base_ref}" if base_ref else ""
+    two_dot_suffix = " --two-dot" if two_dot else ""
     print(
         "[syncade] REVIEW + edit the draft (especially 'Assumptions to confirm'), "
-        f"then run: syncade {out_path}{base_suffix}"
+        f"then run: syncade {out_path}{base_suffix}{two_dot_suffix}"
     )
     return SUCCESS
 

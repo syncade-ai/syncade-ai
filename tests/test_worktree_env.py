@@ -97,6 +97,18 @@ def test_prepends_worktree_src_to_pythonpath(tmp_path):
     assert entries[1] == str(tmp_path / "src")
 
 
+def test_git_no_replace_objects_is_set(tmp_path):
+    """Git subprocesses in a worktree must not honor replacement refs.
+
+    A producer worktree can write to refs/replace/* in the shared common
+    dir, so without GIT_NO_REPLACE_OBJECTS a reviewer's `git show HEAD:f.py`
+    would silently return replacement object content rather than the object
+    named by the snapshot OID.
+    """
+    env = worktree_scoped_env(tmp_path)
+    assert env.get("GIT_NO_REPLACE_OBJECTS") == "1"
+
+
 def test_preserves_inherited_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("SYNCADE_PROBE_SENTINEL", "keep-me")
     env = worktree_scoped_env(tmp_path)

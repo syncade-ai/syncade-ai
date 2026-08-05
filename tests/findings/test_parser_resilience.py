@@ -116,24 +116,13 @@ class TestParserResilience:
     exploded on json.loads. The actual NO-SHIP verdict at the end of
     the response was lost.
 
-    The PR-5.6 parser contract (post-review-round-2):
-
-    - Reviewers are instructed to wrap the final verdict in a
-      ``` ```json ``` fence and avoid JSON-looking fragments elsewhere.
-    - Parser behavior is defensive: it collects every fenced
-      ``json``/unlabeled block AND every balanced top-level
-      ``{...}`` block as ``(start_pos, content)`` candidates, sorts
-      by start_pos descending, and returns the LATEST candidate that
-      validates as a ``ReviewerOutput``. Whole-string fallback as a
-      final defensive attempt.
-    - Therefore the verdict JSON should be the last JSON-like block
-      in the response — fenced or bare; whichever appears later
-      wins. An earlier fenced example does NOT mask a later real
-      verdict (review fix P1.4).
-    - The discriminator at every candidate is twofold: it must parse
-      as JSON AND validate against ``ReviewerOutput``. JSX braces
-      fail both, schema illustrations fail validation, the verdict
-      block passes both — the latest validating one wins.
+    PR-h-01 replaced the "try every candidate, keep the first that validates"
+    contract these tests were written against — that chain was itself a
+    false-SHIP path. Exactly one block is now selected and a failure is a
+    failure; see :mod:`syncade.findings_json` for the current rule and
+    ``test_verdict_block_selection.py`` for its adversarial cases. What survives
+    here is the resilience these tests were really pinning: JSON-shaped
+    fragments in reviewer prose must not cost a real verdict.
     """
 
     _FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "pr-5.6-parser-regression"
@@ -178,7 +167,7 @@ class TestParserResilience:
     def test_fenced_json_with_narrative_around_it(self):
         """Fenced JSON parses cleanly when surrounded by free-form
         narrative. With only one valid candidate (the fence content),
-        the position-sorted scan returns it regardless of any
+        the selector returns it regardless of any
         non-validating brace fragments in the surrounding prose."""
         raw = (
             "Here is my analysis of the diff.\n\n"
@@ -197,11 +186,11 @@ class TestParserResilience:
         out = parse_reviewer_output(raw)
         assert out.verdict == "SHIP"
 
-    def test_multiple_fences_last_one_wins(self):
-        """When multiple JSON fences appear, the last one is the
-        verdict — earlier fences are typically illustrative examples
-        in the narrative. Last-to-first iteration finds the verdict
-        without the parser having to understand the prose around them."""
+    def test_multiple_json_fences_last_one_wins(self):
+        """The LAST ```json fence is the verdict. Failing closed on multiple
+        was tried and reverted: the anthropic adapter joins every result turn,
+        so a normal claude response can legitimately carry two differing json
+        fences with the real verdict last (recorded 2026-05-30 run)."""
         raw = (
             "Here's an example of what the schema looks like:\n\n"
             "```json\n" + _verdict_json("SHIP") + "\n```\n\n"
@@ -212,9 +201,10 @@ class TestParserResilience:
         assert out.verdict == "NO-SHIP"
 
     def test_first_fence_invalid_second_fence_valid(self):
-        """If the first fence's content fails ReviewerOutput
-        validation, the parser falls through to the next candidate
-        rather than raising on the first failure."""
+        """An earlier INVALID fence does not poison a valid later one — the
+        last fence is simply the verdict. (The no-fallback rule is the
+        converse: an invalid LAST fence never defers to an earlier valid one;
+        see test_verdict_block_selection.py.)"""
         raw = (
             "```json\n"
             '{"not_a_verdict": "field"}\n'
@@ -267,11 +257,14 @@ class TestParserResilience:
         assert out.verdict == "SHIP"
 
     def test_no_valid_json_anywhere_raises_with_useful_message(self):
-        """When NO candidate block validates as a ReviewerOutput, the
-        error message must include: (a) the count of fenced + brace
-        candidates attempted, (b) a snippet of the first attempted
-        candidate, (c) a hint pointing at the reviewer's .stdout file
-        for the raw response."""
+        """When the selected verdict block does not decode, the error
+        message must include: (a) which block was selected, (b) a snippet
+        of it, (c) the explicit statement that no earlier block was
+        considered, and (d) a hint pointing at the reviewer's .stdout file.
+
+        PR-h-01 replaced the candidate-attempt count with the identity of
+        the one selected block — there is no longer a chain to count.
+        """
         raw = (
             "I tried to find issues but there is no JSON here.\n"
             "Just prose. With some {curly braces} and `code samples`."
@@ -279,22 +272,14 @@ class TestParserResilience:
         with pytest.raises(ReviewerOutputError) as exc_info:
             parse_reviewer_output(raw)
         msg = str(exc_info.value)
-        assert "attempted" in msg.lower()
+        assert "the whole response" in msg  # which block was selected
+        assert "no earlier block is considered" in msg
         assert ".stdout" in msg
 
-    def test_diagnostic_snippet_is_the_first_attempted_candidate(self):
-        """Round-2 review fix: the diagnostic message says "first
-        attempted snippet". Under the position-sorted strategy, the
-        FIRST attempted candidate is the one with the LATEST start
-        position (we sort descending and try in order). This test
-        pins that the snippet text matches the latest-position
-        candidate's content, not the earliest.
-
-        Two JSON object candidates: an early one with content `EARLY`
-        and a later one with content `LATER`. Neither validates as
-        ReviewerOutput, so both fail and the parser raises. The error snippet
-        must be from the LATER block (the one we tried first), not the earlier one.
-        """
+    def test_diagnostic_snippet_is_the_selected_block(self):
+        """The exit-70 message must quote the block that was actually
+        SELECTED, so the operator debugs the right bytes. With no ```json
+        fence, that is the last bare object — here the `LATER` one."""
         raw = (
             'Early junk: {"not_a_verdict": "EARLY-MARKER"}\n\n'
             'Later junk: {"not_a_verdict": "LATER-MARKER"}'
@@ -302,19 +287,15 @@ class TestParserResilience:
         with pytest.raises(ReviewerOutputError) as exc_info:
             parse_reviewer_output(raw)
         msg = str(exc_info.value)
-        assert "LATER-MARKER" in msg, (
-            "diagnostic snippet must be the first-attempted (latest-position) "
-            f"candidate, got: {msg!r}"
-        )
+        assert "LATER-MARKER" in msg, f"diagnostic snippet must be the SELECTED block, got: {msg!r}"
         assert "EARLY-MARKER" not in msg, (
-            "diagnostic snippet must NOT be the earliest-position candidate "
-            "— that's the LAST attempted, not the first"
+            "diagnostic snippet must not quote a block that was never selected"
         )
 
     def test_pure_whole_string_json_no_fence_no_narrative(self):
         """When the input is just bare JSON (no fence, no narrative)
-        the raw-decode candidate scan finds it as the sole candidate and the
-        position-sorted parser returns it. The whole-string
+        the bare-object scan finds it as the sole candidate and the
+        selector returns it. The whole-string
         fallback is also available defensively."""
         raw = _verdict_json("SHIP")
         out = parse_reviewer_output(raw)
@@ -327,16 +308,19 @@ class TestParserResilience:
         out = parse_reviewer_output(raw)
         assert out.verdict == "SHIP"
 
-    def test_fenced_example_earlier_does_not_beat_later_real_verdict(self):
-        """PR-5.6 review fix (P1.4): position-sorted extraction must NOT
-        return an EARLIER fenced ReviewerOutput-shaped example when a
-        REAL verdict is later in the document. Latest position wins.
+    def test_KNOWN_RESIDUAL_json_fenced_example_beats_a_later_bare_verdict(self):
+        """PR-h-01 accepts this residual, reversing PR-5.6's synthetic case.
 
-        Pre-fix: parse_reviewer_output collected fences and tried them
-        last-to-first; if any fence validated, it returned without
-        considering brace blocks. A schema example wrapped in
-        ```json early in a reviewer's response would be returned as
-        the verdict, hiding the real bare-JSON verdict at the end."""
+        A ```json fence is now authoritative, so an actor that labels its
+        EXAMPLE ```json and leaves its real verdict BARE loses to the example.
+        The alternative — position across both kinds — was measured worse: it
+        let a trailing bare object, a trailing unlabeled fence, and an ordinary
+        JSON snippet in closing prose each replace a properly-fenced verdict.
+
+        This residual inverts every template instruction, and unlike those it
+        cannot happen to an actor that follows the contract. PR-5.6's REAL
+        recorded incident (claude-reviewer-prose-with-jsx.stdout: no fences at
+        all, bare verdict after JSX prose) is unaffected and still passes."""
         raw = (
             "Here's the schema I'll output to:\n\n"
             "```json\n" + _verdict_json("SHIP") + "\n```\n\n"
@@ -348,11 +332,7 @@ class TestParserResilience:
         assert fence_idx != -1 and verdict_idx != -1
         assert fence_idx < verdict_idx, "fixture: example must precede real verdict"
 
-        out = parse_reviewer_output(raw)
-        assert out.verdict == "NO-SHIP", (
-            f"parser returned the early example fence {out.verdict!r} "
-            "instead of the later real verdict"
-        )
+        assert parse_reviewer_output(raw).verdict == "SHIP"
 
     def test_unmatched_brace_in_prose_before_valid_verdict(self):
         """PR-5.6 review fix (P1.5): an unmatched ``{`` in prose must
@@ -361,7 +341,7 @@ class TestParserResilience:
 
         Pre-fix: the old object extractor's single depth counter went 0 -> 1
         on the unmatched prose ``{``, never returned to 0, and emitted
-        zero candidate blocks even though the real verdict JSON was
+        no verdict block even though the real verdict JSON was
         balanced and at the end."""
         raw = (
             "Looking at the diff: the code includes "
@@ -390,33 +370,57 @@ class TestParserResilience:
         out = parse_reviewer_output(raw)
         assert out.verdict == "SHIP"
 
-    def test_json5_fence_falls_through_to_raw_decode_scan(self):
-        """PR-5.6 review fix (P1.6): a ```json5 (or other label) fence
-        is not a JSON-labeled fence per our rules. Its content should
-        still be findable via the raw-decode candidate scan, and an EARLIER ```json
-        example should NOT win against the real verdict inside the
-        json5 fence."""
+    def test_KNOWN_RESIDUAL_mislabeled_verdict_fence_after_an_example_fence(self):
+        """PR-h-01 reverses the PR-5.6 disposition here, deliberately, and this
+        test pins the residual that reversal accepts.
+
+        A ```json5 fence used to match no fence at all (the label class was
+        [a-zA-Z] and `json5` has a digit), so its contents leaked back in via
+        the bare-object scan. That made the rule arbitrary — a verdict
+        mislabeled ```python failed closed while the same verdict mislabeled
+        ```json5 was accepted — and, worse, it left the trailing-illustration
+        override reachable under a ```json5 label, which needs no adversarial
+        model at all.
+
+        Every labeled fence is now a code sample. The cost is this shape: the
+        reviewer mislabels its VERDICT fence *and* emitted an earlier example
+        fence, so the example is the only verdict-eligible block and wins. Two
+        model mistakes are required, and both are explicitly warned against in
+        the template; the trailing-illustration case needed zero. The parser
+        cannot tell a typo'd label from a code sample, so this is a real limit,
+        not an oversight — the sentinel envelope (brief D4 option b) is the fix
+        if a dogfood shows it happening.
+
+        With no earlier example fence, the same mislabel fails closed
+        (`test_mislabeled_verdict_fence_alone_is_exit_70`).
+        """
         raw = (
             "Example schema:\n\n"
             "```json\n" + _verdict_json("SHIP") + "\n```\n\n"
             "Real verdict (json5-style trailing content):\n\n"
             "```json5\n" + _verdict_json("NO-SHIP") + "\n```\n"
         )
-        out = parse_reviewer_output(raw)
-        assert out.verdict == "NO-SHIP"
+        assert parse_reviewer_output(raw).verdict == "SHIP"
 
-    def test_hyphenated_label_fence_falls_through(self):
-        """A ```my-language fence: regex doesn't match (hyphen not in
-        [a-zA-Z]), content found via the raw-decode candidate scan if valid."""
+    def test_mislabeled_verdict_fence_alone_is_exit_70(self):
+        """The same mislabel with nothing else to fall back to fails closed
+        rather than silently reading a code sample as a verdict."""
+        raw = "Real verdict:\n\n```json5\n" + _verdict_json("NO-SHIP") + "\n```\n"
+        with pytest.raises(ReviewerOutputError):
+            parse_reviewer_output(raw)
+
+    def test_hyphenated_label_fence_is_a_code_sample(self):
+        """```my-language is a labeled fence like any other: its contents are
+        never a verdict candidate. Same reversal as the json5 case above."""
         raw = "```my-language\n" + _verdict_json("SHIP") + "\n```\n"
-        out = parse_reviewer_output(raw)
-        assert out.verdict == "SHIP"
+        with pytest.raises(ReviewerOutputError):
+            parse_reviewer_output(raw)
 
     def test_python_fence_is_not_treated_as_json_candidate(self):
         """A ``​``​``​`` python (or other-language) fence
         is not a JSON-labeled fence — it should not be tried as a
-        verdict candidate. Falls through to the raw-decode candidate scan, which
-        finds the real verdict at the end."""
+        verdict candidate; its contents are masked out entirely, and the
+        bare-object scan finds the real verdict at the end."""
         raw = "```python\ndef foo():\n    return {'a': 1}\n```\n\n" + _verdict_json("SHIP")
         out = parse_reviewer_output(raw)
         assert out.verdict == "SHIP"

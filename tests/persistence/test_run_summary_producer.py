@@ -228,6 +228,53 @@ class TestRunSummaryProducerSection:
         assert "**Decision needed:** X or Y?" in text
         assert "decision-needed.md" in text
 
+    def test_honored_escalation_next_steps_no_prior_advance(self, tmp_path):
+        """When no prior round advanced the branch, the escalation next-steps must
+        say 'No branch was advanced by this round', not the prior (stale) unconditional
+        'WITHOUT advancing any branch'."""
+        round_dir = _make_round_dir(tmp_path)
+        text = persist_run_summary(
+            round_dir,
+            self._snapshot(),
+            self._build_dispatch(),
+            exit_code=10,
+            started_at=_FIXED_STARTED_AT,
+            synth_result=None,
+            test_result=None,
+            test_skip_reason="reviewer_failed",
+            producer_result=self._producer_escalated(),
+            producer_provider="anthropic",
+            producer_model="sonnet",
+            escalation_honored=True,
+            branch_already_advanced=False,
+        ).read_text()
+        ns = text[text.find("## Next steps") :]
+        assert "No branch was advanced by this round" in ns
+        assert "An earlier round" not in ns
+
+    def test_honored_escalation_next_steps_with_prior_advance(self, tmp_path):
+        """When a prior round already advanced the branch, the escalation next-steps
+        must say so rather than claiming no branch was advanced."""
+        round_dir = _make_round_dir(tmp_path)
+        text = persist_run_summary(
+            round_dir,
+            self._snapshot(),
+            self._build_dispatch(),
+            exit_code=10,
+            started_at=_FIXED_STARTED_AT,
+            synth_result=None,
+            test_result=None,
+            test_skip_reason="reviewer_failed",
+            producer_result=self._producer_escalated(),
+            producer_provider="anthropic",
+            producer_model="sonnet",
+            escalation_honored=True,
+            branch_already_advanced=True,
+        ).read_text()
+        ns = text[text.find("## Next steps") :]
+        assert "An earlier round already advanced your branch" in ns
+        assert "No branch was advanced" not in ns
+
     def test_rejected_escalation_renders_stall_not_checkpoint(self, tmp_path):
         """PR-24: when the coverage guard REJECTED the escalation
         (``escalation_honored=False``, the default), the summary's producer

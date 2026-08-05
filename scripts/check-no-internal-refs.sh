@@ -18,6 +18,30 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
+# --- Which tree am I on? -------------------------------------------------------------------------
+# On the DEV tree a raw scan is meaningless and always red: the unshipped files are SUPPOSED to be
+# here, and shipped files legitimately reference them right up until `oss-scrub.py` rewrites those
+# refs during staging. Scanning it answers a question nobody asked, which is why this gate — alone
+# among the repo's three — was never wired into CI, and why "it is red" outlived three audits.
+#
+# The question that matters on the dev tree is "WOULD THE PUBLIC SNAPSHOT BE CLEAN?". So answer it:
+# stage + scrub exactly as a release would, then re-run this same scan over that snapshot. Green
+# here therefore means the same thing it means at release time, and it CANNOT go stale — it runs
+# the real staging, not a description of it.
+#
+# `scripts/oss-scrub.py` is the discriminator: a tree that gets scrubbed before shipping is by
+# definition the dev tree. The staged snapshot does not contain it (not on the allowlist), so the
+# recursion terminates after exactly one hop, with no flag to keep in sync.
+if [ -f scripts/oss-scrub.py ] && [ -z "${SYNCADE_OSS_SNAPSHOT:-}" ]; then
+  echo "dev tree — verifying the PUBLIC SNAPSHOT this tree would produce:" >&2
+  self="$PWD/scripts/check-no-internal-refs.sh"   # resolve BEFORE cd'ing into the snapshot
+  stage="$(scripts/oss-stage.sh)"
+  trap 'rm -rf "$stage"' EXIT
+  git -C "$stage" init -q -b main && git -C "$stage" add -A
+  ( cd "$stage" && SYNCADE_OSS_SNAPSHOT=1 exec "$self" )
+  exit $?
+fi
+
 fail=0
 report() { # $1 = header, remaining = grep hits
   local header="$1"; shift

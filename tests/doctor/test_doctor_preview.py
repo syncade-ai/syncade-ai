@@ -17,9 +17,13 @@ reads are patched there.
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+
+import pytest
 
 from syncade import doctor, doctor_preview
 from syncade.config import SyncadeConfig
+from syncade.doctor_preview import check_plan
 from syncade.metrics.schema import ActorStatRow, RunRow
 from syncade.pricing_config import PricingConfig
 from tests.doctor._helpers import _repo_no_default
@@ -43,7 +47,10 @@ class TestPlanCheck:
             if c.name == "plan"
         )
         assert plan.status == "ok"
-        assert "diff vs" in plan.detail
+        # Assert the INTENT (a sized diff against a named base), not the exact
+        # phrasing: PR-h-02c item 4 changed "diff vs <ref>" to "diff from <oid>"
+        # because the ref and the OID diverge under three-dot semantics.
+        assert "file(s)" in plan.detail and "changed line(s)" in plan.detail
 
     def test_bad_base_is_red(self, healthy_env):
         plan = next(
@@ -455,3 +462,69 @@ class TestCostCheck:
             if c.name == "cost"
         )
         assert "non-final NO-SHIP" in cost.detail
+
+
+class TestPlanLabelNamesTheActualBase:
+    """PR-h-02c item 4 (D3): the plan detail must name the OID the diff was actually
+    taken against, not the ref the operator typed.
+
+    Under three-dot they differ whenever the branch is BEHIND its base — exactly the
+    phantom-deletion case increment B fixes — so `diff vs main` read as the advanced tip
+    and understated the preview in the one scenario where it matters most.
+    """
+
+    @staticmethod
+    def _git(repo, *args):
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout
+
+    @pytest.fixture
+    def behind_base(self, tmp_path):
+        g = self._git
+        g(tmp_path, "init", "-q", "-b", "main")
+        g(tmp_path, "config", "user.email", "t@t")
+        g(tmp_path, "config", "user.name", "t")
+        (tmp_path / "s.py").write_text("x = 1\n")
+        g(tmp_path, "add", "-A")
+        g(tmp_path, "commit", "-qm", "root")
+        g(tmp_path, "checkout", "-qb", "feature")
+        (tmp_path / "mine.py").write_text("m = 1\n")
+        g(tmp_path, "add", "-A")
+        g(tmp_path, "commit", "-qm", "mine")
+        g(tmp_path, "checkout", "-q", "main")
+        (tmp_path / "teammate.py").write_text("t = 1\n")
+        g(tmp_path, "add", "-A")
+        g(tmp_path, "commit", "-qm", "teammate")
+        g(tmp_path, "checkout", "-q", "feature")
+        return tmp_path
+
+    def test_three_dot_names_the_branch_point_not_the_ref_tip(self, behind_base):
+        tip = self._git(behind_base, "rev-parse", "main").strip()
+        point = self._git(behind_base, "merge-base", "main", "HEAD").strip()
+        assert tip[:7] != point[:7], "fixture does not diverge"
+
+        detail = check_plan(
+            behind_base,
+            SyncadeConfig(),
+            base_ref="main",
+            scope=None,
+            two_dot=False,
+            max_rounds=None,
+        ).detail
+
+        assert point[:7] in detail
+        assert tip[:7] not in detail, "presented the advanced tip as the diff base"
+        assert "main" in detail, "operator can no longer tell which ref they asked for"
+
+    def test_two_dot_names_the_ref_tip(self, behind_base):
+        tip = self._git(behind_base, "rev-parse", "main").strip()
+        detail = check_plan(
+            behind_base,
+            SyncadeConfig(),
+            base_ref="main",
+            scope=None,
+            two_dot=True,
+            max_rounds=None,
+        ).detail
+        assert tip[:7] in detail

@@ -10,4 +10,4 @@
 # reintroduce it. Set `[[reviewers]]` yourself in .syncade/config.toml if you truly want that.
 [loop]
 max_rounds = 3          # full loop: reviewers -> synthesizer -> optional test -> producer-if-NO-SHIP
-timeout_seconds = 1800  # 30 min per reviewer (the default)
+timeout_seconds = 1800  # 30 min per subprocess (the default)

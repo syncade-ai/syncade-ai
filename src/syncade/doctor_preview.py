@@ -25,6 +25,11 @@ from pathlib import Path
 
 from syncade.base_resolution import BaseResolutionError, resolve_scope
 from syncade.config import SyncadeConfig
+from syncade.diff_filter import (
+    concealed_destinations,
+    filter_diff_for_reviewer,
+    unidentifiable_sections,
+)
 from syncade.doctor_types import _OK, _RED, DoctorCheck
 from syncade.metrics.aggregate import backfill
 from syncade.metrics.schema import fetch_actor_stats, fetch_runs, open_db
@@ -57,12 +62,71 @@ def _diff_size(diff_text: str) -> tuple[int, int]:
     return files, changed
 
 
+def based_diff_classify(
+    repo_root: Path,
+    config: SyncadeConfig,
+    *,
+    base_ref: str | None,
+    scope: str | None,
+    two_dot: bool,
+) -> str:
+    """Classify a based/scoped diff as ``'dispatch'``, ``'no_changes'``, or ``'malformed'``.
+
+    - ``'dispatch'``: reviewers will run; commit-safety guards apply.
+    - ``'no_changes'``: diff is known-empty; real run exits 0 before dispatch, no commit.
+    - ``'malformed'``: diff has unidentifiable headers; real run exits 60 (diff_malformed),
+      no commit — but this is a failure, not a benign no-op.
+
+    Returns ``'dispatch'`` (conservative: guard applies) on any resolution or snapshot error
+    — the plan check catches those failures with its own red; the branch check must not
+    double-fire."""
+    try:
+        if scope is not None:
+            branch = current_branch_name(repo_root)
+            last = read_last_reviewed(repo_root, branch) if branch else None
+            base = resolve_scope(repo_root, scope, last_reviewed_sha=last).base_sha
+        else:
+            base = base_ref
+        if base is None:
+            return "dispatch"  # full-HEAD path (no diff base), always dispatches
+        snap = take_snapshot(repo_root, base_ref=base, three_dot=not two_dot)
+    except Exception:
+        return "dispatch"  # cannot determine; be conservative
+    if config.review.strip_repo_context_files and unidentifiable_sections(snap.diff_text):
+        return "malformed"
+    if (
+        snap.base_oid is not None
+        and not filter_diff_for_reviewer(snap.diff_text, config.review.strip_repo_context_files)
+        and not concealed_destinations(snap.diff_text, config.review.strip_repo_context_files)
+    ):
+        return "no_changes"
+    return "dispatch"
+
+
+def based_diff_will_dispatch(
+    repo_root: Path,
+    config: SyncadeConfig,
+    *,
+    base_ref: str | None,
+    scope: str | None,
+    two_dot: bool,
+) -> bool:
+    """Whether a based/scoped diff will dispatch reviewers.
+
+    Delegates to :func:`based_diff_classify`; ``'dispatch'`` → True, anything else → False."""
+    return (
+        based_diff_classify(repo_root, config, base_ref=base_ref, scope=scope, two_dot=two_dot)
+        == "dispatch"
+    )
+
+
 def check_plan(
     repo_root: Path,
     config: SyncadeConfig,
     *,
     base_ref: str | None,
     scope: str | None,
+    two_dot: bool = False,
     max_rounds: int | None,
 ) -> DoctorCheck:
     """Preview the plan a real run would execute (C1): the resolved diff base + its size,
@@ -94,8 +158,30 @@ def check_plan(
         )
     try:
         if base is not None:
-            files, changed = _diff_size(take_snapshot(repo_root, base_ref=base).diff_text)
-            diffdesc = f"diff vs {base[:7]}: {files} file(s), {changed} changed line(s)"
+            snap = take_snapshot(repo_root, base_ref=base, three_dot=not two_dot)
+            # A malformed diff exits 60 before dispatch in the real run — surface it as RED
+            # so the cheap-red gate skips live spend (auth/producer-commit). Only applies
+            # when strip targets are configured, matching the _diff_will_dispatch condition.
+            if config.review.strip_repo_context_files and unidentifiable_sections(snap.diff_text):
+                return DoctorCheck(
+                    "plan",
+                    _RED,
+                    f"diff against {base!r} has an ambiguous path header"
+                    " — real run exits 60 (diff_malformed)",
+                    fix=(
+                        "use --two-dot if paths contain ' b/';"
+                        " check strip_repo_context_files config"
+                    ),
+                )
+            files, changed = _diff_size(snap.diff_text)
+            # Name the OID the diff was actually taken against, not the ref the
+            # operator typed. Under three-dot they differ whenever the branch is
+            # behind its base — exactly the phantom-deletion case PR-h-02
+            # increment B fixes — so `diff vs main` read as the advanced tip and
+            # understated the preview in the one scenario it most matters.
+            origin = base if two_dot else f"branch point of {base}"
+            actual = snap.base_oid[:7] if snap.base_oid else base
+            diffdesc = f"diff from {actual} ({origin}): {files} file(s), {changed} changed line(s)"
         else:
             # No-diff-base path still probes snapshot to catch a corrupt git index that
             # would fail the real run's take_snapshot before dispatch.
@@ -237,9 +323,12 @@ def check_cost(config: SyncadeConfig, repo_root: Path, *, max_rounds: int | None
     )
     try:
         conn = open_db(":memory:")  # ephemeral: reads the corpus, writes no file
-        backfill(conn, repo_root / ".syncade" / "runs")
-        runs = fetch_runs(conn)
-        actor_stats = fetch_actor_stats(conn)
+        try:
+            backfill(conn, repo_root / ".syncade" / "runs")
+            runs = fetch_runs(conn)
+            actor_stats = fetch_actor_stats(conn)
+        finally:
+            conn.close()
     except (sqlite3.Error, OSError) as exc:
         return DoctorCheck("cost", _OK, f"metrics unavailable ({exc}); no forward estimate{note}")
     per_round, n = _reviewer_judge_per_round(

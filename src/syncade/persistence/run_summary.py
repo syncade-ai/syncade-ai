@@ -96,6 +96,9 @@ def persist_run_summary(
     resumed_under_drift: bool = False,
     check_results: list[TestRunResult] | None = None,
     escalation_honored: bool = False,
+    branch_already_advanced: bool = False,
+    no_changes_to_review: bool = False,
+    fail_closed_headers: list[str] | None = None,
 ) -> Path:
     """Write ``<round_dir>/summary.md`` — a human-readable run summary.
 
@@ -179,7 +182,12 @@ def persist_run_summary(
 
     run_id = round_dir.parent.name
     started = started_at.strftime("%Y-%m-%d %H:%M:%S UTC")
-    exit_label = _EXIT_CODE_LABELS.get(exit_code, "UNKNOWN")
+    if no_changes_to_review:
+        exit_label = "NO_CHANGES_TO_REVIEW"
+    elif fail_closed_headers is not None:
+        exit_label = "DIFF_MALFORMED"
+    else:
+        exit_label = _EXIT_CODE_LABELS.get(exit_code, "UNKNOWN")
     branch = snapshot.branch or "(detached HEAD)"
 
     lines = [
@@ -242,10 +250,19 @@ def persist_run_summary(
     lines.append("## Synthesizer")
     lines.append("")
     if synth_result is None:
-        lines.append(
-            "- **Outcome:** skipped (a reviewer failed; cold "
-            "synthesis runs only when every reviewer succeeded)"
-        )
+        if no_changes_to_review:
+            lines.append(
+                "- **Outcome:** not applicable (no reviewers were dispatched — nothing to review)"
+            )
+        elif fail_closed_headers is not None:
+            lines.append(
+                "- **Outcome:** not applicable (no reviewers were dispatched — diff refused)"
+            )
+        else:
+            lines.append(
+                "- **Outcome:** skipped (a reviewer failed; cold "
+                "synthesis runs only when every reviewer succeeded)"
+            )
     elif synth_result.output is not None:
         output = synth_result.output
         consolidated = output.consolidated_findings
@@ -301,7 +318,15 @@ def persist_run_summary(
         # agrees with the Logger's live-log skip message because both are driven
         # by the same TestSkipReason value. Falls back to inference for callers
         # that don't pass the argument.
-        if test_skip_reason is not None and test_skip_reason in _SKIP_REASON_MESSAGES:
+        if no_changes_to_review:
+            lines.append(
+                "- **Outcome:** not applicable (no reviewers were dispatched — nothing to review)"
+            )
+        elif fail_closed_headers is not None:
+            lines.append(
+                "- **Outcome:** not applicable (no reviewers were dispatched — diff refused)"
+            )
+        elif test_skip_reason is not None and test_skip_reason in _SKIP_REASON_MESSAGES:
             lines.append(f"- **Outcome:** {_SKIP_REASON_MESSAGES[test_skip_reason]}")
         else:
             # Fallback inference path for callers that don't pass test_skip_reason.
@@ -455,12 +480,20 @@ def persist_run_summary(
     # should acknowledge that producer attempt.
     if producer_result is not None:
         lines.append(
-            _resolve_next_steps_with_producer(exit_code, producer_result, escalation_honored)
+            _resolve_next_steps_with_producer(
+                exit_code, producer_result, escalation_honored, branch_already_advanced
+            )
         )
     else:
         lines.append(
             _resolve_next_steps(
-                exit_code, synth_result, test_result, test_skip_reason, check_results
+                exit_code,
+                synth_result,
+                test_result,
+                test_skip_reason,
+                check_results,
+                no_changes_to_review=no_changes_to_review,
+                fail_closed_headers=fail_closed_headers,
             )
         )
     lines.append("")

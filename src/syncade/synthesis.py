@@ -13,9 +13,11 @@ Key schema-level invariants:
   required and ``min_length=1`` — a finding with no provenance is an
   invented finding, schema-rejected.
 - **Cannot deactivate unanimous blockers.** If two or more distinct
-  reviewers flagged the same consolidated concern AND all of them at
+  reviewers flagged the same consolidated concern AT
   ``severity="blocker"``, the synthesizer cannot dismiss it OR downgrade it
-  off ``severity="blocker"``. This is the hard guardrail from the design
+  off ``severity="blocker"``. Coverage is counted over the blocker-severity
+  provenance entries only, so merging in a third, lower-severity entry
+  cannot disarm the guard. This is the hard guardrail from the design
   discussion: two independent blind reviewers reaching blocker on the same
   concern is the strongest signal we get; overriding it would cost more than
   trusting it. Enforced in the schema
@@ -33,18 +35,18 @@ Key schema-level invariants:
   values pass length but defeat the field's purpose.
 
 :func:`parse_synthesizer_output` turns raw stdout into a typed
-:class:`SynthesizerOutput`. It reuses the shared JSON-candidate extractor so
-JSX-trap resistance, unmatched-brace tolerance, CRLF handling, and non-json
-fence-label handling stay identical to reviewer parsing.
+:class:`SynthesizerOutput`. It reuses :mod:`syncade.findings_json` so
+verdict-block selection — fence authority, code-sample masking, unmatched-brace
+tolerance, CRLF handling, duplicate-key rejection — is identical to reviewer
+parsing and cannot drift from it.
 """
 
 from __future__ import annotations
 
-import json
-
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from syncade.findings import Severity, _extract_json_candidates
+from syncade.findings import Severity
+from syncade.findings_json import decode_and_validate
 from syncade.synthesis_clusters import (
     RootCauseCluster,
     validate_clusters_against_findings,
@@ -163,9 +165,10 @@ class ConsolidatedFinding(BaseModel):
       non-whitespace string. Forces the synthesizer to record WHY a
       finding was ruled out.
     - :meth:`_validate_unanimous_blocker_not_deactivated` — if two or more
-      DISTINCT reviewers (``distinct_reviewer_count(provenance) >= 2``)
-      flagged the concern and every ``original_severity`` is
-      ``"blocker"``, the finding cannot be deactivated — neither dismissed
+      DISTINCT reviewers flagged the concern at
+      ``original_severity="blocker"`` (counted over the blocker-severity
+      entries, so an extra lower-severity entry cannot disarm the
+      guard), the finding cannot be deactivated — neither dismissed
       nor downgraded off ``"blocker"`` (finding A2). This is the hard
       schema-level guardrail: two blind reviewers reaching blocker on
       the same concern is the strongest signal we get; the
@@ -217,19 +220,30 @@ class ConsolidatedFinding(BaseModel):
         (``has_active_blocker`` counts only non-dismissed 'blocker' findings) — a
         false SHIP — so both are schema-rejected.
 
-        Keys on DISTINCT reviewers, not raw provenance entries (one reviewer
-        listed twice isn't unanimity). The count mirrors the
-        findings.md consensus renderer via the shared ``distinct_reviewer_count``
-        helper so guard and render can't drift. Provenance ``original_severity``
-        is cross-checked truthful in ``synthesizer/validation.py``, so the
-        schema can trust it here. Runs first among the model validators so the
+        Keys on DISTINCT reviewers among the BLOCKER-severity provenance
+        entries — not on every entry being a blocker. That distinction is
+        load-bearing (2026-07-27 audit rank 1 / A C-01 / B C1): the guard
+        used to require ``all(p.original_severity == "blocker")`` over raw
+        provenance, so appending one non-blocker entry from an already-
+        counted reviewer — ``[r1:blocker, r2:blocker, r1:minor]`` — silently
+        disabled it and let a two-reviewer blocker be dismissed into a
+        false SHIP. Merging a reviewer's lower-severity note about the same
+        concern is normal, model-reachable consolidation behavior, so the
+        predicate must be monotone: extra provenance can only ever ADD
+        coverage, never remove it.
+
+        Distinctness still comes from the shared ``distinct_reviewer_count``
+        helper (one reviewer listed twice isn't unanimity); the findings.md
+        consensus renderer calls the same helper over UNFILTERED provenance
+        because it answers a different question — who *raised* the finding,
+        at any severity. Provenance ``original_severity`` is cross-checked
+        truthful in ``synthesizer/validation.py``, so the schema can trust
+        it here. Runs first among the model validators so the
         structural-impossibility error fires before the rationale checks.
         """
-        distinct_reviewers = distinct_reviewer_count(self.provenance)
-        is_unanimous_blocker = distinct_reviewers >= 2 and all(
-            p.original_severity == "blocker" for p in self.provenance
-        )
-        if not is_unanimous_blocker:
+        blocker_provenance = [p for p in self.provenance if p.original_severity == "blocker"]
+        distinct_reviewers = distinct_reviewer_count(blocker_provenance)
+        if distinct_reviewers < 2:
             return self
         if self.dismissed or self.severity != "blocker":
             how = "dismiss" if self.dismissed else f"downgrade to severity={self.severity!r}"
@@ -239,7 +253,7 @@ class ConsolidatedFinding(BaseModel):
                 "more independent blind reviewers reaching 'blocker' is the "
                 "strongest available signal; the synthesizer cannot override it "
                 "(neither dismissal nor downgrade off 'blocker'). Provenance: "
-                + ", ".join(f"{p.reviewer_name}@blocker" for p in self.provenance)
+                + ", ".join(f"{p.reviewer_name}@blocker" for p in blocker_provenance)
             )
         return self
 
@@ -377,86 +391,46 @@ def has_active_blocker(output: SynthesizerOutput) -> bool:
     return any(f.severity == "blocker" and not f.dismissed for f in output.consolidated_findings)
 
 
-def _try_parse_and_validate_synthesizer(text: str) -> SynthesizerOutput | None:
-    """Try ``json.loads(text)`` then :meth:`SynthesizerOutput.model_validate`.
+def _validate_synthesizer_object(parsed: object) -> SynthesizerOutput:
+    """Validate an already-decoded verdict object, strictly first and then
+    through the known-deviation repair list.
 
-    Returns the validated :class:`SynthesizerOutput` on success,
-    ``None`` on any failure. Mirrors the reviewer parser's two-step
-    JSON-then-pydantic discriminator pattern,
-    same "validation failure is treated as 'not the verdict' rather
-    than re-raised" behavior so a fragment in synthesizer narrative
-    that happens to look JSON-shaped doesn't blow up the run.
+    Raises :class:`pydantic.ValidationError` when both passes fail, so
+    :func:`~syncade.findings_json.decode_and_validate` reports it exactly as it
+    reports every other actor's schema rejection. The repair pass is a fixed
+    LIST of information-free provider deviations
+    (:func:`_repair_known_model_deviations`), not a tolerance — any other
+    deviation still fails.
     """
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return None
     try:
         return SynthesizerOutput.model_validate(parsed)
     except ValidationError:
         repaired = _repair_known_model_deviations(parsed)
         if repaired is parsed:
-            return None
-    try:
-        return SynthesizerOutput.model_validate(repaired)
-    except ValidationError:
-        return None
+            raise
+    return SynthesizerOutput.model_validate(repaired)
 
 
 def parse_synthesizer_output(raw: str) -> SynthesizerOutput:
     """Parse a synthesizer's raw stdout text into a :class:`SynthesizerOutput`.
 
-    Reuses the shared JSON-candidate helper: every fenced ``json``/unlabeled
-    block and every object decoded by :meth:`json.JSONDecoder.raw_decode`
-    becomes a ``(start_pos, content)`` candidate, sorted by ``start_pos``
-    descending (latest in document tried first). Returns the first candidate
-    that passes BOTH ``json.loads`` AND
-    :meth:`SynthesizerOutput.model_validate`. The extractor itself is the
-    parser hardening (JSX-trap resistant, unmatched-brace tolerant, CRLF aware,
-    raw-decoder based) — no fork, no duplication.
+    Selects exactly ONE verdict block via
+    :func:`syncade.findings_json._decode_verdict_object` — the last
+    ``json``/unlabeled fence, or the whole response when no fence is present —
+    and validates it, strictly first and then through the known-deviation
+    repair list. If that block does not decode or does not validate, this
+    raises; it never falls back to an earlier block that happens to validate
+    (see :mod:`syncade.findings_json`).
 
-    Whole-string fallback is the final defensive attempt for the
-    pure-JSON-no-narrative case where the candidate scan turned up
-    nothing.
-
-    Raises :class:`SynthesizerOutputError` on total failure so the orchestrator's
-    error messaging can name the phase
-    (synthesizer vs reviewer) the user needs to debug, even though
-    both map to exit 70.
-
-    The diagnostic message includes the count of candidates
-    attempted, a truncated snippet of the first-attempted (latest-
-    position) candidate, and a pointer at the
-    ``synthesizer.stdout`` file in the round directory — so the user
-    surfacing exit 70 can jump straight to the raw output.
+    Raises :class:`SynthesizerOutputError` rather than
+    :class:`ReviewerOutputError` so the orchestrator's error messaging can name
+    the phase the operator needs to debug, even though both map to exit 70.
     """
-    candidates = _extract_json_candidates(raw)
-
-    for _, content in candidates:
-        result = _try_parse_and_validate_synthesizer(content.strip())
-        if result is not None:
-            return result
-
-    # Whole-string fallback for the pure-JSON-no-narrative case —
-    # defensive, same as the reviewer parser. In practice the
-    # candidate scan already finds this case.
-    stripped = raw.strip()
-    if stripped:
-        result = _try_parse_and_validate_synthesizer(stripped)
-        if result is not None:
-            return result
-
-    if candidates:
-        # Sorted DESC by position → [0] is the latest (first-attempted)
-        # candidate, the one most likely intended as the synthesizer's
-        # final output.
-        snippet_source = candidates[0][1]
-    else:
-        snippet_source = raw
-    snippet = snippet_source[:200]
-    raise SynthesizerOutputError(
-        f"synthesizer output had no parseable SynthesizerOutput JSON "
-        f"(attempted {len(candidates)} candidate block(s); first "
-        f"attempted snippet: {snippet!r}); the raw response is "
-        f"preserved at synthesizer.stdout in the round directory."
+    return decode_and_validate(
+        raw,
+        validate=_validate_synthesizer_object,
+        error=SynthesizerOutputError,
+        label="synthesizer",
+        model_name="SynthesizerOutput",
+        artifact="synthesizer.stdout in the round directory",
     )

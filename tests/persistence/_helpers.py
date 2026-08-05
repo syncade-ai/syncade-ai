@@ -73,6 +73,7 @@ def _no_ship_with_finding() -> ReviewerOutput:
 def _snapshot(
     *,
     base_ref: str | None = None,
+    base_oid: str | None = None,
     diff_text: str = "",
     branch: str | None = "main",
     dirty: bool = False,
@@ -84,6 +85,7 @@ def _snapshot(
         commit_sha="a" * 40,
         branch=branch,
         base_ref=base_ref,
+        base_oid=base_oid,
         diff_text=diff_text,
         dirty_state="tracked" if dirty else "clean",
     )

@@ -61,19 +61,15 @@ def _validate_provenance_against_reviewers(
             finding misattributed its source. The error maps to exit
             70 via the existing ``_compute_exit_code`` decision table.
 
-    Note on ``original_description``: the synthesizer schema field is
-    documented as "preserved verbatim so the operator can see how
-    each reviewer framed the same concern". Strict equality with the
-    source reviewer's ``finding`` text would be the tightest check,
-    but real models occasionally paraphrase or truncate, and a
-    strict check would convert that into a hard exit-70 failure.
-    Pragmatic compromise: validate structural integrity here
-    (reviewer_name + original_index + original_severity), and trust
-    the schema's ``min_length=1`` on ``original_description`` to keep
-    the field non-empty. The operator-facing ``findings.md`` still shows
-    whatever the model put in ``original_description`` quoted as the
-    "Original per-reviewer descriptions" bullet — so a paraphrase
-    is visible but not silently dropped.
+    ``original_description`` is also cross-checked: a synthesizer that may
+    restate the source can narrow a blocker into something it can then honestly
+    dismiss, and the operator reading ``findings.md`` would see the fabrication
+    quoted as the reviewer's verbatim framing. Provenance whose text the
+    synthesizer may author is not provenance.
+
+    The comparison normalizes runs of whitespace (so reflow and line-wrapping
+    survive) but preserves case and every character otherwise — a summarized,
+    truncated, or reworded quote is a hard exit 70.
     """
     # Build lookup: reviewer_name → number of original findings.
     # Only successful reviewers contribute — failed reviewers have
@@ -82,11 +78,13 @@ def _validate_provenance_against_reviewers(
     # see provenance pointing at a failed reviewer here anyway.
     findings_count_by_name: dict[str, int] = {}
     severities_by_name: dict[str, list[Severity]] = {}
+    texts_by_name: dict[str, list[str]] = {}
     for r in reviewer_results:
         if r.output is None:
             continue
         findings_count_by_name[r.reviewer_name] = len(r.output.findings)
         severities_by_name[r.reviewer_name] = [f.severity for f in r.output.findings]
+        texts_by_name[r.reviewer_name] = [f.finding for f in r.output.findings]
 
     for consolidated_idx, finding in enumerate(output.consolidated_findings):
         for prov_idx, prov in enumerate(finding.provenance):
@@ -145,6 +143,28 @@ def _validate_provenance_against_reviewers(
                     f"misreported a reviewer's severity to evade the "
                     f"unanimous-blocker rule; check synthesizer.stdout for "
                     f"the raw output."
+                )
+            # original_description must be the reviewer's OWN words. A
+            # synthesizer that may restate the source can narrow a blocker into
+            # something it can then honestly dismiss, and the operator sees the
+            # fabrication quoted as the reviewer's verbatim framing in
+            # findings.md. Whitespace runs are normalized so reflow survives;
+            # nothing else is.
+            actual_text = texts_by_name[prov.reviewer_name][prov.original_index]
+            if _normalize_whitespace(prov.original_description) != _normalize_whitespace(
+                actual_text
+            ):
+                raise SynthesizerOutputError(
+                    f"synthesizer provenance original_description does not match "
+                    f"reviewer {prov.reviewer_name!r}'s actual finding "
+                    f"{prov.original_index} text (consolidated_findings"
+                    f"[{consolidated_idx}].provenance[{prov_idx}]).\n"
+                    f"  reviewer wrote: {actual_text!r}\n"
+                    f"  synthesizer recorded: {prov.original_description!r}\n"
+                    f"Provenance must quote the reviewer verbatim — a restated "
+                    f"source can be narrowed into something dismissible, and it "
+                    f"renders in findings.md as the reviewer's own words. Check "
+                    f"synthesizer.stdout for the raw output."
                 )
 
 
@@ -221,6 +241,17 @@ def _validate_reviewer_blockers_passed_through(
             f"consolidated_findings, so a dropped blocker would falsely SHIP; "
             f"check synthesizer.stdout for the raw output."
         )
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse whitespace runs for provenance-quote comparison.
+
+    Deliberately case- and content-PRESERVING, unlike
+    :func:`_normalize_finding_text`: this one asks "did the synthesizer quote
+    the reviewer verbatim", where a case change is a rewrite. Only reflow and
+    line-wrapping are forgiven.
+    """
+    return " ".join(text.split())
 
 
 def _normalize_finding_text(text: str) -> str:

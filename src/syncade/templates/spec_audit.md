@@ -135,8 +135,11 @@ Wrap your final verdict JSON in a triple-backtick fence labeled
 {{"verdict": "READY", "findings": [...], "summary": "...", "priority_order": [...], "coverage_gaps": [...], "dismissed_concerns": [...]}}
 ```
 
-Do NOT include any JSON outside this fence. The parser reads the
-FINAL `SpecAuditOutput`-shaped JSON block in your response.
+Do NOT include any JSON outside this fence. The parser reads the LAST
+` ```json ` (or unlabeled) fence in your response and nothing else — not the first block that happens to validate. If that last fence
+is not a valid `SpecAuditOutput`, the run fails with exit 70. So never place an
+illustrative fence after your real output, and always label the output fence
+`json`.
 
 Schema for the JSON body inside the fence:
 

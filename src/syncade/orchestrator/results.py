@@ -36,6 +36,8 @@ value semantics; this carries the type unchanged."""
 
 TerminationReason = Literal[
     "ship",
+    "no_changes_to_review",
+    "producer_emptied_diff",
     "findings_present",
     "max_rounds_reached",
     "budget_exceeded",
@@ -46,7 +48,9 @@ TerminationReason = Literal[
     "test_subprocess_error",
     "check_subprocess_error",
     "decision_needed",
+    "blockers_all_deactivated",
     "worktree_error",
+    "diff_malformed",
     "parse_failure",
     "config_error",
 ]
@@ -54,6 +58,19 @@ TerminationReason = Literal[
 
 - ``ship`` — a round produced exit 0 (synth-clean + tests passed,
   if configured). The loop terminates with SUCCESS.
+- ``no_changes_to_review`` — the diff resolved to empty before any
+  reviewer was dispatched in round 0: the base resolved (``base_oid``
+  set) but the reviewer-facing diff was empty (either truly no changes,
+  or every section was legitimate repo-context stripped by the filter —
+  D1 and D3 in PR-h-02d). Zero subprocesses are dispatched for the whole
+  run. Loop terminates with SUCCESS (exit 0). Distinct from ``ship`` so
+  callers can tell "reviewed and approved" from "nothing to approve".
+- ``producer_emptied_diff`` — same empty-diff condition as
+  ``no_changes_to_review``, but fired in a later round (round 1+) after
+  prior rounds already dispatched reviewers and a producer. The producer's
+  commits reduced all reviewable changes to nothing. Loop terminates with
+  SUCCESS (exit 0). Distinct from ``no_changes_to_review`` because model
+  work WAS spent in prior rounds.
 - ``findings_present`` — a single-pass run produced NO-SHIP. The loop ends with
   exit 30 without implying a retry budget was exhausted.
 - ``max_rounds_reached`` — the last round was NO-SHIP and
@@ -100,6 +117,12 @@ TerminationReason = Literal[
   NO-SHIP); when honored, the operator records a decision and resumes.
 - ``worktree_error`` — a worktree could not be provisioned for
   the reviewer or test phase; loop terminates with exit 60.
+- ``diff_malformed`` — the reviewer-facing diff contained sections
+  whose headers could not be identified (unparseable, malformed
+  escapes, or invalid UTF-8). The run is refused before any
+  dispatcher is invoked (D2, PR-h-02d); loop terminates with exit
+  60. Distinct from ``worktree_error`` so tooling can tell "reviewer
+  worktree failed" from "diff could not be safely filtered".
 - ``parse_failure`` — reviewer or synthesizer output couldn't be
   parsed; loop terminates with exit 70.
 - ``config_error`` — an adapter-lookup failure (e.g. unknown
@@ -150,6 +173,14 @@ class RoundResult:
     round_exit_code: int
     artifacts: RoundArtifacts
     check_results: list[TestRunResult] = field(default_factory=list)
+    # Set by _no_changes_to_review_result so renderers can distinguish
+    # "reviewed and approved" (round_exit_code=0, this=False) from
+    # "nothing dispatched because diff was empty" (round_exit_code=0, this=True).
+    no_changes_to_review: bool = False
+    # Set by _fail_closed_refusal_result (D2, PR-h-02d). Non-None means the run
+    # was refused because these diff headers could not be identified. Allows
+    # verdict.py to return "diff_malformed" instead of the generic "worktree_error".
+    fail_closed_headers: list[str] | None = None
 
 
 @dataclass(frozen=True)

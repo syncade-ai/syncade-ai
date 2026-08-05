@@ -44,12 +44,14 @@ class TestPersistRunInit:
         from syncade.persistence import persist_run_init
 
         run_dir = self._make_run_dir(tmp_path)
+        _BASE_OID = "a" * 40
         path = persist_run_init(
             run_dir,
             syncade_version="0.1.0",
             started_at=_FIXED_STARTED_AT,
             pr_doc_path=Path("path/to/pr.md"),
             base_ref="1dbbca3",
+            base_oid=_BASE_OID,
             starting_sha="3442e72ab60b43153cdbee83f3187203b289f14a",
             operator_branch="main",
             max_rounds=3,
@@ -63,6 +65,7 @@ class TestPersistRunInit:
             "started_at_utc",
             "pr_doc_path",
             "base_ref",
+            "base_oid",
             "starting_sha",
             "operator_branch",
             "max_rounds",
@@ -74,6 +77,7 @@ class TestPersistRunInit:
         assert record["started_at_utc"] == "2026-05-12T15:30:04Z"
         assert record["pr_doc_path"] == "path/to/pr.md"
         assert record["base_ref"] == "1dbbca3"
+        assert record["base_oid"] == _BASE_OID
         assert record["starting_sha"] == "3442e72ab60b43153cdbee83f3187203b289f14a"
         assert record["operator_branch"] == "main"
         assert record["max_rounds"] == 3
@@ -97,6 +101,7 @@ class TestPersistRunInit:
             started_at=_FIXED_STARTED_AT,
             pr_doc_path=pr_doc_path,
             base_ref=None,
+            base_oid=None,
             starting_sha="a" * 40,
             operator_branch=None,
             max_rounds=1,
@@ -105,9 +110,10 @@ class TestPersistRunInit:
         record = json.loads(path.read_text())
         assert isinstance(record["pr_doc_path"], str)
         assert record["pr_doc_path"] == str(pr_doc_path)
-        # base_ref=None and operator_branch=None must serialize as
-        # JSON null, not omitted.
+        # base_ref=None, base_oid=None, and operator_branch=None must serialize
+        # as JSON null, not omitted.
         assert record["base_ref"] is None
+        assert record["base_oid"] is None
         assert record["operator_branch"] is None
 
     def test_persist_run_init_includes_config_snapshot(self, tmp_path: Path):
@@ -124,6 +130,7 @@ class TestPersistRunInit:
             started_at=_FIXED_STARTED_AT,
             pr_doc_path=Path("path/to/pr.md"),
             base_ref=None,
+            base_oid=None,
             starting_sha="b" * 40,
             operator_branch="main",
             max_rounds=3,
@@ -164,6 +171,7 @@ class TestPersistRunInit:
             started_at=_FIXED_STARTED_AT,
             pr_doc_path=Path("path/to/pr.md"),
             base_ref=None,
+            base_oid=None,
             starting_sha="d" * 40,
             operator_branch="main",
             max_rounds=1,
@@ -192,6 +200,7 @@ class TestPersistRunInit:
             started_at=_FIXED_STARTED_AT,
             pr_doc_path=Path("path/to/pr.md"),
             base_ref=None,
+            base_oid=None,
             starting_sha="e" * 40,
             operator_branch="main",
             max_rounds=1,
@@ -214,6 +223,7 @@ class TestPersistRunInit:
                 started_at=_FIXED_STARTED_AT,
                 pr_doc_path=Path("path/to/pr.md"),
                 base_ref=None,
+                base_oid=None,
                 starting_sha="c" * 40,
                 operator_branch="main",
                 max_rounds=1,

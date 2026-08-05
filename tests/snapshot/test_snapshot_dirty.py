@@ -15,7 +15,7 @@ import shutil
 import pytest
 
 from syncade.snapshot import Snapshot, SnapshotError, take_snapshot
-from tests.snapshot._helpers import _git
+from tests.snapshot._helpers import _commit, _git, _init_repo
 
 # Skip everything in this module if git isn't on PATH.
 pytestmark = pytest.mark.skipif(
@@ -291,3 +291,31 @@ class TestUntrackedCount:
         assert _classify_porcelain_with_counts(" M file.py\n") == ("tracked", 0)
         assert _classify_porcelain_with_counts("?? a\n?? b\n") == ("untracked", 2)
         assert _classify_porcelain_with_counts(" M foo\n?? bar\n?? baz\n") == ("both", 2)
+
+
+class TestDirtyStateReplacementRef:
+    """A refs/replace/* ref on HEAD must not cause a false dirty report."""
+
+    def test_replace_ref_on_head_does_not_produce_false_dirty(self, tmp_path):
+        """Without --no-replace-objects: git status --porcelain compares the
+        working tree against the REPLACEMENT commit's tree rather than the real
+        HEAD tree, so matching working-tree files look modified (tracked-dirty).
+
+        With --no-replace-objects the real HEAD tree is used and a clean tree
+        is reported clean."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit(repo, {"a.txt": "old content\n"}, "old commit")
+        # This is the real HEAD; working tree matches it.
+        new_sha = _commit(repo, {"a.txt": "new content\n"}, "new commit")
+        # Install a replace ref: HEAD appears to be the old commit whose tree
+        # has a.txt="old content".  Without protection, git status sees "new
+        # content" in the working tree as differing from "old content" in the
+        # replacement tree → false tracked-modified.
+        old_sha = _git(repo, "rev-parse", "HEAD~1").stdout.strip()
+        _git(repo, "update-ref", f"refs/replace/{new_sha}", old_sha)
+
+        snap = take_snapshot(repo)
+        assert snap.dirty_state == "clean", (
+            "replacement ref on HEAD produced a false tracked-dirty state"
+        )

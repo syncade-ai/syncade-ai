@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from syncade.adapters.base import ReviewerAdapter, ReviewerInvocationError
 from syncade.adapters.registry import get_adapter
@@ -49,7 +49,7 @@ from syncade.config_cold import (
 from syncade.config_cold import (
     DrafterConfig,
 )
-from syncade.findings import _extract_json_candidates
+from syncade.findings_json import decode_and_validate
 from syncade.process import (
     SubprocessError,
     SubprocessNotFoundError,
@@ -215,41 +215,21 @@ def render_draft_spec_markdown(
     return "\n".join(lines) + "\n"
 
 
-def _try_parse_and_validate(text: str) -> SpecDraftOutput | None:
-    try:
-        import json
-
-        parsed = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    try:
-        return SpecDraftOutput.model_validate(parsed)
-    except ValidationError:
-        return None
-
-
 def parse_spec_draft_output(raw: str) -> SpecDraftOutput:
     """Parse the drafter's raw stdout into a :class:`SpecDraftOutput`.
 
-    Reuses the shared :func:`syncade.findings._extract_json_candidates`
-    (fenced-block + raw-decoder object scan, latest-first); returns the first candidate
-    that passes ``json.loads`` AND ``model_validate``. Raises
-    :class:`SpecDraftOutputError` on total failure (→ exit 70)."""
-    candidates = _extract_json_candidates(raw)
-    for _, content in candidates:
-        result = _try_parse_and_validate(content.strip())
-        if result is not None:
-            return result
-    stripped = raw.strip()
-    if stripped:
-        result = _try_parse_and_validate(stripped)
-        if result is not None:
-            return result
-    snippet = (candidates[0][1] if candidates else raw)[:200]
-    raise SpecDraftOutputError(
-        f"spec draft output had no parseable SpecDraftOutput JSON "
-        f"(attempted {len(candidates)} candidate block(s); first snippet: {snippet!r}); "
-        "the raw response is preserved at spec-drafter.stdout in the run directory."
+    Selects exactly ONE verdict block via
+    :func:`syncade.findings_json._decode_verdict_object` (last
+    ``json``/unlabeled fence, else the whole response) and validates it. No
+    fallback to an earlier block — see :mod:`syncade.findings_json`. Raises
+    :class:`SpecDraftOutputError` on failure (→ exit 70)."""
+    return decode_and_validate(
+        raw,
+        validate=SpecDraftOutput.model_validate,
+        error=SpecDraftOutputError,
+        label="spec draft",
+        model_name="SpecDraftOutput",
+        artifact="spec-drafter.stdout in the run directory",
     )
 
 

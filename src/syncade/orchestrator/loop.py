@@ -12,6 +12,11 @@ from syncade import __version__, run_status
 from syncade.adapters.base import ReviewerAdapter
 from syncade.adapters.producer import ProducerAdapter
 from syncade.config import SyncadeConfig
+from syncade.diff_filter import (
+    concealed_destinations,
+    filter_diff_for_reviewer,
+    unidentifiable_sections,
+)
 from syncade.exit_codes import BUDGET_EXCEEDED, SUCCESS, WORKTREE_ERROR
 from syncade.logging import Logger
 from syncade.persistence import persist_run_init
@@ -31,7 +36,33 @@ from .resume import ResumePlan, check_tree_drift
 from .resume_types import ResumeError
 
 if TYPE_CHECKING:
+    from syncade.snapshot import Snapshot
     from syncade.usage import Usage
+
+
+def _diff_will_dispatch(snapshot: Snapshot, config: SyncadeConfig) -> bool:
+    """Return False when the round will terminate before dispatching any subprocess.
+
+    A False result means no reviewer, judge, or producer will run, so commit-safety
+    guards (dirty-tree refusal, default-branch guard) are irrelevant for this run.
+    Two cases: the diff is malformed (fail-closed refusal) or it is known-empty
+    (no_changes_to_review). Both are pre-dispatch terminal decisions in _run_one_round;
+    by classifying here we avoid refusing valid no-change runs on dirty/default-branch.
+    """
+    # Only refuse on unidentifiable headers when there are strip targets: with an empty
+    # strip list filter_diff_for_reviewer keeps every section byte-for-byte, so an
+    # undecodable header is not a security concern (nothing is being hidden).
+    if config.review.strip_repo_context_files and unidentifiable_sections(snapshot.diff_text):
+        return False  # diff_malformed path — refuses at exit 60, no producer runs
+    if (
+        snapshot.base_oid is not None
+        and not filter_diff_for_reviewer(snapshot.diff_text, config.review.strip_repo_context_files)
+        # A boundary rename empties the filtered diff while concealing a reviewable
+        # destination; that run DOES dispatch, so the commit guards still apply.
+        and not concealed_destinations(snapshot.diff_text, config.review.strip_repo_context_files)
+    ):
+        return False  # no_changes_to_review path — exits 0, no producer runs
+    return True
 
 
 def _autoprune_old_transcripts(
@@ -88,6 +119,7 @@ def run_review(
     producer_adapter: ProducerAdapter | None = None,
     worktree_base: Path | None = None,
     force_dirty: bool = False,
+    two_dot: bool = False,
     resume_plan: ResumePlan | None = None,
     force_drift: bool = False,
     operator_decision: str | None = None,
@@ -161,6 +193,10 @@ def run_review(
             ``config.worktree_base`` (which itself defaults to
             :data:`DEFAULT_WORKTREE_BASE` = ``/tmp/syncade/``).
             Tests use ``tmp_path`` to avoid cross-run collisions.
+        two_dot: When ``True``, diff the literal ``base..HEAD`` range instead
+            of from the branch point. The escape hatch for "show me everything
+            between these two commits"; it re-introduces phantom deletions for
+            a branch that is behind its base, which is why it is opt-in.
         force_dirty: When ``True``, bypasses the loop-mode dirty-
             tree refusal. Plumbed from the CLI's ``--force-dirty``
             flag. Only relevant when ``max_rounds > 1`` AND
@@ -205,13 +241,29 @@ def run_review(
     repo_root = discover_repo_root(repo_root)
 
     # --- Round-0 snapshot (the starting point for the whole loop) ---
+    # On resume, use the immutable OID from the plan rather than the caller-supplied
+    # symbolic ref — the symbolic ref may have moved since the original run.
     logger.event(f"snapshotting repo at {repo_root}")
-    snapshot = take_snapshot(repo_root, base_ref=base_ref)
+    _resumed_base = resume_plan.base_oid if resume_plan is not None else None
+    _snapshot_base_ref = _resumed_base if _resumed_base is not None else base_ref
+    # A resumed base_oid is ALREADY the effective diff base the original run
+    # resolved, so re-deriving a branch point from it would move the review
+    # target — and would convert a `--two-dot` run to three-dot on resume.
+    snapshot = take_snapshot(
+        repo_root,
+        base_ref=_snapshot_base_ref,
+        three_dot=not two_dot and _resumed_base is None,
+    )
     branch = snapshot.branch or "(detached HEAD)"
     logger.event(f"snapshot taken — {snapshot.commit_sha[:12]} on {branch}")
 
     short_sha = snapshot.commit_sha[:12]
     state = snapshot.dirty_state
+
+    # --- Pre-classify diff before commit-safety guards (PR-h-02d) ---
+    # A known-empty or malformed diff terminates before any subprocess — no producer
+    # runs, so commit-only guards are irrelevant and must not refuse valid no-change runs.
+    _will_dispatch = _diff_will_dispatch(snapshot, config)
 
     # --- Pre-flight dirty-tree refusal in loop mode -----------------
     # max_rounds > 1 → the loop will run a producer that commits to
@@ -239,7 +291,8 @@ def run_review(
     effective_max_rounds = config.loop.max_rounds
     if resume_plan is not None:
         effective_max_rounds = max(effective_max_rounds, resume_plan.max_rounds)
-    if effective_max_rounds > 1 and state in ("tracked", "both") and not force_dirty:
+    _dirty_state = state in ("tracked", "both")
+    if _will_dispatch and effective_max_rounds > 1 and _dirty_state and not force_dirty:
         raise WorktreeError(
             f"uncommitted tracked changes (dirty_state={state!r}); "
             f"loop mode (max_rounds={effective_max_rounds}) "
@@ -254,7 +307,9 @@ def run_review(
     # default branch unless the operator opted in, and announce the target branch
     # BEFORE any dispatch. Placed at the run-entry choke so a direct run_review call
     # and a --resume are covered too, not only the CLI wrapper.
-    will_commit = effective_max_rounds > 1
+    # will_commit is False when no dispatch will happen: no producer runs on a no-change
+    # or malformed-diff run, so the default-branch guard and commit announcement are moot.
+    will_commit = _will_dispatch and effective_max_rounds > 1
     guard_default_branch(
         repo_root, snapshot.branch, allow=allow_default_branch, will_commit=will_commit
     )
@@ -366,6 +421,7 @@ def run_review(
                 started_at=started_at,
                 pr_doc_path=pr_doc_path,
                 base_ref=base_ref,
+                base_oid=snapshot.base_oid,
                 starting_sha=snapshot.commit_sha,
                 operator_branch=snapshot.branch,
                 max_rounds=config.loop.max_rounds,
@@ -561,6 +617,7 @@ def run_review(
                 operator_decision=operator_decision,
                 force_drift=force_drift,
                 prior_usages=run_usages,
+                branch_advanced_during_run=branch_advanced_during_run,
             )
             current_snapshot = step.current_snapshot
             if step.branch_advanced:

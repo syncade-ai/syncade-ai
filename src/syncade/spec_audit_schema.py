@@ -9,12 +9,12 @@ re-exports these for the ``syncade.spec_audit.<name>`` import paths.
 
 from __future__ import annotations
 
-import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from syncade.findings import Severity, _extract_json_candidates
+from syncade.findings import Severity
+from syncade.findings_json import decode_and_validate
 
 
 class SpecAuditOutputError(Exception):
@@ -164,52 +164,22 @@ def get_spec_audit_schema_string() -> str:
     )
 
 
-def _try_parse_and_validate_spec_audit(text: str) -> SpecAuditOutput | None:
-    """Try ``json.loads(text)`` then :meth:`SpecAuditOutput.model_validate`.
-
-    Returns the validated :class:`SpecAuditOutput` on success, ``None`` on
-    any failure. Mirrors :func:`syncade.synthesis._try_parse_and_validate_synthesizer`.
-    """
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    try:
-        return SpecAuditOutput.model_validate(parsed)
-    except ValidationError:
-        return None
-
-
 def parse_spec_audit_output(raw: str) -> SpecAuditOutput:
     """Parse an auditor's raw stdout text into a :class:`SpecAuditOutput`.
 
-    Reuses the shared :func:`syncade.findings._extract_json_candidates`
-    helper — same fenced-block + raw-decoder object strategy, position-sorted
-    descending (latest in document tried first). Returns the first
-    candidate that passes both ``json.loads`` AND
-    :meth:`SpecAuditOutput.model_validate`.
+    Selects exactly ONE verdict block via
+    :func:`syncade.findings_json._decode_verdict_object` (last
+    ``json``/unlabeled fence, else the whole response) and validates it. No
+    fallback to an earlier block — see :mod:`syncade.findings_json`.
 
-    Raises :class:`SpecAuditOutputError` on total failure so the CLI can
-    route to exit 70 and name the spec-audit phase.
+    Raises :class:`SpecAuditOutputError` on failure so the CLI can route to
+    exit 70 and name the spec-audit phase.
     """
-    candidates = _extract_json_candidates(raw)
-
-    for _, content in candidates:
-        result = _try_parse_and_validate_spec_audit(content.strip())
-        if result is not None:
-            return result
-
-    stripped = raw.strip()
-    if stripped:
-        result = _try_parse_and_validate_spec_audit(stripped)
-        if result is not None:
-            return result
-
-    snippet_source = candidates[0][1] if candidates else raw
-    snippet = snippet_source[:200]
-    raise SpecAuditOutputError(
-        f"spec audit output had no parseable SpecAuditOutput JSON "
-        f"(attempted {len(candidates)} candidate block(s); first "
-        f"attempted snippet: {snippet!r}); the raw response is "
-        f"preserved at spec-auditor.stdout in the run directory."
+    return decode_and_validate(
+        raw,
+        validate=SpecAuditOutput.model_validate,
+        error=SpecAuditOutputError,
+        label="spec audit",
+        model_name="SpecAuditOutput",
+        artifact="spec-auditor.stdout in the run directory",
     )

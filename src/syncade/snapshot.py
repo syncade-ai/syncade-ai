@@ -14,6 +14,7 @@ process-group cleanup) is exercised consistently across the codebase.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -47,13 +48,109 @@ DirtyState = Literal["clean", "tracked", "untracked", "both"]
 _GIT_TIMEOUT_SECONDS: float = 30.0
 
 _NORMALIZED_DIFF_ARGS: Final[tuple[str, ...]] = (
+    # Object resolution, BEFORE the subcommand. `refs/replace/*` silently
+    # substitutes one object for another at every lookup, and it lives in the
+    # shared common dir, so it is writable from a producer worktree. Without
+    # this the diff (and `git worktree add <sha>`) can describe an entirely
+    # different commit than `Snapshot.commit_sha` — verified: a backdoored
+    # commit reviewed as its benign replacement, while the SHA that lands
+    # upstream still carries the backdoor.
+    "--no-replace-objects",
+    # Pin every setting that demonstrably changes the diff BYTES. `-c`
+    # outranks every config file, so a repo-local `.git/config` cannot move
+    # them. Each was verified to alter output when left unpinned.
     "-c",
     "diff.noprefix=false",
     "-c",
     "diff.mnemonicPrefix=false",
+    "-c",
+    "diff.srcPrefix=a/",  # else the a/ b/ the strip filter matches on move
+    "-c",
+    "diff.dstPrefix=b/",  # ...and repo-context files leak to blind reviewers
+    "-c",
+    "diff.context=3",
+    "-c",
+    "diff.interHunkContext=0",
+    "-c",
+    "core.abbrev=7",
+    "-c",
+    "diff.algorithm=myers",
+    "-c",
+    "diff.orderFile=/dev/null",  # empty string is fatal to git; /dev/null is inert
+    "-c",
+    "core.bigFileThreshold=512m",
+    "-c",
+    "core.quotePath=true",  # false → non-ASCII path headers change bytes
+    "-c",
+    "diff.renames=true",  # false → renames expand to delete+add hunks
+    "-c",
+    "diff.suppressBlankEmpty=false",  # true → blank context lines lose their trailing space
+    "-c",
+    "diff.submodule=short",  # log/diff → rewrites submodule pointer diff to prose/expanded form
+    "-c",
+    "diff.ignoreSubmodules=none",  # all → submodule pointer bumps disappear entirely
+    "-c",
+    "diff.indentHeuristic=true",  # false → hunk-boundary placement changes; pin to modern default
+    "-c",
+    "diff.renameLimit=1000",  # low values turn detected renames back into delete+add pairs
+    "-c",
+    "core.attributesFile=/dev/null",
     "diff",
     "--no-color",
+    # `diff.external` / textconv drivers hand the diff to an arbitrary program
+    # and use ITS stdout.
+    "--no-ext-diff",
+    "--no-textconv",
+    # `--text` is the ONLY lever against attribute-driven suppression: a `-diff`
+    # attribute in `.git/info/attributes` or a COMMITTED `.gitattributes`
+    # collapses a whole change to "Binary files ... differ", and git has no flag
+    # to ignore attributes files. Pinning `core.attributesFile` does not reach
+    # either source — verified. The cost is that a genuine binary is emitted as
+    # text, which makes the diff size cap (PR-h-02 increment E) load-bearing
+    # rather than a nicety.
+    "--text",
+    # Explicit flag so it outranks per-submodule `ignore` settings from
+    # `.gitmodules` or `submodule.<name>.ignore` in `.git/config`. The `-c`
+    # pin above overrides the global config key but NOT the per-submodule key;
+    # the command-line flag is the highest-precedence override.
+    "--ignore-submodules=none",
 )
+"""Deny-list, and it is one on purpose — say so rather than imply otherwise.
+
+`-c` can only pin keys we know about; a future git release can add another.
+The structural fix is to compute the diff where `.git/config` is ours rather
+than the reviewed repo's, which is PR-h-05's separate-clone work. Until then
+this closes every vector reproduced against `6bb2890`, and new ones are a
+matter of adding a line here.
+
+**Known remaining vector: `diff.<driver>.xfuncname` hunk headers.** A
+committed `.gitattributes` selecting an arbitrary diff driver, combined with
+`diff.<driver>.xfuncname` in `.git/config`, changes the function-context
+suffix of `@@ -N,M +N,M @@` lines. The driver name is arbitrary so it cannot
+be pinned via `-c`. `_strip_hunk_function_context()` removes this suffix in
+post-processing, making `diff_text` byte-deterministic with respect to any
+xfuncname configuration.
+"""
+
+# Matches the optional function-context suffix on unified-diff @@ lines,
+# e.g. `@@ -1,4 +1,4 @@ def foo():` → captures `@@ -1,4 +1,4 @@`.
+_HUNK_HEADER_RE: Final = re.compile(r"^(@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@).*$", re.MULTILINE)
+
+
+def _strip_hunk_function_context(diff_text: str) -> str:
+    """Remove the optional function-context suffix from unified-diff @@ lines.
+
+    Git appends a function name (from built-in language detection or a
+    repo-configured ``diff.<driver>.xfuncname`` regex) to each hunk header.
+    A committed ``.gitattributes`` assigning an arbitrary driver combined with
+    a matching ``diff.<driver>.xfuncname`` in ``.git/config`` changes those
+    bytes in a way no ``-c`` flag can enumerate.
+
+    Stripping the suffix here makes ``diff_text`` byte-deterministic.
+    Reviewers retain file name, line numbers, and all context/changed lines;
+    only the redundant function-name hint in the ``@@`` header is removed.
+    """
+    return _HUNK_HEADER_RE.sub(r"\1", diff_text)
 
 
 class SnapshotError(Exception):
@@ -86,7 +183,7 @@ class Snapshot:
         base_ref: The ``--base`` value the caller supplied, or ``None``
             if no diff was requested. Preserved verbatim so it can be
             echoed back in the run manifest.
-        diff_text: ``git diff <base_ref>..HEAD`` stdout when
+        diff_text: ``git diff <base-oid>..<commit_sha>`` stdout when
             ``base_ref`` was supplied; the empty string otherwise.
             Running without a diff is supported — reviewers fall back
             to reviewing the full HEAD state.
@@ -102,6 +199,17 @@ class Snapshot:
             file(s)..."). Captured here once so callers don't have
             to re-parse porcelain to compute it. ``0`` when
             ``dirty_state`` is ``"clean"`` or ``"tracked"``.
+        base_oid: The full object ID the diff was ACTUALLY taken against,
+            or ``None`` when no ``base_ref`` was supplied. Under the default
+            three-dot semantics this is the BRANCH POINT (the merge base of
+            ``base_ref`` and HEAD), not the tip of ``base_ref``; under
+            ``--two-dot`` the two coincide. Reading it as "the diff base" is
+            correct in both modes. Unlike
+            ``base_ref`` (the symbolic name), this value is immutable:
+            even if the ref moves after the snapshot, the diff was
+            computed against exactly this commit. Persisted in round
+            and loop manifests alongside ``base_ref`` so artifact
+            readers can reconstruct the exact reviewed range.
     """
 
     repo_root: Path
@@ -111,6 +219,7 @@ class Snapshot:
     diff_text: str
     dirty_state: DirtyState
     untracked_count: int = 0
+    base_oid: str | None = None
 
 
 def _git(repo_root: Path, *args: str) -> tuple[int, str, str]:
@@ -172,7 +281,38 @@ def discover_repo_root(start_path: Path) -> Path:
     return Path(toplevel_stdout.strip()).resolve()
 
 
-def take_snapshot(repo_root: Path, *, base_ref: str | None = None) -> Snapshot:
+def _merge_base(repo_root: Path, base_oid: str, commit_sha: str, *, base_ref: str | None) -> str:
+    """The merge base of ``base_oid`` and ``commit_sha`` — the branch point.
+
+    Diffing the raw ``base..HEAD`` range renders every commit that landed on
+    the base but not on our branch as a DELETION in our diff. Reviewers are
+    then asked to justify removals nobody made, and the producer is handed
+    those phantom deletions as work. That is not a corner case: it is the
+    default whenever a branch is behind its base, which is most branches most
+    of the time. Diffing from the branch point instead is what every code
+    review tool means by "the diff", and what the operator means by "review my
+    branch".
+    """
+    rc, stdout, stderr = _git(repo_root, "merge-base", base_oid, commit_sha)
+    if rc != 0:
+        raise SnapshotError(
+            f"base_ref {base_ref!r} ({base_oid[:12]}) and HEAD ({commit_sha[:12]}) have no "
+            f"common ancestor in {repo_root}, so there is no branch point to review from: "
+            f"{stderr.strip() or 'no merge base'}. Pass --two-dot to diff the literal range "
+            f"instead, or supply a --base that shares history with HEAD."
+        )
+    merge_base = stdout.strip()
+    if not is_full_git_object_id(merge_base):
+        raise SnapshotError(
+            f"merge-base of {base_ref!r} and HEAD returned unexpected value "
+            f"{merge_base!r} (expected a full SHA-1/SHA-256 object ID)"
+        )
+    return merge_base
+
+
+def take_snapshot(
+    repo_root: Path, *, base_ref: str | None = None, three_dot: bool = True
+) -> Snapshot:
     """Capture a :class:`Snapshot` of ``repo_root`` at HEAD.
 
     Args:
@@ -183,6 +323,16 @@ def take_snapshot(repo_root: Path, *, base_ref: str | None = None) -> Snapshot:
             ``None`` (the default), no diff is captured — the
             ``diff_text`` field is the empty string and the reviewer
             prompt will use a "no diff provided" sentinel instead.
+        three_dot: When ``True`` (the default), diff from the BRANCH POINT
+            — the merge base of ``base_ref`` and HEAD — so commits that
+            landed on the base but not on this branch are not rendered as
+            phantom deletions. ``Snapshot.base_oid`` then holds that branch
+            point, i.e. it always names the commit the diff was actually
+            taken against. Pass ``False`` for the literal ``base..HEAD``
+            range (the ``--two-dot`` escape hatch), or when ``base_ref`` is
+            ALREADY a resolved effective base — a later round or a resume
+            re-snapshotting against a pinned ``base_oid`` — where recomputing
+            a merge base would be redundant.
 
     Returns:
         A :class:`Snapshot` populated with the resolved HEAD SHA,
@@ -225,7 +375,13 @@ def take_snapshot(repo_root: Path, *, base_ref: str | None = None) -> Snapshot:
         raise SnapshotError(f"repo_root is not a directory: {repo_root}")
 
     # HEAD SHA — also doubles as the "is this a git repo?" probe.
-    rc, sha_stdout, sha_stderr = _git(repo_root, "rev-parse", "HEAD")
+    # `--no-replace-objects` is belt-and-braces here, NOT the defense: measured,
+    # `rev-parse HEAD` is unaffected by refs/replace, because it resolves a ref
+    # NAME to a SHA without ever reading the object. The commands that ARE
+    # poisonable read commits (`log`, `merge-base`, `reset`, `diff`); they are
+    # covered structurally by `GIT_NO_REPLACE_OBJECTS=1` in
+    # `syncade.process.run_subprocess`, which every git call here routes through.
+    rc, sha_stdout, sha_stderr = _git(repo_root, "--no-replace-objects", "rev-parse", "HEAD")
     if rc != 0:
         # `git rev-parse HEAD` in a non-repo emits:
         #   "fatal: not a git repository (or any of the parent ...)".
@@ -256,24 +412,63 @@ def take_snapshot(repo_root: Path, *, base_ref: str | None = None) -> Snapshot:
     # through and confuse git.
     diff_text = ""
     if base_ref:
-        # Verify the ref resolves before asking for a diff. This gives
-        # us a clean SnapshotError naming the bad ref rather than a
-        # confusing diff error.
-        rc, _, ref_stderr = _git(repo_root, "rev-parse", "--verify", "--quiet", base_ref)
+        # Resolve the base to a full OID and diff THAT against the HEAD OID
+        # captured above — never the symbolic refs. `^{commit}` peels an
+        # annotated tag, which `git diff` would have done implicitly anyway.
+        #
+        # Diffing `<base_ref>..HEAD` re-resolved both ends at diff time, so a
+        # commit landing between the HEAD capture and this call produced a diff
+        # describing a DIFFERENT commit than `Snapshot.commit_sha` — reproduced
+        # against 6bb2890. The producer commits to this repo, so that race is
+        # ordinary operation, not a thought experiment.
+        # Two steps, not one. Appending `^{commit}` to the raw ref breaks git's
+        # own `:/<text>` commit-message search, which consumes the rest of the
+        # string as a regex and would hunt for the literal `<text>^{commit}` —
+        # a base that worked before this change and stopped working, caught by
+        # adversarial review. Resolve the ref first, then peel the OID.
+        rc, ref_oid_stdout, ref_stderr = _git(
+            repo_root, "--no-replace-objects", "rev-parse", "--verify", "--quiet", base_ref
+        )
         if rc != 0:
             raise SnapshotError(
                 f"base_ref {base_ref!r} does not resolve in {repo_root}: "
                 f"{ref_stderr.strip() or 'unknown ref'}"
             )
-        # `git diff <base>..HEAD` is the form documented in the brief.
-        # On large repos this can be several seconds; the _GIT_TIMEOUT
-        # ceiling above handles runaway cases.
-        rc, diff_stdout, diff_stderr = _git(repo_root, *_NORMALIZED_DIFF_ARGS, f"{base_ref}..HEAD")
+        rc, base_oid_stdout, peel_stderr = _git(
+            repo_root,
+            "--no-replace-objects",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"{ref_oid_stdout.strip()}^{{commit}}",
+        )
         if rc != 0:
             raise SnapshotError(
-                f"git diff {base_ref}..HEAD failed in {repo_root}: {diff_stderr.strip()}"
+                f"base_ref {base_ref!r} does not name a commit in {repo_root}: "
+                f"{peel_stderr.strip() or 'not peelable to a commit'}"
             )
-        diff_text = diff_stdout
+        base_oid = base_oid_stdout.strip()
+        if not is_full_git_object_id(base_oid):
+            raise SnapshotError(
+                f"resolving base_ref {base_ref!r} returned unexpected value "
+                f"{base_oid!r} (expected a full SHA-1/SHA-256 object ID)"
+            )
+        if three_dot:
+            base_oid = _merge_base(repo_root, base_oid, commit_sha, base_ref=base_ref)
+        # On large repos this can be several seconds; the _GIT_TIMEOUT
+        # ceiling above handles runaway cases.
+        rc, diff_stdout, diff_stderr = _git(
+            repo_root, *_NORMALIZED_DIFF_ARGS, f"{base_oid}..{commit_sha}"
+        )
+        if rc != 0:
+            raise SnapshotError(
+                f"git diff {base_oid}..{commit_sha} failed in {repo_root} "
+                f"(base_ref {base_ref!r}): {diff_stderr.strip()}"
+            )
+        # `--text` forces git to emit raw binary content as text, which can
+        # include NUL bytes. Python's subprocess rejects argv strings
+        # containing NUL, so strip them before the diff enters any prompt.
+        diff_text = _strip_hunk_function_context(diff_stdout.replace("\x00", ""))
 
     # Working-tree cleanliness probe. `git status --porcelain` returns
     # a stable, machine-parseable list (one line per affected path)
@@ -286,7 +481,12 @@ def take_snapshot(repo_root: Path, *, base_ref: str | None = None) -> Snapshot:
     # (" M", "M ", "MM", "A ", "D ", "R ", "C ", etc.) means
     # tracked-modified or staged. The two cases have different
     # operator-fix paths.
-    rc, status_stdout, status_stderr = _git(repo_root, "status", "--porcelain")
+    # `--no-replace-objects` prevents a replace ref on HEAD from making git
+    # compare the working tree to the replacement's tree instead of the real
+    # HEAD tree, which would produce a false "tracked-modified" dirty state.
+    rc, status_stdout, status_stderr = _git(
+        repo_root, "--no-replace-objects", "status", "--porcelain"
+    )
     if rc != 0:
         raise SnapshotError(
             f"could not check working-tree state in {repo_root}: {status_stderr.strip()}"
@@ -298,6 +498,7 @@ def take_snapshot(repo_root: Path, *, base_ref: str | None = None) -> Snapshot:
         commit_sha=commit_sha,
         branch=branch,
         base_ref=base_ref,
+        base_oid=base_oid if base_ref else None,
         diff_text=diff_text,
         dirty_state=dirty_state,
         untracked_count=untracked_count,

@@ -12,9 +12,17 @@ CLI_USAGE_ERROR = 2
     convention.
 
 CLARIFICATION_NEEDED = 10
-    Clarification needed: ``--spec-audit`` found blocking ambiguity, or the
-    loop wrote ``decision-needed.md`` for a producer escalation that covers every
-    active blocker.
+    Clarification needed. Three producers, all of which write an operator-facing
+    ``decision-needed.md`` (except the first, which is its own report):
+
+    - ``--spec-audit`` found blocking ambiguity in the brief;
+    - a producer escalation covering every active blocker;
+    - **two or more distinct reviewers each raised a blocker and the
+      synthesizer deactivated every one of them** (PR-h-01 increment D). Not a
+      defect claim — independent corroboration is the strongest signal syncade
+      produces, and discarding all of it may be right but is not a call a
+      machine should make silently. The document quotes each reviewer verbatim
+      next to what the synthesizer did with it.
 
 MAX_ROUNDS_REACHED = 20
     Max rounds reached before convergence. Latest findings are written for the

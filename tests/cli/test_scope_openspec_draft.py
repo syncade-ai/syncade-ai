@@ -419,7 +419,7 @@ def test_draft_spec_with_base_carries_base_into_ratification_instruction(
     # Patch take_snapshot so --base doesn't need a real git history
     from syncade import snapshot as snap_mod
 
-    def _fake_snapshot(repo_root, *, base_ref):
+    def _fake_snapshot(repo_root, *, base_ref, **kwargs):
         from syncade.snapshot import Snapshot
 
         return Snapshot(

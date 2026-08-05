@@ -6,6 +6,7 @@ from syncade.adapters.base import ReviewerInvocationError
 from syncade.adapters.registry import UnknownProviderError
 from syncade.dispatcher import DispatchResult
 from syncade.exit_codes import (
+    CLARIFICATION_NEEDED,
     CONFIG_ERROR,
     FINDINGS_PRESENT,
     REVIEWER_FAILURE,
@@ -19,7 +20,7 @@ from syncade.process import (
     SubprocessNotFoundError,
     SubprocessTimeoutError,
 )
-from syncade.synthesis import SynthesizerOutputError, has_active_blocker
+from syncade.synthesis import SynthesizerOutput, SynthesizerOutputError, has_active_blocker
 from syncade.synthesizer import SynthesizerResult
 from syncade.test_runner import TestRunResult, is_blocking_check_subprocess_error
 
@@ -39,6 +40,8 @@ def _classify_phase_failure(round_result: RoundResult) -> TerminationReason:
     if exit_code == CONFIG_ERROR:
         return "config_error"
     if exit_code == WORKTREE_ERROR:
+        if round_result.fail_closed_headers is not None:
+            return "diff_malformed"
         return "worktree_error"
     if exit_code == REVIEWER_OUTPUT_UNPARSEABLE:
         return "parse_failure"
@@ -151,4 +154,94 @@ def _compute_exit_code(
     if any(m.outcome == "failed" for m in mechanical):
         return FINDINGS_PRESENT
 
+    if _multi_reviewer_blockers_all_deactivated(dispatch_result):
+        return CLARIFICATION_NEEDED
+
     return SUCCESS
+
+
+def _multi_reviewer_blockers_all_deactivated(dispatch_result: DispatchResult) -> bool:
+    """True when two or more DISTINCT reviewers each raised at least one
+    blocker-severity finding and none survived as an active blocker.
+
+    PR-h-01 increment D — the paraphrase guard, and the reason it is shaped
+    this way. The unanimous-blocker rule and the exact-duplicate split guard
+    both need to know that two reviewers named the SAME concern. Two reviewers
+    describing one bug in different words is the normal case — consolidating
+    that is the synthesizer's whole job — so the synthesizer can emit them as
+    two single-reviewer findings, dismiss each on its own merits, and neither
+    guard fires. ``has_active_blocker`` then sees nothing and the round is a
+    clean SHIP.
+
+    Semantic identity has no cheap correct implementation, and a similarity
+    heuristic manufactures FALSE locks — the worst possible failure for a tool
+    whose value is that its refusals mean something. So this does not attempt
+    to decide whether two findings are the same concern. It asks a question
+    with a mechanical answer: did multiple independent reviewers each say
+    "blocker", and did every one of those get deactivated?
+
+    That shape is not necessarily wrong — but it is not a verdict a machine
+    should render silently, so it escalates to exit 10 (decision needed) rather
+    than either shipping or blocking. It cannot false-lock: the worst case is a
+    human being asked to look. Callers reach this only when
+    ``has_active_blocker`` is already False, so "none survived" needs no
+    separate check.
+
+    Deliberately silent when: only one reviewer raised a blocker (the
+    synthesizer's dismissal authority over a single-source blocker is
+    intentional), no reviewer raised one, or any blocker is still active (that
+    round is already exit 30).
+    """
+    reviewers_with_blockers = {
+        r.reviewer_name
+        for r in dispatch_result.successes
+        if r.output is not None and any(f.severity == "blocker" for f in r.output.findings)
+    }
+    return len(reviewers_with_blockers) >= 2
+
+
+def deactivated_blocker_details(
+    dispatch_result: DispatchResult,
+    synth_output: SynthesizerOutput,
+) -> list[tuple[str, str, str]]:
+    """``(reviewer_name, verbatim_finding_text, disposition)`` for every source
+    blocker, for the exit-10 operator document.
+
+    The text is the REVIEWER's own, read from the parsed reviewer output rather
+    than from synthesizer-supplied provenance — the operator is being asked to
+    judge the synthesizer, so quoting the synthesizer back at them would beg the
+    question. (Increment C makes the two provably equal anyway; reading the
+    source directly means this stays true if that check is ever relaxed.)
+
+    ``disposition`` reports what the synthesizer did with it, resolved by
+    matching provenance on ``(reviewer_name, original_index)``. A source blocker
+    with no consolidated finding at all is reported as dropped, which is its own
+    kind of answer.
+    """
+    details: list[tuple[str, str, str]] = []
+    for r in dispatch_result.successes:
+        if r.output is None:
+            continue
+        for idx, source in enumerate(r.output.findings):
+            if source.severity != "blocker":
+                continue
+            details.append((r.reviewer_name, source.finding, _disposition(synth_output, r, idx)))
+    return details
+
+
+def _disposition(synth_output: SynthesizerOutput, reviewer, idx: int) -> str:
+    for consolidated in synth_output.consolidated_findings:
+        if not any(
+            p.reviewer_name == reviewer.reviewer_name and p.original_index == idx
+            for p in consolidated.provenance
+        ):
+            continue
+        if consolidated.dismissed:
+            rationale = (consolidated.dismissal_rationale or "").strip()
+            return f"dismissed — {rationale}" if rationale else "dismissed"
+        if consolidated.severity != "blocker":
+            rationale = (consolidated.severity_change_rationale or "").strip()
+            downgrade = f"downgraded to {consolidated.severity}"
+            return f"{downgrade} — {rationale}" if rationale else downgrade
+        return f"kept at {consolidated.severity}"
+    return "dropped — no consolidated finding carries provenance for it"

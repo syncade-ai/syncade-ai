@@ -189,13 +189,20 @@ or bullets outside the JSON fence, the run fails with exit 70. The
 final byte of your substantive response should be the closing triple
 backticks of the verdict fence.
 
-Do NOT include any JSON outside this fence. The orchestrator parses the
-FINAL `ReviewerOutput`-shaped JSON block in your response — fenced or
-bare — so the verdict JSON must be the last JSON-like block. Extra
-JSON-looking fragments outside the verdict fence make artifact
-inspection harder and can confuse the fallback parser; keep examples
-out of the response or render them as inline backtick text rather than
-valid JSON.
+Do NOT include any JSON outside this fence. The orchestrator parses the LAST
+` ```json ` (or unlabeled) fence in your response and nothing else. It does not
+search for a block that validates: if that last fence is not a valid
+`ReviewerOutput`, the run fails with exit 70 — your verdict is discarded rather
+than replaced by something earlier.
+
+Two consequences worth internalizing:
+
+- **Never illustrate after your verdict.** A trailing "for reference, a passing
+  run looks like ```json {{...}}```" REPLACES your verdict with the illustration.
+  If you want to show an example, put it before the verdict fence, or render it
+  as inline backtick text rather than a fence.
+- **Label the verdict fence `json`.** A verdict inside a ` ```python ` or
+  ` ```text ` fence is treated as a code sample and never read.
 
 Schema for the JSON body inside the fence:
 

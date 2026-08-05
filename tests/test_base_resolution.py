@@ -215,3 +215,49 @@ class TestResolveScope:
         repo = _make_repo(tmp_path, default="main")
         with pytest.raises(ValueError):
             resolve_scope(repo, "bogus")
+
+    def test_replace_ref_on_feature_head_does_not_poison_merge_base(self, tmp_path):
+        """A refs/replace/* pointing the feature HEAD to the main tip must not
+        corrupt merge-base resolution — the true branch point is returned.
+
+        Without --no-replace-objects: git traverses the replace chain and sees
+        feature HEAD as the main tip, so merge-base(main_tip, main_tip) = main_tip
+        (not the actual branch point).  With the flag the real object is used."""
+        repo = _make_repo(tmp_path, default="main")
+        _commit(repo, "m2.txt", "second main commit")  # advance main past initial
+        branch_point = _rev(repo, "HEAD")  # true branch point
+        _feature_branch(repo)
+        feature_sha = _commit(repo, "feature.txt")
+        main_tip = _rev(repo, "main")
+        # Replace the feature commit with the main tip — without protection
+        # merge-base(feature=main_tip, main=main_tip) returns main_tip, not branch_point.
+        _git(repo, "update-ref", f"refs/replace/{feature_sha}", main_tip)
+
+        rb = resolve_scope(repo, "everything")
+        assert rb.base_sha == branch_point, (
+            "replacement ref on feature HEAD poisoned merge-base resolution"
+        )
+
+    def test_replace_ref_on_last_reviewed_sha_does_not_fail_ancestor_check(self, tmp_path):
+        """A refs/replace/* on the last-reviewed SHA must not cause _is_ancestor
+        to return False, silently widening scope to the full branch point.
+
+        Without --no-replace-objects: git resolves the recorded SHA to an
+        unrelated commit (not an ancestor of HEAD), so _is_ancestor returns False
+        and resolve_scope falls back to branch-point + note."""
+        repo = _make_repo(tmp_path, default="main")
+        _feature_branch(repo)
+        recorded_sha = _commit(repo, "reviewed.txt")
+        _commit(repo, "newer.txt")  # HEAD is now ahead of recorded_sha
+        # Create a main commit after the branch — it is NOT an ancestor of feature.
+        _git(repo, "checkout", "-q", "main")
+        non_ancestor = _commit(repo, "main_new.txt", "post-branch main commit")
+        _git(repo, "checkout", "-q", "feature")
+        # Replace the last-reviewed commit with the non-ancestor one.
+        _git(repo, "update-ref", f"refs/replace/{recorded_sha}", non_ancestor)
+
+        rb = resolve_scope(repo, "since-last-review", last_reviewed_sha=recorded_sha)
+        assert rb.base_sha == recorded_sha, (
+            "replacement ref caused false non-ancestor fallback to branch point"
+        )
+        assert rb.note is None

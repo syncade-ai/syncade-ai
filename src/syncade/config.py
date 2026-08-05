@@ -237,19 +237,16 @@ class ReviewConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    include_producer_summary: bool = Field(
-        default=False,
-        description="If False (v1 default), reviewers see only the PR doc, "
-        "the diff, and the test output — never the producer's narrative.",
-    )
     strip_repo_context_files: list[str] = Field(
         default_factory=lambda: list(REVIEWER_STRIP_FILES),
-        description="Files to delete (or stub) from each reviewer worktree "
-        "before dispatch, to prevent context leak from the producer's setup. "
-        "this same list also drives the reviewer-facing diff filter "
-        "(syncade.diff_filter.filter_diff_for_reviewer), so the worktree "
-        "strip and the diff strip can never diverge. The default is sourced "
-        "from REVIEWER_STRIP_FILES (single source of truth).",
+        description="Bare FILENAMES (not globs, not paths) to remove from each "
+        "reviewer worktree before dispatch and to strip from the reviewer-facing "
+        "diff, so the producer's setup cannot leak. Matching is by basename "
+        "equality: '*.md' matches nothing, and an entry containing '/' is "
+        "REFUSED by the worktree strip while the diff filter still matches its "
+        "basename -- so 'docs/CLAUDE.md' strips the diff hunk but leaves the "
+        "file readable in the worktree. Use bare basenames. The default is "
+        "sourced from REVIEWER_STRIP_FILES (single source of truth).",
     )
 
 

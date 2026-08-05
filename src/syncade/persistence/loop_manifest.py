@@ -97,6 +97,7 @@ def persist_loop_manifest(
                 "commit_sha": r.snapshot.commit_sha,
                 "branch": r.snapshot.branch,
                 "base_ref": r.snapshot.base_ref,
+                "base_oid": r.snapshot.base_oid,
                 "diff_present": bool(r.snapshot.diff_text),
             },
             "reviewers": (

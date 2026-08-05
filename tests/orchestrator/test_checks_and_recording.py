@@ -69,9 +69,9 @@ class TestReviewerWorktreeConfinement:
 
 
 class TestLastReviewedRecording:
-    """PR-B: a completed verdict (exit 0/20/30) records the branch's run-end HEAD
-    to .syncade/last-reviewed.json (per-branch); an aborted run (e.g. exit 40)
-    records nothing."""
+    """PR-B: a completed verdict where reviewers ran (exit 0/20/30, excluding empty-diff
+    terminals) records the reviewed snapshot SHA to .syncade/last-reviewed.json (per-branch);
+    an aborted run (e.g. exit 40) or an empty-diff terminal records nothing."""
 
     @staticmethod
     def _branch_and_head(repo):

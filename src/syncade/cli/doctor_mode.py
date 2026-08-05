@@ -61,6 +61,7 @@ def _run_doctor(args) -> int:
         force_dirty=args.force_dirty,
         base_ref=args.base,
         scope=args.scope,
+        two_dot=getattr(args, "two_dot", False),
         quiet=args.quiet,
         timeout_seconds=args.timeout,
     )

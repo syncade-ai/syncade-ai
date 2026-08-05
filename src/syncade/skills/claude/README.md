@@ -84,8 +84,6 @@ only; the skill adds no Python of its own (PR-B added `--scope`, PR-C added
   reports "Logged in...").
 - `syncade` installed and on `PATH` (`syncade --version` works from any
   directory — see the repo README's "Global install").
-- `<repo-root>/.syncade/config.toml` exists and specifies at least
-  one `[[reviewers]]` block plus a `[producer]` block.
 - macOS or Linux (the skill assumes `bash` / `zsh`; Windows-WSL is
   fine the same way running `syncade` manually is).
 
@@ -98,7 +96,7 @@ only; the skill adds no Python of its own (PR-B added `--scope`, PR-C added
 | You only want auth diagnostics, not a review | no — terminal: `syncade --auth-check` is ~5 s | yes |
 | You only want producer-commit diagnostics | no — terminal: `syncade --selfcheck` is ~30 s | yes |
 | You only want a spec audit of the brief | no — terminal: `syncade --spec-audit <pr-doc>` (manual; not part of the skill flow) is ~30–90 s | yes |
-| Resuming a prior run | terminal: `syncade --resume <run-id>` (when that ships) | yes |
+| Resuming a prior run | terminal: `syncade --resume <run-id>` | yes |
 
 The skill is opt-in. Operators running `syncade <pr-doc>` from a
 terminal still get the same loop; they just don't get the pre-flight

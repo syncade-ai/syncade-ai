@@ -42,6 +42,7 @@ def persist_round_manifest(
     producer_provider: str | None = None,
     producer_model: str | None = None,
     check_results: list[TestRunResult] | None = None,
+    diff_filter_refusal_headers: list[str] | None = None,
 ) -> Path:
     """Write ``<round_dir>/manifest.json`` summarizing the round.
 
@@ -63,6 +64,7 @@ def persist_round_manifest(
            "commit_sha": "...",
            "branch": "main",
            "base_ref": null,
+           "base_oid": null,
            "diff_present": false
          },
          "reviewers": [
@@ -148,6 +150,7 @@ def persist_round_manifest(
             "commit_sha": snapshot.commit_sha,
             "branch": snapshot.branch,
             "base_ref": snapshot.base_ref,
+            "base_oid": snapshot.base_oid,
             "diff_present": bool(snapshot.diff_text),
         },
         "reviewers": [_reviewer_manifest_entry(r) for r in dispatch_result.results],
@@ -191,6 +194,12 @@ def persist_round_manifest(
     # round's manifest stays byte-identical (no 'checks' key at all).
     if check_results:
         manifest["checks"] = [_check_manifest_entry(c) for c in check_results]
+
+    # present ONLY on a fail-closed diff-filter refusal (D2, PR-h-02d).
+    # Named "diff_filter_refusal_headers" so tooling can distinguish
+    # "reviewer worktree failed" from "diff section(s) were unidentifiable".
+    if diff_filter_refusal_headers is not None:
+        manifest["diff_filter_refusal_headers"] = diff_filter_refusal_headers
 
     manifest_path = round_dir / "manifest.json"
     atomic_write_json(manifest_path, manifest, sort_keys=False)

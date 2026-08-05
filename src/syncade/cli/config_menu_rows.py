@@ -48,7 +48,6 @@ _LABELS = {
     "max_retries": "Max retries",
     "keep": "Keep (runs)",
     "max_age_days": "Max age (days)",
-    "include_producer_summary": "Include producer summary",
     "strip_repo_context_files": "Strip repo-context files",
     "command": "Command",
     "severity": "Severity",
@@ -123,7 +122,7 @@ def _top_rows(config) -> list[Row]:
         Row("Judge", "drill", "synthesizer", "synthesizer", None, "synthesizer.model"),
         Row("Rounds (max)", "edit", "loop.max_rounds", "loop", "max_rounds", "loop.max_rounds"),
         Row(
-            "Time per round (s)",
+            "Time per subprocess (s)",
             "edit",
             "loop.timeout_seconds",
             "loop",

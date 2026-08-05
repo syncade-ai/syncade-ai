@@ -16,7 +16,15 @@ import pytest
 from syncade.adapters.fake import FakeAdapter
 from syncade.logging import Logger
 from syncade.orchestrator import run_review
-from tests.orchestrator._helpers import _factory_returning, _ship, _two_reviewer_config
+from tests.orchestrator._helpers import (
+    _factory_returning,
+    _no_ship,
+    _RoundCyclingSynth,
+    _ship,
+    _synth_clean,
+    _synth_with_blocker,
+    _two_reviewer_config,
+)
 
 # Skip everything in this module if git isn't on PATH.
 pytestmark = pytest.mark.skipif(
@@ -344,3 +352,178 @@ class TestRunStartTimestamp:
         # Both files render the SAME captured instant — not write time.
         assert manifest["started_at_utc"] == "2029-03-04T05:06:07Z"
         assert "**Started:** 2029-03-04 05:06:07 UTC" in summary
+
+
+# ---------------------------------------------------------------------------
+# Base OID stability across rounds
+# ---------------------------------------------------------------------------
+
+
+class TestBaseOidStabilityAcrossRounds:
+    """PR-h-02: later rounds must use the immutable base OID from the
+    initial snapshot, not re-resolve the symbolic base_ref.
+
+    If the base branch advances between rounds (e.g. an upstream push)
+    and the loop re-resolved the symbolic ref, round-1 reviewers would
+    see a DIFFERENT diff than round-0 reviewers — the phantom deletions
+    the adversarial reviewer reproduced.
+    """
+
+    def _two_round_config(self):
+        from syncade.config import SyncadeConfig
+
+        return SyncadeConfig(
+            reviewers=[
+                {"name": "rv1", "provider": "fake1", "model": "x"},
+                {"name": "rv2", "provider": "fake2", "model": "y"},
+            ],
+            loop={"max_rounds": 2},
+        )
+
+    def test_round1_snapshot_uses_resolved_oid_not_symbolic_ref(
+        self, repo_with_pr_doc, monkeypatch
+    ):
+        """Round 0 resolves base_ref='HEAD~1' to a concrete OID.
+        After the producer commits (advancing HEAD), 'HEAD~1' would
+        resolve to a DIFFERENT commit. Round 1 must use the original
+        OID, not re-resolve the symbolic name."""
+        import syncade.orchestrator.loop_round_step as lrs_module
+        from syncade.adapters.fake import FakeProducerAdapter
+
+        repo, pr_doc = repo_with_pr_doc
+        # Add a second commit so HEAD~1 resolves.
+        (repo / "feature.py").write_text("# feature\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "feature"], cwd=repo, check=True)
+
+        # Capture A's OID: what HEAD~1 points to RIGHT NOW (before the producer commits).
+        original_base_oid = subprocess.run(
+            ["git", "rev-parse", "HEAD~1"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        # Record every base_ref argument loop_round_step passes to take_snapshot.
+        real_take_snapshot = lrs_module.take_snapshot
+        recorded_base_refs: list[str | None] = []
+
+        def recording_take_snapshot(repo_root, *, base_ref=None, three_dot=True):
+            recorded_base_refs.append(base_ref)
+            # A later round re-snapshots against the OID round 0 already
+            # resolved, so it must NOT re-derive a branch point: doing so would
+            # convert a --two-dot run to three-dot semantics mid-loop.
+            if recorded_base_refs[:-1]:
+                assert three_dot is False, "later rounds must reuse the pinned base OID as-is"
+            return real_take_snapshot(repo_root, base_ref=base_ref, three_dot=three_dot)
+
+        monkeypatch.setattr(lrs_module, "take_snapshot", recording_take_snapshot)
+
+        adapters = [
+            FakeAdapter(canned_output=_no_ship()),
+            FakeAdapter(canned_output=_no_ship()),
+            FakeAdapter(canned_output=_ship()),
+            FakeAdapter(canned_output=_ship()),
+        ]
+        # Producer commits, advancing HEAD so HEAD~1 changes.
+        producer = FakeProducerAdapter(commit_message="fix: round-1-base-oid-regression")
+
+        run_review(
+            repo_root=repo,
+            pr_doc_path=pr_doc,
+            config=self._two_round_config(),
+            base_ref="HEAD~1",
+            adapter_factory=_factory_returning(*adapters),
+            synthesizer_adapter=_RoundCyclingSynth(_synth_with_blocker(), _synth_clean()),
+            producer_adapter=producer,
+        )
+
+        # loop_round_step.take_snapshot is called only for rounds > resumed_round_start.
+        # In a 2-round run that starts at round 0, it fires once for round 1.
+        assert len(recorded_base_refs) >= 1, (
+            "take_snapshot was never called in loop_round_step for round 1"
+        )
+        round1_base_ref = recorded_base_refs[0]
+        assert round1_base_ref == original_base_oid, (
+            f"round 1 snapshot re-resolved symbolic base_ref {round1_base_ref!r} "
+            f"instead of using the immutable OID {original_base_oid!r} from round 0"
+        )
+
+    def test_run_review_resume_snapshot_uses_pinned_oid(self, repo_with_pr_doc, monkeypatch):
+        """run_review with resume_plan.base_oid set must pass the OID to take_snapshot
+        at the run-entry, even if the caller passes the (now-moved) symbolic base_ref.
+        This closes the exported-API gap: a direct run_review caller can never
+        accidentally re-resolve a moved ref on resume."""
+        import syncade.orchestrator.loop as loop_module
+        from syncade.config import SyncadeConfig
+        from syncade.orchestrator.resume import plan_resume
+        from tests.orchestrator._resume_fixtures import _prepare_aborted_run
+
+        repo, pr_doc = repo_with_pr_doc
+        subprocess.run(["git", "branch", "-m", "feature"], cwd=repo, check=False)
+        # Add a commit so HEAD~1 resolves.
+        (repo / "f.py").write_text("x")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add f"], cwd=repo, check=True)
+        original_oid = subprocess.run(
+            ["git", "rev-parse", "HEAD~1"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        # Prepare an aborted run and inject base_oid.
+        run_dir, _ = _prepare_aborted_run(
+            repo,
+            pr_doc,
+            completed_round_count=1,
+            max_rounds=2,
+            aborted_round_partial=True,
+            aborted_exit_code=40,
+        )
+        ri = run_dir / "run-init.json"
+        d = json.loads(ri.read_text())
+        d["base_ref"], d["base_oid"] = "HEAD~1", original_oid
+        ri.write_text(json.dumps(d))
+
+        # Advance HEAD so HEAD~1 now resolves differently.
+        (repo / "g.py").write_text("y")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add g"], cwd=repo, check=True)
+
+        plan = plan_resume(repo, run_dir)
+        assert plan.base_oid == original_oid
+
+        # Capture what base_ref loop.take_snapshot receives.
+        real_ts = loop_module.take_snapshot
+        captured: list[str | None] = []
+
+        def capturing_ts(repo_root, *, base_ref=None, three_dot=True):
+            captured.append(base_ref)
+            # The resumed base IS the original run's resolved diff base, so
+            # re-deriving a branch point from it would move the review target.
+            assert three_dot is False, "a resumed run must reuse the pinned base OID as-is"
+            return real_ts(repo_root, base_ref=base_ref, three_dot=three_dot)
+
+        monkeypatch.setattr(loop_module, "take_snapshot", capturing_ts)
+
+        cfg = SyncadeConfig(
+            reviewers=[
+                {"name": "rv1", "provider": "fake1", "model": "x"},
+                {"name": "rv2", "provider": "fake2", "model": "y"},
+            ],
+            loop={"max_rounds": 2},
+        )
+        run_review(
+            repo_root=repo,
+            pr_doc_path=pr_doc,
+            config=cfg,
+            base_ref="HEAD~1",  # caller passes symbolic; resume_plan.base_oid must win
+            adapter_factory=_factory_returning(FakeAdapter(_ship()), FakeAdapter(_ship())),
+            logger=Logger(level="quiet"),
+            resume_plan=plan,
+            force_drift=True,
+        )
+        assert captured, "take_snapshot was never called in loop.run_review"
+        assert captured[0] == original_oid, (
+            f"run_review resume snapshot used {captured[0]!r} "
+            f"instead of pinned OID {original_oid!r}"
+        )

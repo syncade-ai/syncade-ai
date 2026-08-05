@@ -194,7 +194,7 @@ class TestLoadTemplate:
         """PR-5.6: the template must instruct the reviewer to wrap the
         verdict JSON in a ```json fence and to keep all other JSON-shaped
         text out of the response. Belt-and-braces with the parser's
-        position-sorted fallback extraction."""
+        verdict-block selection."""
         template = load_reviewer_template(tmp_path)
         lower = template.lower()
         # Names the fence and the json label

@@ -178,6 +178,40 @@ def _drain_after_timeout(
     return stdout or initial_stdout, stderr or initial_stderr
 
 
+def _git_hardened_env(argv: list[str], env: dict[str, str] | None) -> dict[str, str] | None:
+    """Force ``GIT_NO_REPLACE_OBJECTS=1`` on every ``git`` child.
+
+    ``refs/replace/*`` lives in the shared ``.git`` common dir and is
+    PRODUCER-WRITABLE, so a replacement object silently substitutes itself in
+    any git command that READS a commit. Reproduced, each against plain git
+    first so the fixture was known-sensitive:
+
+    - ``git merge-base --is-ancestor`` returned 0 for a non-descendant, which
+      bypassed the fast-forward-only branch-advance invariant and landed the
+      operator's branch on an unrelated commit.
+    - ``git log -1 --pretty=%s <sha>`` returned an attacker-chosen subject, so
+      an operator-facing commit summary can be a lie.
+    - ``git reset --hard <sha>`` restored an attacker's tree, so a producer
+      retry resumes from code nobody wrote.
+
+    (``git rev-parse HEAD`` is NOT affected — it resolves a ref name without
+    reading the object. Measured, not assumed.)
+
+    Pinning ``--no-replace-objects`` per call site failed three dogfood rounds
+    running: each round the blind panel found the next unflagged invocation,
+    and two were still open when this landed. Setting it HERE makes every
+    current and future git invocation safe by default — the per-call flags
+    that remain are belt-and-braces, not the load-bearing defense.
+
+    Non-git children are returned unchanged: the test/check legs share this
+    helper and must keep the environment the operator configured.
+    """
+    if os.path.basename(argv[0]) != "git":
+        return env
+    # env=None means "inherit"; materialize it so the var can be added.
+    return {**(os.environ if env is None else env), "GIT_NO_REPLACE_OBJECTS": "1"}
+
+
 def run_subprocess(
     argv: list[str],
     *,
@@ -235,7 +269,7 @@ def run_subprocess(
         proc = subprocess.Popen(
             argv,
             cwd=str(cwd) if cwd is not None else None,
-            env=env,
+            env=_git_hardened_env(argv, env),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

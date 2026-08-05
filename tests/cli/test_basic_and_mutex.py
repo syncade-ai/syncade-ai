@@ -13,6 +13,7 @@ CLI deliberately doesn't expose).
 """
 
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,24 @@ def test_version_flag_prints_version_and_exits_zero(capsys):
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
     assert f"syncade {__version__}" in captured.out
+
+
+def test_reported_version_matches_the_packaged_one():
+    """`--version` must not report a version the package was not built with.
+
+    The number lives in TWO places — `pyproject.toml` (what gets packaged) and
+    `syncade.__version__` (what `--version` prints) — and nothing tied them together. Bumping
+    one and forgetting the other makes the CLI state a fact that is false, which is the same
+    class of defect as the documentation claims corrected in 0.3.0.
+    """
+    import tomllib
+
+    root = Path(__file__).resolve().parents[2]
+    packaged = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    assert packaged == __version__, (
+        f"pyproject.toml says {packaged!r} but syncade.__version__ is {__version__!r} — "
+        "`--version` would report a version that was never packaged"
+    )
 
 
 def test_help_flag_exits_zero_and_lists_commands(capsys):
@@ -424,3 +443,65 @@ def test_auth_check_help_appears(capsys):
     captured = capsys.readouterr()
     assert "--auth-check" in captured.out
     assert "authenticate" in captured.out.lower()
+
+
+def test_two_dot_with_resume_errors_with_mutex_message(tmp_path, capsys):
+    """PR-h-02 increment B: ``--two-dot`` selects a diff RANGE, and a resumed
+    run has none left to select — run-init.json records the base OID the
+    original run already resolved, so the flag would silently do nothing."""
+    rc = main(["--repo-root", str(tmp_path), "--two-dot", "--resume", "abc"])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "--two-dot cannot be combined with --resume" in captured.err
+
+
+def test_two_dot_with_gc_errors_because_gc_renders_no_diff(tmp_path, capsys):
+    """``--two-dot`` without ``--base``/``--scope`` is rejected before any diff-mode
+    check runs, so the error fires on the missing base, not on the --gc combination."""
+    rc = main(["--repo-root", str(tmp_path), "--two-dot", "--gc"])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "--two-dot" in captured.err and "--base" in captured.err
+
+
+def test_two_dot_without_base_or_scope_is_rejected(tmp_path, capsys):
+    """``--two-dot`` without ``--base`` or ``--scope`` has no range to switch;
+    validate_command_shape must reject it rather than silently accepting a no-op."""
+    rc = main(["--repo-root", str(tmp_path), "--two-dot", "pr.md"])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "--two-dot requires --base or --scope" in captured.err
+
+
+def test_two_dot_with_base_passes_validate_command_shape(tmp_path, capsys):
+    """``--two-dot --base <ref> --doctor`` passes validate_command_shape; subsequent
+    failure (no git repo) is exit 60, not 2."""
+    rc = main(["--repo-root", str(tmp_path), "--two-dot", "--base", "abc123", "--doctor"])
+    # exit 60 (no git repo) means validation passed; exit 2 means rejected
+    assert rc != 2
+    captured = capsys.readouterr()
+    assert "--two-dot requires --base" not in captured.err
+
+
+def test_empty_base_string_is_rejected(tmp_path, capsys):
+    """``--base ""`` is always invalid: take_snapshot treats an empty base as
+    absent (``if base_ref:``), silently producing the no-diff full-HEAD path
+    instead of a usage error. validate_command_shape must catch it before any
+    filesystem work so the operator gets a clear message."""
+    rc = main(["--repo-root", str(tmp_path), "--base", "", "pr.md"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--base requires a non-empty ref" in err
+
+
+def test_two_dot_with_install_skill_is_rejected(tmp_path, capsys):
+    """``--install-skill`` renders no diff; ``--two-dot`` with it silently
+    ignores the diff-shaping flag. validate_command_shape must reject the
+    combination with a clear 'renders no reviewer diff' message."""
+    rc = main(
+        ["--repo-root", str(tmp_path), "--two-dot", "--base", "main", "--install-skill", "all"]
+    )
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--two-dot" in err and "--install-skill" in err
+    assert "renders no reviewer diff" in err

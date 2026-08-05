@@ -25,6 +25,7 @@ def _prepare_aborted_run(
     aborted_round_partial: bool = True,
     budget_tokens: int | None = None,
     budget_usd: float | None = None,
+    base_oid: str | None = None,
 ) -> tuple[Path, str]:
     """Stage an aborted-run fixture: write run-init.json + N completed
     round directories with realistic manifests + (optionally) a
@@ -94,6 +95,7 @@ def _prepare_aborted_run(
         started_at=started_at,
         pr_doc_path=pr_doc_path,
         base_ref=None,
+        base_oid=base_oid,
         starting_sha=repo_head_sha,
         operator_branch=repo_branch,
         max_rounds=max_rounds,

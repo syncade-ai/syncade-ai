@@ -242,6 +242,7 @@ def load_completed_round(round_dir: Path):
             commit_sha=str(snap_data["commit_sha"]),
             branch=snap_data.get("branch"),
             base_ref=snap_data.get("base_ref"),
+            base_oid=snap_data.get("base_oid"),
             diff_text=_REHYDRATED_DIFF_PRESENT_SENTINEL if diff_present else "",
             dirty_state="clean",  # Not persisted; assume clean (completed round).
         )

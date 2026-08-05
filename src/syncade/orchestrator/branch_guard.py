@@ -29,9 +29,9 @@ _COMMON_DEFAULT_NAMES = frozenset({"main", "master", "trunk", "develop", "develo
 def current_branch_name(repo_root: Path) -> str | None:
     """The checked-out branch name, or ``None`` for detached HEAD.
 
-    Lets the CLI run :func:`guard_default_branch` BEFORE the auth gate probes a provider CLI
-    (``codex login status`` is a subprocess), so a committing run on the default branch
-    refuses before any subprocess spawns — ``run_review`` re-checks for library callers.
+    Lets the CLI run :func:`guard_default_branch` before dispatching; ``run_review``
+    re-checks for library callers. Under D1(c) (PR-h-02d.5), baseless loop runs refuse
+    here before auth; based/scoped runs defer to ``run_review`` and auth runs first.
     """
     result = subprocess.run(
         ["git", "-C", str(repo_root), "symbolic-ref", "--quiet", "--short", "HEAD"],

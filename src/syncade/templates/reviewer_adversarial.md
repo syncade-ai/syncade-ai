@@ -154,4 +154,10 @@ Return exactly one fenced JSON object matching this schema:
 {json_schema}
 ```
 
-Do not include prose outside the fenced JSON. The field names in that schema are exact and load-bearing — the parser rejects aliases. Use `file` (never `location`, `path`, `src`, `where`, `filename`) and `line` (never `line_number`, `lineno`, `at`). A non-schema field name makes the parser reject your entire response and fails the round with exit 70. Emit the verdict JSON as the final JSON-shaped block in your response, with no other JSON after it.
+Do not include prose outside the fenced JSON. The field names in that schema are exact and load-bearing — the parser rejects aliases. Use `file` (never `location`, `path`, `src`, `where`, `filename`) and `line` (never `line_number`, `lineno`, `at`). A non-schema field name makes the parser reject your entire response and fails the round with exit 70.
+
+**Emit your verdict in exactly ONE ` ```json ` fence, and emit no second one.** The parser reads that fence and nothing else in your response. Three consequences, each of which has cost a real run:
+
+- **Multiple ` ```json ` fences are parsed last-wins.** The parser takes the last one, so a trailing illustration in a second ` ```json ` fence silently replaces your real verdict. Show examples as inline backtick text or in a ` ```text ` fence, never a second ` ```json ` one.
+- **Never place an example AFTER your verdict.** A trailing "for reference, a passing run looks like ..." is the single most common way a real NO-SHIP verdict has been lost.
+- **Label the fence `json`.** A verdict inside ` ```python `, ` ```json5 `, or any other labeled fence is treated as a code sample and never read, which fails the round.

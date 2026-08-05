@@ -131,3 +131,88 @@ class TestProvenanceSeverityValidation:
             synthesis_summary="two reviewers flagged the same blocker",
         )
         _validate_provenance_against_reviewers(out, self._reviewer_results())
+
+
+class TestProvenanceQuoteValidation:
+    """PR-h-01 increment C. ``original_description`` renders in findings.md as
+    the reviewer's verbatim framing, so a synthesizer able to author it can
+    restate a broad blocker as something narrow, dismiss the restatement with a
+    rationale that is true *of the restatement*, and leave the operator reading
+    a fabricated quote attributed to a reviewer who never wrote it.
+    """
+
+    _SOURCE = "auth query interpolates the username without parameterization"
+
+    def _reviewer_results(self) -> list[ReviewerRunResult]:
+        out = ReviewerOutput(
+            verdict="NO-SHIP",
+            summary="bug",
+            findings=[
+                Finding(
+                    severity="blocker",
+                    file="src/auth.py",
+                    line=10,
+                    spec_clause="§3.1",
+                    finding=self._SOURCE,
+                )
+            ],
+            priority_order=[0],
+            coverage_gaps=[],
+            dismissed_concerns=[],
+        )
+        return [
+            ReviewerRunResult(
+                reviewer_name="rv1",
+                provider="openai",
+                output=out,
+                error=None,
+                duration_seconds=1.0,
+            )
+        ]
+
+    def _output(self, quote: str) -> SynthesizerOutput:
+        return SynthesizerOutput(
+            consolidated_findings=[
+                ConsolidatedFinding(
+                    description="sql injection in auth",
+                    file="src/auth.py",
+                    severity="blocker",
+                    provenance=[
+                        FindingProvenance(
+                            reviewer_name="rv1",
+                            original_severity="blocker",
+                            original_index=0,
+                            original_description=quote,
+                        )
+                    ],
+                )
+            ],
+            synthesis_summary="consolidated",
+        )
+
+    def test_verbatim_quote_passes(self) -> None:
+        _validate_provenance_against_reviewers(self._output(self._SOURCE), self._reviewer_results())
+
+    def test_reflowed_quote_passes(self) -> None:
+        """Line-wrapping and indentation are not rewrites — a model that
+        reflows a long quote must not burn the run."""
+        reflowed = "auth query interpolates\n   the username    without\nparameterization"
+        _validate_provenance_against_reviewers(self._output(reflowed), self._reviewer_results())
+
+    @pytest.mark.parametrize(
+        "quote",
+        [
+            "auth query has a minor style issue",  # wholesale rewrite
+            "auth query interpolates the username",  # truncated — drops the point
+            "Auth query interpolates the username without parameterization",  # case
+            "auth query interpolates the user name without parameterization",  # one word
+        ],
+        ids=["rewritten", "truncated", "recased", "reworded"],
+    )
+    def test_any_rewrite_is_rejected(self, quote: str) -> None:
+        with pytest.raises(SynthesizerOutputError) as exc:
+            _validate_provenance_against_reviewers(self._output(quote), self._reviewer_results())
+        msg = str(exc.value)
+        assert "original_description does not match" in msg
+        assert self._SOURCE in msg  # the operator sees what the reviewer really wrote
+        assert quote in msg  # ...and what the synthesizer substituted

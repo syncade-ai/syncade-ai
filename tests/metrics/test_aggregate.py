@@ -93,6 +93,44 @@ def test_read_run_maps_no_ship(tmp_path):
     assert row.blockers == 1
 
 
+def test_read_run_maps_no_change_verdict(tmp_path):
+    """Regression: a no_changes_to_review run must map to NO-CHANGE, not SHIP."""
+    runs = tmp_path / "runs"
+    d = runs / "R-nochange"
+    d.mkdir(parents=True)
+    (d / "loop-manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "R-nochange",
+                "final_exit_code": 0,
+                "final_round": 0,
+                "max_rounds": 3,
+                "started_at_utc": "2026-08-01T09:00:00",
+                "syncade_version": "0.1.0",
+                "termination_reason": "no_changes_to_review",
+                "rounds": [_round(exit_code=0)],
+            }
+        )
+    )
+    (d / "run-init.json").write_text(
+        json.dumps(
+            {
+                "operator_branch": "work",
+                "base_ref": "HEAD",
+                "pr_doc_path": "pr.md",
+                "starting_sha": "abc123",
+                "config_snapshot": {"reviewers": []},
+            }
+        )
+    )
+    row, _ = read_run(d)
+    assert row.verdict == "NO-CHANGE", (
+        f"expected NO-CHANGE verdict for no_changes_to_review run, got {row.verdict!r}"
+    )
+    assert row.final_exit_code == 0
+    assert row.termination_reason == "no_changes_to_review"
+
+
 def test_read_run_flags_handoff_and_decision(tmp_path):
     runs = tmp_path / "runs"
     d = _write_run(runs, "R-h", exit_code=10, rounds=[_round(exit_code=10)], handoff=True)

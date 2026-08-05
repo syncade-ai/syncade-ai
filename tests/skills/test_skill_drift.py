@@ -93,3 +93,34 @@ def test_shared_span_surfaces_no_ship_and_decision_docs() -> None:
     assert not missing, (
         f"skill shared span no longer surfaces {missing} -- PR-v2-17 legibility regressed"
     )
+
+
+def test_exit_10_synopsis_does_not_unconditionally_direct_to_resume() -> None:
+    """The exit-10 synopsis bullet must NOT instruct the operator to write
+    decision.txt and run --resume unconditionally. That applies only to the
+    producer-escalation shape; the blockers-all-deactivated shape is non-resumable.
+    Step 6 correctly branches by heading; the synopsis must defer to Step 6 rather
+    than pre-empting it with the wrong shape."""
+    span = _shared_span(CLAUDE_SKILL).decode("utf-8")
+    # Find the exit-10 bullet line (starts with "- `10`")
+    lines = span.splitlines()
+    exit10_idx = next((i for i, ln in enumerate(lines) if ln.strip().startswith("- `10`")), None)
+    assert exit10_idx is not None, "exit-10 bullet not found in shared span"
+    # Collect the bullet and its continuation lines (indented continuation)
+    bullet_lines = [lines[exit10_idx]]
+    for ln in lines[exit10_idx + 1 :]:
+        if ln.startswith("  "):  # indented continuation of the bullet
+            bullet_lines.append(ln)
+        else:
+            break
+    bullet_text = " ".join(bullet_lines)
+    # The synopsis must NOT directly instruct writing decision.txt or running --resume;
+    # those instructions live in Step 6 where they are correctly conditioned on the shape.
+    assert "decision.txt" not in bullet_text, (
+        "exit-10 synopsis unconditionally mentions decision.txt — "
+        "that only applies to the producer-escalation shape; defer to Step 6"
+    )
+    assert "syncade --resume" not in bullet_text, (
+        "exit-10 synopsis unconditionally directs to --resume — "
+        "that only applies to the producer-escalation shape; defer to Step 6"
+    )

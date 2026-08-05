@@ -102,7 +102,7 @@ below; `worktree_base` is the one top-level scalar.
 | `pricing` | `[pricing]` table | packaged price table | Per-model token pricing for cost estimation. See [`[pricing]`](#pricing--pricingconfig). |
 | `synthesizer` | `[synthesizer]` table | `openai`/`gpt-5.5` | The cold judge. See [cold actors](#synthesizer--drafter--auditor-cold-actors). |
 | `drafter` | `[drafter]` table | `openai`/`gpt-5.5` | The `--draft-spec` actor. See [cold actors](#synthesizer--drafter--auditor-cold-actors). |
-| `auditor` | `[auditor]` table | `openai`/`gpt-5.5` | The `--audit` actor. See [cold actors](#synthesizer--drafter--auditor-cold-actors). |
+| `auditor` | `[auditor]` table | `openai`/`gpt-5.5` | The `--spec-audit` actor. See [cold actors](#synthesizer--drafter--auditor-cold-actors). |
 
 ## `[loop]` — `LoopConfig`
 
@@ -110,7 +110,7 @@ below; `worktree_base` is the one top-level scalar.
 | Field | Type | Default | What it does |
 |---|---|---|---|
 | `max_rounds` | int, 1–10 | `3` | Max rounds of (reviewers → synth → optional test → producer-if-NO-SHIP). SHIP ends the loop early. `1` = single-pass, no producer. `--max-rounds` overrides. Ceiling raised 3→10; budget/timeout are the real runaway guards. |
-| `timeout_seconds` | float > 0 | `1800` | Per-reviewer wall-clock cap (SIGKILL past it). `--timeout` overrides. Must be finite. |
+| `timeout_seconds` | float > 0 | `1800` | Per-subprocess wall-clock cap — fallback for every leg (reviewers, judge, test, checks, producer). SIGKILL past it. `--timeout` overrides. Must be finite. |
 | `budget_tokens` | int > 0 or unset | unset | Optional token ceiling; aborts the loop at a dispatch boundary (exit 25). A hard cap. `--budget-tokens` overrides. |
 | `budget_usd` | float > 0 or unset | unset | Optional API-equivalent-cost ceiling. Softer than tokens (an unpriced actor is uncounted). `--budget-usd` overrides. |
 | `test_command` | string or unset | unset | Optional per-round test command; a non-zero exit gates the round. |
@@ -121,8 +121,7 @@ below; `worktree_base` is the one top-level scalar.
 <!-- config-fields: ReviewConfig -->
 | Field | Type | Default | What it does |
 |---|---|---|---|
-| `include_producer_summary` | bool | `false` | Whether a later round's reviewers see the previous producer's summary. Off keeps reviewers blind. |
-| `strip_repo_context_files` | list of globs | repo-context set (`CLAUDE.md`, `AGENTS.md`, …) | Files whose diff hunks are stripped from reviewer-facing diffs so repo instructions don't leak. |
+| `strip_repo_context_files` | list of bare filenames (**not globs**) | repo-context set (`CLAUDE.md`, `AGENTS.md`, …) | Files removed from each reviewer worktree AND stripped from the reviewer-facing diff, so repo instructions don't leak. Matched by **basename equality** — `*.md` matches nothing. An entry containing `/` (e.g. `docs/CLAUDE.md`) strips the diff hunk but is REFUSED by the worktree strip, leaving the file readable; use bare basenames. |
 
 ## `[[reviewers]]` — `ReviewerConfig`
 
@@ -190,7 +189,7 @@ judge) is kept in sync with the reviewer model on purpose. They share the same f
 | `api_key_env` | env var name or unset | unset | For `auth = "api"`: the env var holding the key. |
 
 <!-- config-fields: AuditorConfig -->
-### `[auditor]` — the `--audit` actor (`AuditorConfig`)
+### `[auditor]` — the `--spec-audit` actor (`AuditorConfig`)
 
 | Field | Type | Default | What it does |
 |---|---|---|---|

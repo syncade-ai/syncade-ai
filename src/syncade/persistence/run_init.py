@@ -19,6 +19,7 @@ Schema:
      "started_at_utc": "2026-05-28T16:43:59Z",
      "pr_doc_path": "design docs",
      "base_ref": "1dbbca3",
+     "base_oid": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
      "starting_sha": "3442e72ab60b43153cdbee83f3187203b289f14a",
      "operator_branch": "main",
      "max_rounds": 3,
@@ -72,6 +73,7 @@ def persist_run_init(
     started_at: datetime,
     pr_doc_path: Path,
     base_ref: str | None,
+    base_oid: str | None,
     starting_sha: str,
     operator_branch: str | None,
     max_rounds: int,
@@ -104,6 +106,10 @@ def persist_run_init(
         base_ref: The ``--base`` value the CLI received, or ``None``
             if no diff was requested. Distinct from ``starting_sha``
             (the resolved HEAD SHA at run start).
+        base_oid: The resolved full object ID of ``base_ref`` at
+            snapshot time, or ``None`` when ``base_ref`` is ``None``.
+            Unlike ``base_ref``, this is immutable even if the ref
+            moves after the run starts.
         starting_sha: The full HEAD object ID the orchestrator
             snapshotted at round 0. The authoritative tree state
             the run began against.
@@ -134,6 +140,7 @@ def persist_run_init(
         "started_at_utc": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "pr_doc_path": str(pr_doc_path),
         "base_ref": base_ref,
+        "base_oid": base_oid,
         "starting_sha": starting_sha,
         "operator_branch": operator_branch,
         "max_rounds": max_rounds,

@@ -9,6 +9,7 @@ import pytest
 
 from syncade import config_loader
 from syncade.cli import main
+from syncade.cli.config_keys import InvalidValue, coerce
 from syncade.config import SyncadeConfig
 
 
@@ -508,14 +509,15 @@ def test_set_new_scalar_field_materializes_paired_section(tmp_path, monkeypatch,
     assert data["producer"]["provider"] and data["producer"]["model"]  # pair preserved
 
 
-def test_set_bool_field(tmp_path, monkeypatch, capsys):
-    g, repo = _make(tmp_path)
-    _use_global(monkeypatch, g)
-    rc = main(
-        ["--repo-root", str(repo), "--config", "set", "review.include_producer_summary", "true"]
-    )
-    assert rc == 0
-    assert tomllib.loads(g.read_text())["review"]["include_producer_summary"] is True
+def test_coerce_bool_accepts_the_documented_spellings():
+    """`review.include_producer_summary` was the schema's ONLY bool field; PR-h-03 item 7
+    deleted it as a dead knob. `coerce`'s bool arm survives — it is what stops the next bool
+    field from reading `"false"` as True — so it is now exercised directly instead of
+    through a field that no longer exists."""
+    for raw in ("true", "TRUE", "yes", "1", "on"):
+        assert coerce(bool, raw) is True, raw
+    for raw in ("false", "FALSE", "no", "0", "off"):
+        assert coerce(bool, raw) is False, raw
 
 
 def test_set_keymerge_int_field(tmp_path, monkeypatch, capsys):
@@ -577,15 +579,11 @@ def test_set_check_severity_by_index(tmp_path, monkeypatch, capsys):
     assert data["checks"][0]["name"] == "x"  # rest of the element preserved
 
 
-def test_set_bad_bool_exit_50_file_untouched(tmp_path, monkeypatch, capsys):
-    g, repo = _make(tmp_path, global_toml="")
-    _use_global(monkeypatch, g)
-    before = g.read_bytes()
-    rc = main(
-        ["--repo-root", str(repo), "--config", "set", "review.include_producer_summary", "maybe"]
-    )
-    assert rc == 50
-    assert g.read_bytes() == before
+def test_coerce_bool_rejects_a_non_boolean():
+    """The exit-50 half of the deleted bool-field test. A bare `bool(raw)` would have
+    accepted "maybe" as True — the trap this arm exists to prevent."""
+    with pytest.raises(InvalidValue):
+        coerce(bool, "maybe")
 
 
 def test_set_optional_field_cleared_by_empty(tmp_path, monkeypatch, capsys):

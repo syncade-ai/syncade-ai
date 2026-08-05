@@ -323,3 +323,67 @@ class TestPersistLoopSummary:
         assert series_idx != -1
         assert leadin_idx != -1
         assert series_idx < leadin_idx
+
+
+class TestRoundVerdictLabel:
+    """_round_verdict_label handles all exit codes including exit 10."""
+
+    def _round_result(self, exit_code: int):
+        from syncade.orchestrator import RoundArtifacts, RoundResult
+        from tests.persistence._helpers import _snapshot
+
+        round_dir = Path("round-0")
+        dispatch = DispatchResult(results=[], total_duration_seconds=0.0)
+        return RoundResult(
+            round_idx=0,
+            snapshot=_snapshot(),
+            dispatch_result=dispatch,
+            synth_result=None,
+            test_result=None,
+            test_skip_reason=None,
+            test_worktree_error=None,
+            producer_result=None,
+            round_exit_code=exit_code,
+            artifacts=RoundArtifacts(
+                round_idx=0,
+                round_dir=round_dir,
+                manifest_path=round_dir / "manifest.json",
+                summary_path=round_dir / "summary.md",
+            ),
+        )
+
+    def test_exit_0_is_ship(self):
+        from syncade.persistence.loop_summary_text import _round_verdict_label
+
+        assert _round_verdict_label(self._round_result(0)) == "SHIP"
+
+    def test_exit_30_is_no_ship(self):
+        from syncade.persistence.loop_summary_text import _round_verdict_label
+
+        assert _round_verdict_label(self._round_result(30)) == "NO-SHIP"
+
+    def test_exit_10_is_decision_needed_not_error(self):
+        """exit 10 is a judgment checkpoint, not an error — must render
+        'DECISION NEEDED', not 'ERROR (exit 10)'."""
+        from syncade.persistence.loop_summary_text import _round_verdict_label
+
+        label = _round_verdict_label(self._round_result(10))
+        assert label == "DECISION NEEDED"
+        assert "ERROR" not in label
+
+
+class TestDecisionNeededLoopSummaryText:
+    """The decision_needed next-steps in loop-summary.md must not make
+    unconditional branch-advance claims."""
+
+    def test_decision_needed_next_steps_does_not_say_without_advancing(self, tmp_path):
+        """The 'decision_needed' entry in _LOOP_NEXT_STEPS must not say
+        'WITHOUT advancing any branch' — that claim is false when an earlier
+        round already committed."""
+        from syncade.persistence.loop_summary_text import _LOOP_NEXT_STEPS
+
+        text = _LOOP_NEXT_STEPS.get("decision_needed", "")
+        assert "WITHOUT advancing any branch" not in text, (
+            "_LOOP_NEXT_STEPS['decision_needed'] still contains the stale "
+            "'WITHOUT advancing any branch' claim"
+        )

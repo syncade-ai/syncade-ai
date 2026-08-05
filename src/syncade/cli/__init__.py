@@ -45,7 +45,12 @@ from .modes import (
 )
 from .parser import _max_rounds, _positive_float, build_parser
 from .paths import resolve_repo_relative_input_path
-from .resolve import _current_branch, _resolve_openspec_pr_doc, _resolve_scope_base
+from .resolve import (
+    _cli_proves_commit,
+    _current_branch,
+    _resolve_openspec_pr_doc,
+    _resolve_scope_base,
+)
 from .validate import validate_command_shape
 
 __all__ = [
@@ -169,20 +174,49 @@ def _run(args, repo_root: Path) -> int:
         print(f"[syncade] config error: {exc}", file=sys.stderr)
         return CONFIG_ERROR
 
-    # Default-branch refusal (PR-v2-26), BEFORE auth_gate — which probes `codex login
-    # status` (a subprocess) for any OpenAI actor. So a committing run on the default branch
-    # fails fast with NO subprocess and no auth output. run_review re-checks the same guard
-    # for direct library callers.
+    # Default-branch guard (PR-v2-26). Baseless loop runs are refused here before auth_gate
+    # probes `codex login status`. Based/scoped runs defer (D1(c), PR-h-02d.5): auth runs
+    # first and run_review enforces the guard, so both paths refuse at exit 60.
     # --max-rounds is already folded into config.loop.max_rounds by apply_cli_overrides above.
     effective_rounds = config.loop.max_rounds
     # A syncade-auto-created repo (fresh dir) is exempt — see repo_preexisted above.
     allow_default = args.allow_default_branch or not repo_preexisted
+
+    # Resolve --scope BEFORE the guard: a scope that resolves to HEAD is a known no-change run
+    # (no producer fires), so the guard must not refuse it. --base and --scope are mutually
+    # exclusive; only one path runs.
+    base_ref = args.base
+    if args.scope is not None:
+        base_ref = _resolve_scope_base(repo_root, args.scope, logger)
+        if base_ref is None:
+            return WORKTREE_ERROR
+
+    # Refuse ONLY when the CLI can PROVE the run commits (D1(c), PR-h-02d.5).
+    #
+    # Whether a run commits depends on the FILTERED diff, which is not knowable here:
+    # the CLI has not snapshotted or resolved scope. (Config IS loaded, so
+    # `strip_repo_context_files` is available — but the filtered diff isn't.) Four
+    # earlier attempts substituted a cheaper predicate — base == HEAD, then merge-base,
+    # then merge-base plus `--two-dot` — and each was wrong for a different input, because
+    # the question simply is not expressible from what the CLI has.
+    #
+    # So the direction is inverted. With NO diff-shaping flag the reviewer diff is full
+    # HEAD, which is non-empty in any repo that has a commit, so a multi-round run will
+    # produce a producer commit — provable, and the common case this pre-auth guard exists
+    # for. With a base or a scope, defer: `run_review` classifies authoritatively at the
+    # run-entry choke, still BEFORE any reviewer/producer subprocess. The cost of deferring
+    # is one auth probe; the cost of guessing wrong was refusing valid no-change runs.
+    #
+    # `--two-dot` needs `--base`/`--scope` (enforced in validate), so it is covered.
+    _cli_will_commit = effective_rounds > 1 and _cli_proves_commit(
+        repo_root, base_ref, config.review.strip_repo_context_files, two_dot=args.two_dot
+    )
     try:
         guard_default_branch(
             repo_root,
             current_branch_name(repo_root),
             allow=allow_default,
-            will_commit=effective_rounds > 1,
+            will_commit=_cli_will_commit,
         )
     except WorktreeError as exc:
         print(f"[syncade] worktree error: {exc}", file=sys.stderr)
@@ -198,14 +232,6 @@ def _run(args, repo_root: Path) -> int:
     gate = auth_gate(config, REVIEW_BLOCKS)
     if gate is not None:
         return gate
-
-    # ``--scope`` derives the diff base; an unresolvable scope stops the run
-    # before the loop. Otherwise the explicit ``--base`` value is used.
-    base_ref = args.base
-    if args.scope is not None:
-        base_ref = _resolve_scope_base(repo_root, args.scope, logger)
-        if base_ref is None:
-            return WORKTREE_ERROR
 
     # ``--openspec`` derives the spec from an OpenSpec proposal folder. An
     # unresolvable proposal stops the run before the loop.
@@ -233,6 +259,7 @@ def _run(args, repo_root: Path) -> int:
                     timeout_seconds=args.timeout,
                     logger=logger,
                     force_dirty=args.force_dirty,
+                    two_dot=args.two_dot,
                     allow_default_branch=allow_default,
                     pr_doc_artifact_name=pr_doc_artifact_name,
                     worktree_base=config.worktree_base,

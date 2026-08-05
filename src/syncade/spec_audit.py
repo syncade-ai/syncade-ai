@@ -80,7 +80,6 @@ from syncade.config_cold import (
     AuditorConfig,
 )
 from syncade.findings import Severity as Severity
-from syncade.findings import _extract_json_candidates as _extract_json_candidates
 from syncade.process import (
     SubprocessError,
     SubprocessNotFoundError,
@@ -100,9 +99,6 @@ from syncade.spec_audit_schema import (
     SpecAuditOutputError,
     get_spec_audit_schema_string,
     parse_spec_audit_output,
-)
-from syncade.spec_audit_schema import (
-    _try_parse_and_validate_spec_audit as _try_parse_and_validate_spec_audit,
 )
 
 # Reuse the synthesizer's cold-workspace helpers rather than duplicating.

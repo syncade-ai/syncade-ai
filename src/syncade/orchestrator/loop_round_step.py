@@ -44,7 +44,7 @@ from .escalation_coverage import escalation_covers_active_blockers
 from .producer_phase import _run_producer_phase
 from .results import RoundArtifacts, RoundResult
 from .round import _run_one_round
-from .verdict import _classify_phase_failure
+from .verdict import _classify_phase_failure, deactivated_blocker_details
 
 
 @dataclass(frozen=True)
@@ -87,6 +87,7 @@ def _run_round_step(
     operator_decision,
     force_drift,
     prior_usages,
+    branch_advanced_during_run,
 ) -> _RoundStep:
     """Run one round of the loop and return a continue/break signal.
 
@@ -94,6 +95,10 @@ def _run_round_step(
     read only for the pre-producer check below — the caller accumulates this round's usage
     after the step returns — so a round whose reviewers already crossed the ceiling skips the
     expensive producer leg instead of spending it and aborting one round later.
+
+    ``branch_advanced_during_run`` is the CUMULATIVE flag from all prior rounds — True when any
+    earlier round fast-forwarded the branch. The local ``branch_advanced`` variable tracks only
+    THIS round; the cumulative flag is what exit-10 documents must report.
     """
     branch_advanced = False
     round_dir = run_dir / f"round-{round_idx}"
@@ -124,7 +129,16 @@ def _run_round_step(
         # commits are intentional and produce a clean tree.
         if round_idx > resumed_round_start:
             run_status.update_phase(f"round-{round_idx}: snapshotting", round_idx)
-            current_snapshot = take_snapshot(repo_root, base_ref=base_ref)
+            # Use the immutable OID from the round-0 snapshot rather than
+            # re-resolving the symbolic base_ref, which can move if the base
+            # branch receives new commits between rounds.
+            _stable_base = current_snapshot.base_oid or base_ref
+            # `base_oid` is ALREADY the effective diff base — round 0 resolved
+            # the branch point once. Re-deriving a merge base here would be a
+            # no-op for three-dot runs (the merge base of an ancestor and its
+            # descendant is the ancestor) but would silently CONVERT a
+            # `--two-dot` run to three-dot semantics mid-loop.
+            current_snapshot = take_snapshot(repo_root, base_ref=_stable_base, three_dot=False)
             run_status.update_phase(f"round-{round_idx}: reviewing", round_idx)
 
         round_result = _run_one_round(
@@ -176,6 +190,21 @@ def _run_round_step(
             termination_reason=_classify_phase_failure(round_result),
         )
 
+    # No-changes (PR-h-02d D1/D3): pre-dispatch check found an empty diff
+    # with a resolved base_oid — no reviewers or subprocesses were dispatched
+    # THIS round. Map to exit 0 with a reason that reflects prior-round spend:
+    # round 0 → no_changes_to_review (zero total spend); round 1+ → producer_emptied_diff
+    # (prior rounds dispatched reviewers/producer and the producer cleaned up all changes).
+    if round_result.no_changes_to_review:
+        _empty_reason = "no_changes_to_review" if round_idx == 0 else "producer_emptied_diff"
+        return _RoundStep(
+            action="break",
+            current_snapshot=current_snapshot,
+            branch_advanced=branch_advanced,
+            final_exit_code=SUCCESS,
+            termination_reason=_empty_reason,
+        )
+
     # Round SHIPped (clean synth + tests passed if configured) →
     # terminate with SUCCESS.
     if round_result.round_exit_code == SUCCESS:
@@ -185,6 +214,34 @@ def _run_round_step(
             branch_advanced=branch_advanced,
             final_exit_code=SUCCESS,
             termination_reason="ship",
+        )
+
+    # Round escalated (exit 10): two or more distinct reviewers each raised a
+    # blocker and every one was deactivated (PR-h-01 increment D). Terminal by
+    # construction — the question is whether the synthesizer was RIGHT to rule
+    # them all out, which only the operator can answer. Running the producer
+    # would be incoherent: there is no active blocker for it to fix.
+    if round_result.round_exit_code == CLARIFICATION_NEEDED:
+        # The operator gets exit 10 either way; without this document they would
+        # have no idea WHY, since nothing is listed as an active blocker.
+        if round_result.synth_result is not None and round_result.synth_result.output is not None:
+            from syncade.persistence import persist_deactivated_blockers_decision_needed
+
+            persist_deactivated_blockers_decision_needed(
+                run_dir,
+                round_idx=round_idx,
+                run_id=run_id,
+                deactivated=deactivated_blocker_details(
+                    round_result.dispatch_result, round_result.synth_result.output
+                ),
+                branch_advanced=branch_advanced_during_run,
+            )
+        return _RoundStep(
+            action="break",
+            current_snapshot=current_snapshot,
+            branch_advanced=branch_advanced,
+            final_exit_code=CLARIFICATION_NEEDED,
+            termination_reason="blockers_all_deactivated",
         )
 
     # Round was NO-SHIP (exit 30): non-dismissed blocker or test
@@ -353,6 +410,7 @@ def _run_round_step(
         ),
         check_results=round_result.check_results,
         escalation_honored=escalation_honored,
+        branch_already_advanced=branch_advanced_during_run,
     )
 
     # --- Producer outcome → loop continuation decision ----------
@@ -403,6 +461,8 @@ def _run_round_step(
                 round_idx=round_idx,
                 escalation=producer_result.escalation,
                 run_id=run_id,
+                branch_advanced=branch_advanced_during_run,
+                check_results=round_result.check_results,
             )
             return _RoundStep(
                 action="break",

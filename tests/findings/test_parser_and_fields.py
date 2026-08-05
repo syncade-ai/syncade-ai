@@ -87,7 +87,10 @@ class TestParser:
             parse_reviewer_output(raw)
         msg = str(exc_info.value)
         assert ".stdout" in msg
-        assert "attempted" in msg.lower()
+        # PR-h-01: the diagnostic names the SELECTED block and states that
+        # nothing earlier was tried, rather than a candidate-attempt count.
+        assert "schema error" in msg.lower()
+        assert "no earlier block is considered" in msg
 
     def test_unknown_field_at_top_level_raises(self):
         raw = _verdict_json("SHIP", extras={"extra": "nope"})
@@ -167,7 +170,8 @@ class TestParser:
         with pytest.raises(ReviewerOutputError) as exc_info:
             parse_reviewer_output(raw)
         msg = str(exc_info.value)
-        assert "attempted" in msg.lower()
+        assert "no earlier block is considered" in msg
+        assert "this is not valid json" in msg  # the selected block is quoted
         assert ".stdout" in msg
 
     def test_snippet_is_truncated_for_giant_inputs(self):

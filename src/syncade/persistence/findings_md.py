@@ -169,7 +169,7 @@ def persist_findings_md(
     # headline, exactly as they cannot reach _compute_exit_code.
     blocking_check_results = [c for c in (check_results or []) if c.severity == "blocking"]
     verdict_label, verdict_qualifier = _compute_findings_md_verdict(
-        output, test_result, test_skip_reason, blocking_check_results
+        output, test_result, test_skip_reason, blocking_check_results, dispatch_result
     )
     lines: list[str] = [
         f"# Findings — Syncade run {run_id}",

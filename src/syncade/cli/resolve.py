@@ -8,6 +8,7 @@ inputs the loop consumes, printing an operator-facing message and returning
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from syncade.logging import Logger
@@ -47,6 +48,37 @@ def _resolve_scope_base(repo_root: Path, scope: str, logger: Logger) -> str | No
         # even in --quiet mode; bypass logger.warning (suppressed when quiet).
         print(f"[syncade] scope: {resolved.note}", file=sys.stderr)
     return resolved.base_sha
+
+
+def _cli_proves_commit(
+    repo_root: Path,
+    base_ref: str | None,
+    strip_files: Iterable[str],
+    *,
+    two_dot: bool = False,
+) -> bool:
+    """True ONLY when the CLI can prove this run will produce reviewable changes.
+
+    The pre-auth commit guard exists so a doomed committing run does not first pay for a
+    provider auth probe. Whether a run commits depends on the FILTERED diff, which the CLI
+    cannot compute — it has not snapshotted. Four earlier attempts asked the opposite
+    question ("can I prove there is NO change?") and each was wrong for a different input,
+    because being wrong there REFUSES A VALID RUN (PR-h-02d.5).
+
+    So the question is inverted and the answer is conservative: return True only when
+    certain, and let ``run_review`` decide otherwise. A wrong answer here costs one auth
+    probe; it can never refuse a run the library would accept.
+
+    Certain case: no base — reviewers see full HEAD, non-empty in any repo with a commit.
+
+    Everything else (any diff-shaping base) defers. ``git diff --name-only`` cannot
+    replicate the authoritative classifier: it C-quotes non-ASCII paths (so strip-list
+    basenames do not match the quoted form), and paths containing `` b/`` produce ambiguous
+    ``diff --git`` headers that ``run_review`` classifies as ``diff_malformed`` with zero
+    dispatches. Both shapes produce false proofs of commit under the basename approach,
+    causing the CLI to refuse runs the library accepts.
+    """
+    return base_ref is None
 
 
 def _resolve_openspec_pr_doc(repo_root: Path, change_id: str | None, logger: Logger) -> Path | None:

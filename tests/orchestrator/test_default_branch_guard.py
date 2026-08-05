@@ -202,24 +202,57 @@ class TestGuardViaRunReview:
 
 
 class TestCliRefusesBeforeAuthProbe:
-    """The CLI must refuse the default branch BEFORE auth_gate probes `codex login status`
-    (a subprocess). Otherwise a zero-config run on `main` spawns codex and prints auth
-    output before the refusal."""
+    """The CLI must refuse a committing default-branch run (exit 60). Under D1(c)
+    (PR-h-02d.5), a baseless run is refused BEFORE auth; a based run defers the guard
+    to run_review so auth is probed first — the invariant is refusal, not ordering.
+    A no-change run on the default branch must NOT be refused; it exits 0 with
+    no_changes_to_review instead."""
 
-    def test_default_branch_refused_without_probing_codex(self, tmp_path, monkeypatch):
+    def test_no_change_on_default_branch_exits_zero_not_refused(self, tmp_path, monkeypatch):
+        """Regression: known-empty run (--base HEAD) on main must exit 0 not 60.
+
+        The commit guard is moot when no producer runs; refusing the run before
+        loop.py can classify the diff as no-change is the ordering bug this test pins.
+        """
         import syncade.auth_preflight as ap
         from syncade.cli import main
 
         repo = _repo_on(tmp_path, "main", remote_default="main")
         (repo / "brief.md").write_text("# B\n")
         monkeypatch.chdir(repo)
-
-        def _boom(*a, **k):
-            raise AssertionError("codex was probed before the default-branch refusal")
-
-        monkeypatch.setattr(ap, "probe_codex_state", _boom)
+        # Auth probe must succeed so the run reaches run_review (not refused by auth).
+        monkeypatch.setattr(ap, "probe_codex_state", lambda: ("subscription", ""))
         rc = main(["brief.md", "--max-rounds", "2", "--base", "HEAD"])
-        assert rc == 60  # refused, and _boom was never hit
+        assert rc == 0, f"no-change run on default branch should exit 0, got {rc}"
+
+    def test_committing_run_on_default_branch_refused(self, tmp_path, monkeypatch):
+        """A run with actual changes (base != HEAD) on the default branch must be refused.
+
+        Under D1(c) (PR-h-02d.5), based diffs defer the commit guard to run_review, so
+        auth is probed first. The invariant is that the run is still refused (exit 60),
+        not that refusal happens before auth.
+        """
+        import syncade.auth_preflight as ap
+        from syncade.cli import main
+
+        repo = _repo_on(tmp_path, "main", remote_default="main")
+        # Add a second commit so HEAD is ahead of the initial commit.
+        (repo / "brief.md").write_text("# B\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add brief"], cwd=repo, check=True)
+        # base = parent of HEAD → diff is non-empty → run_review refuses on default branch.
+        base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD~1"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        monkeypatch.chdir(repo)
+        # Auth must proceed so run_review is reached; its guard refuses the committing run.
+        monkeypatch.setattr(ap, "probe_codex_state", lambda: ("subscription", ""))
+        rc = main(["brief.md", "--max-rounds", "2", "--base", base_sha])
+        assert rc == 60, f"committing run on default branch should be refused (exit 60), got {rc}"
 
     def test_multiround_resume_on_main_refused_despite_config_drift(self, tmp_path, monkeypatch):
         """A run launched at max_rounds=3, resumed with config drifted to 1, still commits
@@ -245,6 +278,49 @@ class TestCliRefusesBeforeAuthProbe:
         monkeypatch.setattr(ap, "probe_codex_state", _boom)
         assert main(["--resume", "latest"]) == 60
 
+    def test_resume_whose_pinned_base_filters_empty_is_not_refused(self, tmp_path, monkeypatch):
+        """PR-h-02d.5 item 3: the resume guard used literal `base_oid == HEAD` equality, so a
+        resumed run whose pinned base is NOT HEAD but whose diff filters to nothing was
+        refused before auth — while `run_review` classifies it `no_changes_to_review` and
+        exits 0. That divergence is the bug; the guard must defer when it cannot prove the
+        run commits."""
+        import subprocess
+
+        import syncade.auth_preflight as ap
+        from syncade.cli import main
+        from tests.orchestrator._resume_fixtures import _prepare_aborted_run
+
+        repo = _repo_on(tmp_path, "main", remote_default="main")
+        pr_doc = tmp_path / "pr.md"
+        pr_doc.write_text("# PR\n")
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        # Only repo-context changed since the pinned base: the filtered diff is empty, so
+        # no producer can run — but base_oid != HEAD, which the old equality check missed.
+        (repo / "CLAUDE.md").write_text("project memory\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "context only"], cwd=repo, check=True)
+
+        _prepare_aborted_run(
+            repo,
+            pr_doc,
+            completed_round_count=0,
+            max_rounds=3,
+            aborted_exit_code=40,
+            base_oid=base,
+        )
+        monkeypatch.chdir(repo)
+        # Auth must succeed so the run reaches run_review — the assertion is that the
+        # guard did not refuse first, not that a full review completes.
+        monkeypatch.setattr(ap, "probe_codex_state", lambda: ("subscription", ""))
+
+        rc = main(["--resume", "latest"])
+        assert rc != 60, (
+            "resume refused a run whose diff filters empty; run_review would classify it "
+            "no_changes_to_review and exit 0"
+        )
+
     def test_single_pass_resume_on_main_is_not_refused(self, tmp_path, monkeypatch):
         """A resumable single-pass run (effective max_rounds == 1) commits nothing, so a
         resume on `main` must NOT be refused by the guard (it should reach auth_gate)."""
@@ -264,6 +340,180 @@ class TestCliRefusesBeforeAuthProbe:
         # Sentinel: reaching auth_gate means the guard did NOT preempt the single-pass resume.
         monkeypatch.setattr(rm, "auth_gate", lambda *a, **k: 42)
         assert main(["--resume", "latest"]) == 42
+
+    def test_scope_resolves_to_head_not_refused(self, tmp_path, monkeypatch):
+        """Regression: --scope since-last-review resolving to HEAD must exit 0, not 60.
+
+        Scope resolution happened AFTER the guard in the old code, so the guard saw
+        will_commit=True even though the diff would be empty and no producer would run.
+        """
+        import json
+
+        import syncade.auth_preflight as ap
+        from syncade.cli import main
+
+        repo = _repo_on(tmp_path, "main", remote_default="main")
+        (repo / "brief.md").write_text("# B\n")
+        # Record the CURRENT HEAD as last-reviewed so --scope since-last-review resolves to HEAD.
+        head_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        syncade_dir = repo / ".syncade"
+        syncade_dir.mkdir(exist_ok=True)
+        (syncade_dir / "last-reviewed.json").write_text(
+            json.dumps({"main": {"sha": head_sha, "run_id": "t", "recorded_at_utc": "2026-08-03"}})
+        )
+        monkeypatch.chdir(repo)
+        monkeypatch.setattr(ap, "probe_codex_state", lambda: ("subscription", ""))
+        rc = main(["brief.md", "--max-rounds", "2", "--scope", "since-last-review"])
+        assert rc == 0, f"no-change scope run on default branch should exit 0, got {rc}"
+
+    def test_annotated_tag_base_at_head_not_refused(self, tmp_path, monkeypatch):
+        """Regression: --base pointing to an annotated tag at HEAD must exit 0, not 60.
+
+        The old code used `git rev-parse <tag>` which returns the tag object SHA, not
+        the commit SHA — so it compared a tag object to HEAD's commit and got False.
+        """
+        import syncade.auth_preflight as ap
+        from syncade.cli import main
+
+        repo = _repo_on(tmp_path, "main", remote_default="main")
+        (repo / "brief.md").write_text("# B\n")
+        # Create an annotated tag at current HEAD.
+        subprocess.run(["git", "tag", "-a", "v1.0", "-m", "release"], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+        monkeypatch.setattr(ap, "probe_codex_state", lambda: ("subscription", ""))
+        rc = main(["brief.md", "--max-rounds", "2", "--base", "v1.0"])
+        assert rc == 0, f"annotated-tag base at HEAD on default branch should exit 0, got {rc}"
+
+    def test_three_dot_empty_diff_not_refused(self, tmp_path, monkeypatch):
+        """Regression: --base pointing to a descendant branch must exit 0, not 60.
+
+        Three-dot diff is empty when merge-base(HEAD, base) == HEAD (HEAD is an
+        ancestor of base). The old code only checked literal ref equality, missing this.
+        """
+        import syncade.auth_preflight as ap
+        from syncade.cli import main
+
+        # Create a repo where main is ahead of feature: main has an extra commit.
+        repo = _repo_on(tmp_path, "feature", with_main=True, remote_default="feature")
+        # Advance main past feature's HEAD (use specific file, not -A, to avoid capturing brief.md).
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+        (repo / "extra.txt").write_text("extra\n")
+        subprocess.run(["git", "add", "extra.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "advance main"], cwd=repo, check=True)
+        subprocess.run(["git", "checkout", "-q", "feature"], cwd=repo, check=True)
+        # Write brief.md AFTER returning to feature so it isn't accidentally committed to main.
+        (repo / "brief.md").write_text("# B\n")
+        # Now HEAD is at feature; --base main → three-dot diff = merge-base(feature, main) =
+        # feature's HEAD → empty diff → no producer → guard should not fire.
+        monkeypatch.chdir(repo)
+        monkeypatch.setattr(ap, "probe_codex_state", lambda: ("subscription", ""))
+        rc = main(["brief.md", "--max-rounds", "2", "--base", "main"])
+        assert rc == 0, f"three-dot empty diff on default branch should exit 0, got {rc}"
+
+    def test_resume_base_oid_at_head_not_refused(self, tmp_path, monkeypatch):
+        """Regression: a resumed run whose pinned base_oid equals HEAD must exit 0, not 60.
+
+        If base_oid == HEAD, the diff is empty; no producer runs. The old code only
+        checked effective_max_rounds, so it refused the guard even for no-change resumes.
+        """
+        import syncade.cli.resume_mode as rm
+        from syncade.cli import main
+        from tests.orchestrator._resume_fixtures import _prepare_aborted_run
+
+        repo = _repo_on(tmp_path, "main", remote_default="main")
+        pr_doc = tmp_path / "pr.md"
+        pr_doc.write_text("# PR\n")
+        head_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        (repo / ".syncade").mkdir()
+        (repo / ".syncade" / "config.toml").write_text("[loop]\nmax_rounds = 3\n")
+        _prepare_aborted_run(
+            repo,
+            pr_doc,
+            completed_round_count=0,
+            max_rounds=3,
+            aborted_exit_code=40,
+            base_oid=head_sha,
+        )
+        monkeypatch.chdir(repo)
+        # Sentinel: reaching auth_gate means the guard did NOT preempt the resume.
+        monkeypatch.setattr(rm, "auth_gate", lambda *a, **k: 42)
+        assert main(["--resume", "latest"]) == 42, (
+            "no-change resume (base_oid==HEAD) on default branch should reach "
+            "auth_gate, not exit 60"
+        )
+
+    def test_two_dot_descendant_base_commits_are_guarded(self, tmp_path, monkeypatch):
+        """--two-dot with a base that is a descendant of HEAD must still be refused on main.
+
+        The two-dot diff (base..HEAD) is non-empty when base descends from HEAD.
+        Under D1(c), based diffs defer to run_review, which refuses the committing run.
+        """
+        import syncade.auth_preflight as ap
+        from syncade.cli import main
+
+        # Repo on main (the default branch). Create a feature branch AHEAD of main.
+        repo = _repo_on(tmp_path, "main", remote_default="main")
+        (repo / "brief.md").write_text("# B\n")
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
+        (repo / "extra.txt").write_text("extra\n")
+        subprocess.run(["git", "add", "extra.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "advance feature"], cwd=repo, check=True)
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+        # Auth must proceed; run_review's guard refuses the committing run.
+        monkeypatch.setattr(ap, "probe_codex_state", lambda: ("subscription", ""))
+        # --two-dot --base feature: the two-dot diff is non-empty (feature descends from main).
+        rc = main(["brief.md", "--max-rounds", "2", "--two-dot", "--base", "feature"])
+        assert rc == 60, (
+            f"--two-dot committing run on default branch should be refused (exit 60), got {rc}"
+        )
+
+    def test_resume_descendant_base_oid_is_not_exempted(self, tmp_path, monkeypatch):
+        """Resumed run with plan.base_oid pointing to a descendant of HEAD must still be refused.
+
+        For two-dot runs, plan.base_oid is the original --base SHA (not a merge-base).
+        Under D1(c), the pre-auth guard defers to run_review for any based diff; run_review
+        refuses when the two-dot diff (feature_sha..HEAD) is non-empty.
+        """
+        import syncade.auth_preflight as ap
+        from syncade.cli import main
+        from tests.orchestrator._resume_fixtures import _prepare_aborted_run
+
+        repo = _repo_on(tmp_path, "main", remote_default="main")
+        pr_doc = tmp_path / "pr.md"
+        pr_doc.write_text("# PR\n")
+        (repo / ".syncade").mkdir()
+        (repo / ".syncade" / "config.toml").write_text("[loop]\nmax_rounds = 3\n")
+        # Create a commit on a feature branch: feature_sha is a descendant of main (HEAD).
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
+        (repo / "extra.txt").write_text("extra\n")
+        subprocess.run(["git", "add", "extra.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "advance feature"], cwd=repo, check=True)
+        feature_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+        # Stage a resume with base_oid = feature_sha (a descendant of HEAD/main).
+        _prepare_aborted_run(
+            repo,
+            pr_doc,
+            completed_round_count=0,
+            max_rounds=3,
+            aborted_exit_code=40,
+            base_oid=feature_sha,
+        )
+        monkeypatch.chdir(repo)
+        # Auth must proceed; run_review's guard refuses the committing run.
+        monkeypatch.setattr(ap, "probe_codex_state", lambda: ("subscription", ""))
+        rc = main(["--resume", "latest"])
+        assert rc == 60, (
+            f"resumed run with descendant base_oid on default branch should be refused "
+            f"(exit 60), got {rc}"
+        )
 
 
 class TestAutoInitExemption:

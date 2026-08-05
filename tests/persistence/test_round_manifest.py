@@ -143,6 +143,7 @@ class TestPersistRoundManifest:
         assert snap_section["commit_sha"] == "a" * 40
         assert snap_section["branch"] == "main"
         assert snap_section["base_ref"] is None
+        assert snap_section["base_oid"] is None
         assert snap_section["diff_present"] is False
         # Reviewers section: one entry per ReviewerRunResult
         rs = manifest["reviewers"]
@@ -196,6 +197,19 @@ class TestPersistRoundManifest:
         manifest = json.loads(path.read_text())
         assert manifest["snapshot"]["base_ref"] == "HEAD~1"
         assert manifest["snapshot"]["diff_present"] is True
+
+    def test_manifest_persists_base_oid_when_present(self, tmp_path: Path):
+        """base_oid in the snapshot section pins the exact reviewed commit range
+        even if the symbolic base_ref moves after the run."""
+        round_dir = _make_round_dir(tmp_path)
+        oid = "b" * 40
+        snap = _snapshot(base_ref="main", base_oid=oid, diff_text="diff --git a/x b/x\n+x\n")
+        dispatch = self._dispatch_two_reviewers([("claude-reviewer", _ship(), None)])
+        path = persist_round_manifest(
+            round_dir, snap, dispatch, exit_code=0, started_at=_FIXED_STARTED_AT
+        )
+        manifest = json.loads(path.read_text())
+        assert manifest["snapshot"]["base_oid"] == oid
 
     def test_manifest_records_detached_head_branch_null(self, tmp_path: Path):
         round_dir = _make_round_dir(tmp_path)

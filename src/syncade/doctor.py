@@ -37,7 +37,7 @@ from syncade.auth_check import probe_credentials
 from syncade.auth_preflight import preflight, report_lines
 from syncade.config import SyncadeConfig
 from syncade.config_auth import ALL_BLOCKS
-from syncade.doctor_preview import check_cost, check_plan
+from syncade.doctor_preview import based_diff_classify, check_cost, check_plan
 from syncade.doctor_types import _OK, _RED, _SKIP, _STATUS_GLYPH, DoctorCheck
 from syncade.exit_codes import SUCCESS, WORKTREE_ERROR
 from syncade.orchestrator.branch_guard import current_branch_name, guard_default_branch
@@ -349,13 +349,18 @@ def _check_branch(
     max_rounds: int | None,
     allow_default_branch: bool,
     force_dirty: bool,
+    base_ref: str | None = None,
+    scope: str | None = None,
+    two_dot: bool = False,
 ) -> DoctorCheck:
-    """Preview the branch a real run would touch and the refusals it would hit — for $0,
-    before any spend (C5). Mirrors the CLI's own resolution EXACTLY (C1): ``will_commit``
-    is ``effective_rounds > 1``, and the guard / dirty-tree checks are the same calls
-    ``syncade <pr-doc>`` makes. Read-only (git status / symbolic-ref), so inert."""
+    """Branch preview (C5, C1): RED if malformed diff; ``will_commit`` iff dispatch. Inert."""
     effective = max_rounds if max_rounds is not None else config.loop.max_rounds
-    will_commit = effective > 1
+    # based_diff_classify returns "dispatch" immediately for baseless runs (base_ref=None,
+    # scope=None) so the baseless case needs no special branch — behaviourally identical.
+    _diff_class = based_diff_classify(
+        repo_root, config, base_ref=base_ref, scope=scope, two_dot=two_dot
+    )
+    will_commit = effective > 1 and _diff_class == "dispatch"
     branch = current_branch_name(repo_root)
 
     # Unborn HEAD (git init, no commits): a real run snapshots HEAD and fails (exit 60), in
@@ -381,8 +386,21 @@ def _check_branch(
         )
 
     if not will_commit:
+        if effective <= 1:
+            return DoctorCheck(
+                "branch", _OK, f"single-pass (max_rounds={effective}) commits nothing; guard N/A"
+            )
+        if _diff_class == "malformed":
+            # Malformed diff: real run exits 60 (diff_malformed) before dispatch — RED so the
+            # cheap-red gate fires and live spend (auth/producer-commit) is skipped.
+            return DoctorCheck(
+                "branch",
+                _RED,
+                "based/scoped diff is malformed — real run exits 60 (diff_malformed)",
+                fix="use --two-dot if paths contain ' b/'; check strip_repo_context_files",
+            )
         return DoctorCheck(
-            "branch", _OK, f"single-pass (max_rounds={effective}) commits nothing; guard N/A"
+            "branch", _OK, "based/scoped diff is known-empty; no producers fire — guard N/A"
         )
 
     # Loop mode on detached HEAD: the guard exempts it, but the producer's commits would be
@@ -435,6 +453,7 @@ def collect_checks(
     force_dirty: bool = False,
     base_ref: str | None = None,
     scope: str | None = None,
+    two_dot: bool = False,
     timeout_seconds: float | None = None,
 ) -> list[DoctorCheck]:
     """Run every doctor check and return the results. The cheap checks (config, provider CLIs
@@ -460,8 +479,18 @@ def collect_checks(
             max_rounds=max_rounds,
             allow_default_branch=allow_default_branch,
             force_dirty=force_dirty,
+            base_ref=base_ref,
+            scope=scope,
+            two_dot=two_dot,
         ),
-        check_plan(repo_root, config, base_ref=base_ref, scope=scope, max_rounds=max_rounds),
+        check_plan(
+            repo_root,
+            config,
+            base_ref=base_ref,
+            scope=scope,
+            two_dot=two_dot,
+            max_rounds=max_rounds,
+        ),
         check_cost(config, repo_root, max_rounds=max_rounds),
     ]
     checks = list(cheap)
@@ -534,6 +563,7 @@ def run_doctor(
     force_dirty: bool = False,
     base_ref: str | None = None,
     scope: str | None = None,
+    two_dot: bool = False,
     quiet: bool = False,
     timeout_seconds: float | None = None,
 ) -> int:
@@ -551,6 +581,7 @@ def run_doctor(
         force_dirty=force_dirty,
         base_ref=base_ref,
         scope=scope,
+        two_dot=two_dot,
         timeout_seconds=timeout_seconds,
     )
     _render(checks, quiet=quiet)
