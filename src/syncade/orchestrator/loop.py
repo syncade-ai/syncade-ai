@@ -12,21 +12,18 @@ from syncade import __version__, run_status
 from syncade.adapters.base import ReviewerAdapter
 from syncade.adapters.producer import ProducerAdapter
 from syncade.config import SyncadeConfig
-from syncade.diff_filter import (
-    concealed_destinations,
-    filter_diff_for_reviewer,
-    unidentifiable_sections,
-)
 from syncade.exit_codes import BUDGET_EXCEEDED, SUCCESS, WORKTREE_ERROR
 from syncade.logging import Logger
 from syncade.persistence import persist_run_init
 from syncade.persistence._atomic import atomic_write_text
+from syncade.run_inputs import validate_run_inputs
 from syncade.snapshot import SnapshotError, discover_repo_root, take_snapshot
 from syncade.worktree import WorktreeError, WorktreeManager, generate_run_id
 
 from ._runs_dir import _ensure_runs_gitignore
 from .branch_guard import guard_default_branch
 from .budget import over_budget, producer_only_usages, round_usages
+from .loop_dispatch_check import _diff_will_dispatch as _diff_will_dispatch
 from .loop_finalize import _finalize_run
 from .loop_resume import _rehydrate_resume_state
 from .loop_rmtree import _safe_resume_rmtree
@@ -36,33 +33,7 @@ from .resume import ResumePlan, check_tree_drift
 from .resume_types import ResumeError
 
 if TYPE_CHECKING:
-    from syncade.snapshot import Snapshot
     from syncade.usage import Usage
-
-
-def _diff_will_dispatch(snapshot: Snapshot, config: SyncadeConfig) -> bool:
-    """Return False when the round will terminate before dispatching any subprocess.
-
-    A False result means no reviewer, judge, or producer will run, so commit-safety
-    guards (dirty-tree refusal, default-branch guard) are irrelevant for this run.
-    Two cases: the diff is malformed (fail-closed refusal) or it is known-empty
-    (no_changes_to_review). Both are pre-dispatch terminal decisions in _run_one_round;
-    by classifying here we avoid refusing valid no-change runs on dirty/default-branch.
-    """
-    # Only refuse on unidentifiable headers when there are strip targets: with an empty
-    # strip list filter_diff_for_reviewer keeps every section byte-for-byte, so an
-    # undecodable header is not a security concern (nothing is being hidden).
-    if config.review.strip_repo_context_files and unidentifiable_sections(snapshot.diff_text):
-        return False  # diff_malformed path — refuses at exit 60, no producer runs
-    if (
-        snapshot.base_oid is not None
-        and not filter_diff_for_reviewer(snapshot.diff_text, config.review.strip_repo_context_files)
-        # A boundary rename empties the filtered diff while concealing a reviewable
-        # destination; that run DOES dispatch, so the commit guards still apply.
-        and not concealed_destinations(snapshot.diff_text, config.review.strip_repo_context_files)
-    ):
-        return False  # no_changes_to_review path — exits 0, no producer runs
-    return True
 
 
 def _autoprune_old_transcripts(
@@ -227,14 +198,7 @@ def run_review(
     started_at = datetime.now(tz=UTC)
 
     # --- Input validation -------------------------------------------
-    if not repo_root.exists():
-        raise NotADirectoryError(f"repo_root does not exist: {repo_root}")
-    if not repo_root.is_dir():
-        raise NotADirectoryError(f"repo_root is not a directory: {repo_root}")
-    if not pr_doc_path.exists():
-        raise FileNotFoundError(f"pr_doc_path does not exist: {pr_doc_path}")
-    if not pr_doc_path.is_file():
-        raise FileNotFoundError(f"pr_doc_path is not a file: {pr_doc_path}")
+    validate_run_inputs(repo_root, pr_doc_path)
 
     repo_root = repo_root.resolve()
     pr_doc_path = pr_doc_path.resolve()
@@ -263,7 +227,9 @@ def run_review(
     # --- Pre-classify diff before commit-safety guards (PR-h-02d) ---
     # A known-empty or malformed diff terminates before any subprocess — no producer
     # runs, so commit-only guards are irrelevant and must not refuse valid no-change runs.
-    _will_dispatch = _diff_will_dispatch(snapshot, config)
+    _will_dispatch = _diff_will_dispatch(
+        snapshot, config, repo_root=repo_root, pr_doc_path=pr_doc_path
+    )
 
     # --- Pre-flight dirty-tree refusal in loop mode -----------------
     # max_rounds > 1 → the loop will run a producer that commits to

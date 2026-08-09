@@ -12,9 +12,8 @@ from syncade.adapters.base import ReviewerAdapter
 from syncade.adapters.producer import ProducerAdapter
 from syncade.config import SyncadeConfig
 from syncade.diff_filter import (
-    concealed_destinations,
+    elide_binary_hunks,
     filter_diff_for_reviewer,
-    unidentifiable_sections,
 )
 from syncade.dispatcher import DispatchResult, dispatch_reviewers
 from syncade.exit_codes import SUCCESS, WORKTREE_ERROR
@@ -40,12 +39,8 @@ from syncade.worktree import TEST_WORKTREE_NAME, WorktreeError, WorktreeManager
 
 from .prior_round import load_prior_reviewer_response_text
 from .results import RoundArtifacts, RoundResult, TestSkipReason
-from .reviewer_template_failure import _reviewer_template_failure_result
 from .round_checks import _run_checks_leg
-from .round_no_changes import (
-    _fail_closed_refusal_result,
-    _no_changes_to_review_result,
-)
+from .round_predispatch import run_predispatch_gates
 from .verdict import _compute_exit_code
 
 _NO_DIFF_SENTINEL: str = "(diff not provided; review against the full repo state at HEAD)"
@@ -89,6 +84,13 @@ def _build_reviewer_prompt(
     filtered_diff = filter_diff_for_reviewer(
         snapshot.diff_text, config.review.strip_repo_context_files
     )
+    # Binary content never reaches the prompt (PR-h-field-01 item 2). `snapshot` renders with
+    # `--text`, so a committed PNG is emitted as raw bytes — measured, 12 screenshot
+    # baselines turned 66 KB of real diff into 3.1 MB. That is unreadable to a reviewer,
+    # displaces the diff it should be judging, and exceeds both providers' prompt ceilings
+    # (codex 1,048,576 chars; claude 1,000,000 tokens). Headers and a byte-count notice
+    # survive, so the change is disclosed rather than silently dropped.
+    filtered_diff, _ = elide_binary_hunks(filtered_diff)
     diff_text = filtered_diff if filtered_diff else _NO_DIFF_SENTINEL
     # Worktree-escape fix: reviewers run with cwd = their own worktree. Hand
     # them a worktree-LOCAL reference to the PR doc (relative to the worktree
@@ -175,81 +177,25 @@ def _run_one_round(
     dispatch a producer based on ``round_exit_code``.
 
     """
-    # --- Pre-dispatch diff checks (PR-h-02d) ------------------------
-    # Both checks run before any worktree is provisioned — zero subprocesses
-    # is the whole point (acceptance claim 1). Priority: D2 (unidentifiable)
-    # before D1/D3 (known-empty), because a diff with BOTH conditions is a
-    # refusal, not a no-changes exit (we could not read it → cannot ship it).
-    # Unidentifiable headers are only a problem when strip_repo_context_files is
-    # non-empty: with an empty strip list every section is kept byte-for-byte, so
-    # an undecodable header cannot hide any change from the reviewer.
-    _unidentifiable = (
-        unidentifiable_sections(snapshot.diff_text)
-        if config.review.strip_repo_context_files
-        else []
+    _gate = run_predispatch_gates(
+        repo_root=repo_root,
+        snapshot=snapshot,
+        config=config,
+        round_idx=round_idx,
+        run_dir=run_dir,
+        round_dir=round_dir,
+        pr_doc_path=pr_doc_path,
+        started_at=started_at,
+        resumed_under_drift=resumed_under_drift,
+        logger=logger,
+        build_prompt=_build_reviewer_prompt,
     )
-    if _unidentifiable:
-        return _fail_closed_refusal_result(
-            round_idx=round_idx,
-            snapshot=snapshot,
-            round_dir=round_dir,
-            config=config,
-            started_at=started_at,
-            resumed_under_drift=resumed_under_drift,
-            unidentifiable=_unidentifiable,
-            logger=logger,
-        )
-    _filtered_for_check = filter_diff_for_reviewer(
-        snapshot.diff_text, config.review.strip_repo_context_files
-    )
-    # A drop is only legitimate when the DESTINATION is a strip target. A boundary
-    # rename (`git mv CLAUDE.md app.py`) empties the filtered diff while concealing a
-    # path a reviewer must see — concluding "nothing to review" there is a false SHIP
-    # over a real change (PR-h-02c.5).
-    _concealed = concealed_destinations(snapshot.diff_text, config.review.strip_repo_context_files)
-    if snapshot.base_oid is not None and not _filtered_for_check and not _concealed:
-        # D1: base resolved + empty diff (no real changes).
-        # D3: all sections were legitimate repo-context — same outcome.
-        logger.event(
-            "diff is empty after filtering — base resolved but no reviewable changes; "
-            "terminating without dispatching reviewers (no_changes_to_review)"
-        )
-        return _no_changes_to_review_result(
-            round_idx=round_idx,
-            snapshot=snapshot,
-            round_dir=round_dir,
-            config=config,
-            started_at=started_at,
-            resumed_under_drift=resumed_under_drift,
-        )
-
-    # --- Render reviewer prompt(s) ----------------------------------
-    # Template load + render runs BEFORE any worktree is provisioned. A
-    # malformed operator override (`.syncade/templates/reviewer.md` with an
-    # unknown placeholder) raises out of the render. Mirror the producer/synth
-    # template-render contract: catch it, record the phase failure, persist the
-    # round artifacts, and return a phase-failure RoundResult — rather than
-    # letting the exception escape run_review with no manifest/summary written.
-    try:
-        prompt_arg, pr_doc_ref, pr_doc_is_out_of_repo = _build_reviewer_prompt(
-            repo_root=repo_root,
-            snapshot=snapshot,
-            config=config,
-            round_idx=round_idx,
-            run_dir=run_dir,
-            pr_doc_path=pr_doc_path,
-        )
-    except (KeyError, ValueError, FileNotFoundError) as exc:
-        logger.event(f"reviewer template render failed: {exc}", error=True)
-        return _reviewer_template_failure_result(
-            round_idx=round_idx,
-            snapshot=snapshot,
-            round_dir=round_dir,
-            config=config,
-            started_at=started_at,
-            resumed_under_drift=resumed_under_drift,
-            error=exc,
-        )
+    if isinstance(_gate, RoundResult):
+        return _gate
+    prompt_arg = _gate.prompt_arg
+    pr_doc_ref = _gate.pr_doc_ref
+    pr_doc_is_out_of_repo = _gate.pr_doc_is_out_of_repo
+    _filtered_for_check = _gate.filtered_for_check
 
     # --- Worktrees + dispatch ---------------------------------------
     # Scope the WorktreeManager at <run-id>/round-N/ so each round's
@@ -535,6 +481,8 @@ def _run_one_round(
                     producer_provider=config.producer.provider,
                     producer_model=config.producer.model,
                     check_results=check_results,
+                    filtered_diff_bytes=len(_filtered_for_check.encode("utf-8")),
+                    raw_diff_bytes=len((snapshot.diff_text or "").encode("utf-8")),
                 )
                 persist_run_summary(
                     round_dir,
@@ -602,4 +550,6 @@ def _run_one_round(
         round_exit_code=round_exit_code,
         artifacts=artifacts,
         check_results=check_results,
+        filtered_diff_bytes=len(_filtered_for_check.encode("utf-8")),
+        raw_diff_bytes=len((snapshot.diff_text or "").encode("utf-8")),
     )

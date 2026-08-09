@@ -119,20 +119,21 @@ class OpenAIProducerAdapter:
             f"model_reasoning_effort={producer_config.thinking}",
         ]
         argv.append(_YOLO_FLAG)
+        # The prompt goes on STDIN, never argv — see AnthropicAdapter.build_invocation.
+        # `codex exec` reads instructions from stdin when no positional PROMPT is given.
         argv.extend(
             [
                 "-C",
                 str(worktree_path),
                 "--add-dir",
                 str(worktree_path),
-                prompt,
             ]
         )
         return Invocation(
             argv=argv,
             cwd=worktree_path,
             env=apply_auth_to_env(worktree_scoped_env(worktree_path), producer_config),
-            stdin_text=None,
+            stdin_text=prompt,
             timeout_seconds=None,
         )
 

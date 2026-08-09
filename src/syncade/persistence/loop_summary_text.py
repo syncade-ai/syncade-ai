@@ -149,6 +149,23 @@ _LOOP_NEXT_STEPS: dict[str, str] = {
         "stale `<worktree_base>/<run-id>/` from a prior interrupted "
         "run. The loop did not advance any branch."
     ),
+    "diff_too_large": (
+        "- The reviewer-facing diff exceeded `[loop] max_diff_bytes`, so syncade refused "
+        "before dispatching any reviewer — nothing was spent. The measured size and the "
+        "ceiling are in the refusing round's `diff-refused.txt`. Syncade refuses rather "
+        "than truncating: a verdict on a deliberately partial diff is a verdict on the "
+        "wrong code. Narrow `--base` to a smaller range, split the PR, or raise "
+        "`[loop] max_diff_bytes` in `.syncade/config.toml`."
+    ),
+    "prompt_too_large": (
+        "- An assembled reviewer prompt exceeded the provider's character ceiling "
+        "(1,048,576 chars for codex), so syncade refused before dispatching any reviewer "
+        "— nothing was spent. The affected reviewer and the measured size are in the "
+        "refusing round's `diff-refused.txt`. The assembled prompt includes the diff, "
+        "the reviewer template, and any prior-round context. Reduce prompt size by "
+        "narrowing `--base`, trimming the reviewer template, or lowering "
+        "`[loop] max_diff_bytes` in `.syncade/config.toml`."
+    ),
     "diff_malformed": (
         "- The reviewer-facing diff had section(s) with unidentifiable "
         "headers (unparseable, malformed C-quoted escape, or invalid UTF-8). "
@@ -273,6 +290,14 @@ _EMPTY_SERIES_REASON_NOTES: dict[str, str] = {
     ),
     "diff_malformed": (
         "- (no producer commits — the diff filter refused the run before any reviewer dispatched)"
+    ),
+    "diff_too_large": (
+        "- (no producer commits — the diff exceeded [loop] max_diff_bytes and the run was "
+        "refused before any reviewer dispatched)"
+    ),
+    "prompt_too_large": (
+        "- (no producer commits — an assembled reviewer prompt exceeded the provider ceiling "
+        "and the run was refused before any reviewer dispatched)"
     ),
     "parse_failure": (
         "- (no producer commits — a reviewer / synthesizer output "

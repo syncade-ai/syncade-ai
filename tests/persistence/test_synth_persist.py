@@ -167,6 +167,10 @@ class TestPersistRoundManifestSynthesizerSection:
         "active_blocker_count",
         "active_minor_count",
         "active_nit_count",
+        # PR-h-field-01 item 5: quotations the synthesizer miscopied and syncade corrected from
+        # the reviewer's own text. Present on BOTH paths (empty list on failure) so a
+        # consumer never has to distinguish "absent" from "none happened".
+        "provenance_repairs",
     }
 
     def test_synthesizer_success_renders_counts(self, tmp_path: Path):

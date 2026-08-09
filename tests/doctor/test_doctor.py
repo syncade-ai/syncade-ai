@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from syncade import doctor
+from syncade import doctor, doctor_env
 from syncade.adapters.registry import known_providers
 from syncade.cli import main
 from syncade.config import ReviewerConfig, SyncadeConfig
@@ -55,7 +55,7 @@ class TestCollectChecks:
         assert any(c.name == "producer-commit" for c in checks)
 
     def test_missing_provider_cli_is_red_with_a_fix(self, healthy_env, monkeypatch):
-        monkeypatch.setattr(doctor, "which", _which_missing("codex"))
+        monkeypatch.setattr(doctor_env, "which", _which_missing("codex"))
         reds = [c for c in doctor.collect_checks(SyncadeConfig(), healthy_env) if c.status == "red"]
         assert reds, "a missing codex binary must produce a red check"
         assert any("codex" in c.detail for c in reds)
@@ -68,7 +68,7 @@ class TestCollectChecks:
             if binary == "codex":
                 raise OSError("No such file or directory: 'codex'")
 
-        monkeypatch.setattr(doctor, "_probe_cli_launch", _raise_on_codex)
+        monkeypatch.setattr(doctor_env, "_probe_cli_launch", _raise_on_codex)
         reds = [c for c in doctor.collect_checks(SyncadeConfig(), healthy_env) if c.status == "red"]
         assert reds, "an unexecutable codex binary must produce a red check"
         assert any("codex" in c.detail for c in reds)
@@ -98,7 +98,7 @@ class TestCollectChecks:
             if binary == "codex":
                 raise subprocess.CalledProcessError(42, binary)
 
-        monkeypatch.setattr(doctor, "_probe_cli_launch", _exit_nonzero)
+        monkeypatch.setattr(doctor_env, "_probe_cli_launch", _exit_nonzero)
         reds = [c for c in doctor.collect_checks(SyncadeConfig(), healthy_env) if c.status == "red"]
         assert reds, "a non-zero exit from --version must produce a red check"
         assert any("codex" in c.detail for c in reds)
@@ -123,7 +123,7 @@ class TestWorktreeCheck:
     def test_unwritable_base_is_red_with_a_fix(self, healthy_env, monkeypatch):
         # os.access is doctor's only os.access call in the check path, so denying it here reds
         # the worktree check.
-        monkeypatch.setattr(doctor.os, "access", lambda *a, **k: False)
+        monkeypatch.setattr(doctor_env.os, "access", lambda *a, **k: False)
         wt = next(
             c for c in doctor.collect_checks(SyncadeConfig(), healthy_env) if c.name == "worktree"
         )
@@ -131,7 +131,7 @@ class TestWorktreeCheck:
         assert wt.fix
 
     def test_low_disk_is_red(self, healthy_env, monkeypatch):
-        monkeypatch.setattr(doctor, "disk_usage", lambda p: SimpleNamespace(free=100 * 1024**2))
+        monkeypatch.setattr(doctor_env, "disk_usage", lambda p: SimpleNamespace(free=100 * 1024**2))
         wt = next(
             c for c in doctor.collect_checks(SyncadeConfig(), healthy_env) if c.name == "worktree"
         )
@@ -155,7 +155,7 @@ class TestWorktreeCheck:
         # NotADirectoryError. Doctor must red it before any live probe runs.
         base = tmp_path / "syncade"
         base.write_text("not a dir\n")
-        wt = doctor._check_worktree_root(base)
+        wt = doctor_env._check_worktree_root(base)
         assert wt.status == "red"
         assert "not a directory" in wt.detail
         assert wt.fix
@@ -166,7 +166,7 @@ class TestWorktreeCheck:
         # while the real run's mkdir fails on that symlink. lexists must stop the walk here.
         base = tmp_path / "syncade"
         base.symlink_to(tmp_path / "nonexistent-target")  # broken symlink
-        wt = doctor._check_worktree_root(base)
+        wt = doctor_env._check_worktree_root(base)
         assert wt.status == "red"
         assert "broken symlink" in wt.detail
         assert wt.fix
@@ -177,9 +177,9 @@ class TestWorktreeCheck:
         # probe would fail the mtime assertion.) With a non-existent base, the probe walks up to
         # an existing ancestor and reads it with os.access only.
         base = tmp_path / "deep" / "syncade"
-        monkeypatch.setattr(doctor, "disk_usage", lambda p: SimpleNamespace(free=10 * 1024**3))
+        monkeypatch.setattr(doctor_env, "disk_usage", lambda p: SimpleNamespace(free=10 * 1024**3))
         mtime_before = tmp_path.stat().st_mtime_ns
-        wt = doctor._check_worktree_root(base)
+        wt = doctor_env._check_worktree_root(base)
         assert wt.status == "ok"  # probed the existing tmp_path ancestor
         assert not (tmp_path / "deep").exists()  # base (and intermediates) not created
         assert tmp_path.stat().st_mtime_ns == mtime_before  # not even an mtime bump
@@ -272,6 +272,10 @@ class TestBranchCheck:
         # at the guard (before any spend) — both exit 60. (env probes patched green by
         # healthy_env, so --quick doctor's only possible red is the branch.)
         repo = _repo_on(tmp_path / "m", "main")
+        # A REAL brief. PR-h-04 item A validates the brief path before anything mutates, so a
+        # nonexistent one exits 2 and this contract — doctor's red matching the RUN's refusal —
+        # would be asserted against the wrong refusal.
+        (repo / "brief.md").write_text("# PR\n")
         assert main(["--doctor", "--quick", "--repo-root", str(repo)]) == WORKTREE_ERROR
         assert main([str(repo / "brief.md"), "--repo-root", str(repo)]) == WORKTREE_ERROR
 
@@ -315,18 +319,18 @@ class TestExitContract:
         assert doctor.run_doctor(SyncadeConfig(), healthy_env) == SUCCESS
 
     def test_any_red_exits_60(self, healthy_env, monkeypatch, capsys):
-        monkeypatch.setattr(doctor, "which", _which_none)
+        monkeypatch.setattr(doctor_env, "which", _which_none)
         assert doctor.run_doctor(SyncadeConfig(), healthy_env) == WORKTREE_ERROR
 
     def test_a_red_never_silently_passes(self, healthy_env, monkeypatch, capsys):
-        monkeypatch.setattr(doctor, "which", _which_missing("codex"))
+        monkeypatch.setattr(doctor_env, "which", _which_missing("codex"))
         assert doctor.run_doctor(SyncadeConfig(), healthy_env) != SUCCESS
 
 
 def test_provider_cli_map_covers_every_known_provider():
     # Drift guard: if the adapter registry grows a provider doctor's _PROVIDER_CLI does not
     # map, doctor would silently skip its PATH check. Fail loudly here instead.
-    assert set(known_providers()) <= set(doctor._PROVIDER_CLI)
+    assert set(known_providers()) <= set(doctor_env._PROVIDER_CLI)
 
 
 class TestLiveLegs:
@@ -441,7 +445,7 @@ class TestSpendGating:
     smoke never spends under a credential that failed auth."""
 
     def test_cheap_blocker_skips_the_live_legs(self, healthy_env, monkeypatch):
-        monkeypatch.setattr(doctor, "which", _which_missing("codex"))  # a cheap red
+        monkeypatch.setattr(doctor_env, "which", _which_missing("codex"))  # a cheap red
         live = {
             c.name: c
             for c in doctor.collect_checks(SyncadeConfig(), healthy_env)
@@ -452,7 +456,7 @@ class TestSpendGating:
 
     def test_cheap_blocker_makes_no_live_call(self, healthy_env, monkeypatch):
         # The load-bearing $0 claim: not just reported skipped — actually NOT invoked.
-        monkeypatch.setattr(doctor, "which", _which_missing("codex"))
+        monkeypatch.setattr(doctor_env, "which", _which_missing("codex"))
 
         def _boom(*a, **k):
             raise AssertionError("a live leg ran despite a cheap blocker")
@@ -509,7 +513,7 @@ class TestSpendGating:
         doctor.collect_checks(SyncadeConfig(), healthy_env)
         assert "running live checks" in capsys.readouterr().err
         # ...and absent when a cheap blocker means nothing will spend.
-        monkeypatch.setattr(doctor, "which", _which_none)
+        monkeypatch.setattr(doctor_env, "which", _which_none)
         doctor.collect_checks(SyncadeConfig(), healthy_env)
         assert "running live checks" not in capsys.readouterr().err
 
@@ -566,7 +570,7 @@ class TestQuick:
         assert doctor.run_doctor(SyncadeConfig(), healthy_env, quick=True) == SUCCESS
 
     def test_quick_still_reds_on_a_cheap_failure(self, healthy_env, monkeypatch, capsys):
-        monkeypatch.setattr(doctor, "which", _which_none)
+        monkeypatch.setattr(doctor_env, "which", _which_none)
         assert doctor.run_doctor(SyncadeConfig(), healthy_env, quick=True) == WORKTREE_ERROR
 
     def test_quick_summary_counts_skips_separately_not_as_passed(self, healthy_env, capsys):
@@ -595,7 +599,7 @@ class TestCliDoctor:
         assert _head(healthy_env) == head_before
 
     def test_missing_cli_exits_60(self, healthy_env, monkeypatch):
-        monkeypatch.setattr(doctor, "which", _which_none)
+        monkeypatch.setattr(doctor_env, "which", _which_none)
         assert main(["--doctor", "--repo-root", str(healthy_env)]) == WORKTREE_ERROR
 
     def test_accepts_base_flag(self, healthy_env):

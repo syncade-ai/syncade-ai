@@ -58,12 +58,15 @@ class TestBuildInvocation:
         assert "-C" in inv.argv
         assert "--add-dir" in inv.argv
         assert str(tmp_path) in inv.argv
-        # Prompt is positional, LAST in argv (clap parsing)
-        assert inv.argv[-1] == prompt
+        # The prompt is on STDIN, NOT argv (PR-h-field-01 item 1) — `codex exec` reads
+        # instructions from stdin when no positional PROMPT is given.
+        assert inv.stdin_text == prompt, "prompt must be delivered on stdin"
+        assert prompt not in inv.argv, "prompt must NOT be an argv element"
+        assert not any(prompt in a for a in inv.argv), "prompt must not be embedded in argv"
         # cwd is the worktree; env is inherited; nothing on stdin.
         assert inv.cwd == tmp_path
         assert inv.env  # not empty
-        assert inv.stdin_text is None
+        # stdin now CARRIES the prompt — asserted above.
         assert inv.timeout_seconds is None
 
     def test_trusted_execute_permissions_use_sandbox_plus_config_override(self, tmp_path):

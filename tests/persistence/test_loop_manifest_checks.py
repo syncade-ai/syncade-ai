@@ -173,3 +173,176 @@ class TestLoopManifestChecksParity:
         loop_entry = json.loads(loop_path.read_text())["rounds"][0]
         assert "checks" not in round_manifest
         assert "checks" not in loop_entry
+
+
+class TestLoopManifestRefusalFields:
+    """Regression: loop-manifest.json per-round entries must mirror refusal discriminator
+    fields from the per-round manifest so tooling can classify refusal causes without reading
+    individual round-N/manifest.json files."""
+
+    def _refusal_round_result(
+        self,
+        *,
+        round_dir: Path,
+        oversize_prompt_chars: int | None = None,
+        oversize_diff_bytes: int | None = None,
+        fail_closed_headers: list[str] | None = None,
+        filtered_diff_bytes: int | None = None,
+        raw_diff_bytes: int | None = None,
+    ):
+        from syncade.dispatcher import DispatchResult
+        from syncade.orchestrator import RoundArtifacts, RoundResult
+
+        return RoundResult(
+            round_idx=0,
+            snapshot=_snapshot(),
+            dispatch_result=DispatchResult(results=[], total_duration_seconds=0.0),
+            synth_result=None,
+            test_result=None,
+            test_skip_reason=None,
+            test_worktree_error=None,
+            producer_result=None,
+            round_exit_code=60,
+            artifacts=RoundArtifacts(
+                round_idx=0,
+                round_dir=round_dir,
+                manifest_path=round_dir / "manifest.json",
+                summary_path=round_dir / "summary.md",
+            ),
+            oversize_prompt_chars=oversize_prompt_chars,
+            oversize_diff_bytes=oversize_diff_bytes,
+            fail_closed_headers=fail_closed_headers,
+            filtered_diff_bytes=filtered_diff_bytes,
+            raw_diff_bytes=raw_diff_bytes,
+        )
+
+    def _loop_entry(self, run_dir: Path, rr, *, termination: str = "prompt_too_large") -> dict:
+        loop_path = persist_loop_manifest(
+            run_dir,
+            final_exit_code=60,
+            final_round=0,
+            termination_reason=termination,
+            rounds=[rr],
+            max_rounds=1,
+            started_at=_FIXED_STARTED_AT,
+            producer_provider=None,
+            producer_model=None,
+        )
+        return json.loads(loop_path.read_text())["rounds"][0]
+
+    def test_prompt_too_large_refusal_fields_in_loop_manifest(self, tmp_path: Path):
+        """Regression: a prompt_too_large refusal must set refusal_reason and
+        oversize_prompt_chars in the loop manifest's per-round entry."""
+        round_dir = _make_round_dir(tmp_path)
+        rr = self._refusal_round_result(
+            round_dir=round_dir,
+            oversize_prompt_chars=1_100_000,
+        )
+        entry = self._loop_entry(round_dir.parent, rr)
+
+        assert entry.get("refusal_reason") == "prompt_too_large", (
+            f"loop manifest missing refusal_reason='prompt_too_large', "
+            f"got {entry.get('refusal_reason')!r}"
+        )
+        assert entry.get("oversize_prompt_chars") == 1_100_000, (
+            "loop manifest missing oversize_prompt_chars"
+        )
+
+    def test_diff_too_large_refusal_reason_in_loop_manifest(self, tmp_path: Path):
+        """Regression: a diff_too_large refusal must set refusal_reason in the loop manifest.
+
+        This test uses the REAL _diff_too_large_result path so it catches the bug where
+        _persist_refusal passed sizes to persist_round_manifest but did NOT populate
+        filtered_diff_bytes/raw_diff_bytes on the returned RoundResult — causing
+        persist_loop_manifest to write null for both size fields.
+        """
+        from syncade.config import SyncadeConfig
+        from syncade.logging import Logger
+        from syncade.orchestrator.round_no_changes import _diff_too_large_result
+
+        diff_text = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n+foo\n"
+        snap = _snapshot(diff_text=diff_text, base_oid="b" * 40)
+        config = SyncadeConfig()
+        round_dir = _make_round_dir(tmp_path)
+        logger = Logger()
+
+        rr = _diff_too_large_result(
+            round_idx=0,
+            snapshot=snap,
+            round_dir=round_dir,
+            config=config,
+            started_at=_FIXED_STARTED_AT,
+            resumed_under_drift=False,
+            diff_bytes=2_000_000,
+            logger=logger,
+        )
+
+        # RoundResult must carry the sizes so persist_loop_manifest can write them.
+        assert rr.filtered_diff_bytes == 2_000_000
+        assert rr.raw_diff_bytes == len(diff_text.encode("utf-8"))
+
+        loop_path = persist_loop_manifest(
+            round_dir.parent,
+            final_exit_code=60,
+            final_round=0,
+            termination_reason="diff_too_large",
+            rounds=[rr],
+            max_rounds=1,
+            started_at=_FIXED_STARTED_AT,
+            producer_provider=None,
+            producer_model=None,
+        )
+
+        entry = json.loads(loop_path.read_text())["rounds"][0]
+        assert entry.get("refusal_reason") == "diff_too_large", (
+            f"loop manifest missing refusal_reason='diff_too_large', "
+            f"got {entry.get('refusal_reason')!r}"
+        )
+        # The diff sizes must appear in the snapshot section of the loop manifest.
+        assert entry["snapshot"].get("diff_bytes_reviewed") == 2_000_000, (
+            "loop manifest missing diff_bytes_reviewed from diff_too_large path"
+        )
+        assert entry["snapshot"].get("diff_bytes") == len(diff_text.encode("utf-8")), (
+            "loop manifest missing diff_bytes from diff_too_large path"
+        )
+
+    def test_diff_malformed_refusal_fields_in_loop_manifest(self, tmp_path: Path):
+        """Regression: a diff_malformed refusal must set refusal_reason and
+        diff_filter_refusal_headers in the loop manifest's per-round entry."""
+        round_dir = _make_round_dir(tmp_path)
+        rr = self._refusal_round_result(
+            round_dir=round_dir,
+            fail_closed_headers=["diff --git a/foo b/bar"],
+        )
+        entry = self._loop_entry(round_dir.parent, rr, termination="diff_malformed")
+
+        assert entry.get("refusal_reason") == "diff_malformed"
+        assert entry.get("diff_filter_refusal_headers") == ["diff --git a/foo b/bar"]
+
+    def test_clean_round_has_no_refusal_fields(self, tmp_path: Path):
+        """A normal successful round must not carry refusal_reason or related fields."""
+        from syncade.dispatcher import DispatchResult
+        from syncade.orchestrator import RoundArtifacts, RoundResult
+
+        round_dir = _make_round_dir(tmp_path)
+        rr_clean = RoundResult(
+            round_idx=0,
+            snapshot=_snapshot(),
+            dispatch_result=DispatchResult(results=[], total_duration_seconds=0.0),
+            synth_result=None,
+            test_result=None,
+            test_skip_reason=None,
+            test_worktree_error=None,
+            producer_result=None,
+            round_exit_code=0,
+            artifacts=RoundArtifacts(
+                round_idx=0,
+                round_dir=round_dir,
+                manifest_path=round_dir / "manifest.json",
+                summary_path=round_dir / "summary.md",
+            ),
+        )
+        entry = self._loop_entry(round_dir.parent, rr_clean, termination="ship")
+        assert "refusal_reason" not in entry
+        assert "oversize_prompt_chars" not in entry
+        assert "diff_filter_refusal_headers" not in entry

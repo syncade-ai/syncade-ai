@@ -288,6 +288,34 @@ class TestErrorClasses:
         assert issubclass(SubprocessNotFoundError, SubprocessError)
 
 
+class TestCarriageReturnPreservation:
+    """run_subprocess must NOT translate \\r bytes to \\n (universal newline
+    normalization). text=True with the default newline=None converts standalone
+    \\r and \\r\\n to \\n before diff_filter sees the text, which lets a binary
+    payload containing \\r followed by 'diff --git ...' synthesize a fake section
+    boundary — either leaking non-NUL binary bytes past elision or triggering a
+    false diff_malformed refusal."""
+
+    def test_cr_bytes_are_preserved_not_normalized(self):
+        # Write a CR byte followed by text that looks like a diff header.
+        # With text=True + universal newlines, the \r becomes \n, turning
+        # "before\rdiff --git a/x b/x\n" into "before\ndiff --git a/x b/x\n",
+        # which split('\n') would then split into a fake diff section.
+        script = (
+            "import sys; "
+            "sys.stdout.buffer.write(b'before\\rdiff --git a/x b/x\\n'); "
+            "sys.stdout.buffer.flush()"
+        )
+        result = run_subprocess([sys.executable, "-c", script])
+        assert result.returncode == 0
+        assert "\r" in result.stdout, (
+            f"\\r was normalized away — universal newline translation is still active: "
+            f"{result.stdout!r}"
+        )
+        # The CR must appear between 'before' and 'diff --git', not as a standalone \n.
+        assert result.stdout == "before\rdiff --git a/x b/x\n", result.stdout
+
+
 class TestInvalidUtf8Decoding:
     """Child output is decoded UTF-8/replace, never the parent locale +
     errors='strict'. Raw invalid bytes must NOT raise UnicodeDecodeError

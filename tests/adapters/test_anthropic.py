@@ -42,10 +42,15 @@ class TestBuildInvocation:
         inv = adapter.build_invocation(config, tmp_path, prompt)
 
         assert isinstance(inv, Invocation)
-        # argv[0] is the binary; the prompt is positional after `-p`.
+        # argv[0] is the binary. The prompt is on STDIN, NOT argv (PR-h-field-01 bug 1): a
+        # reviewer diff can exceed the execve argument ceiling, and the child then never
+        # exists — `[Errno 7] Argument list too long`, 0.0s, exit 40, before any review.
         assert inv.argv[0] == "claude"
         assert "-p" in inv.argv
-        assert prompt in inv.argv
+        assert inv.stdin_text == prompt, "prompt must be delivered on stdin"
+        assert prompt not in inv.argv, "prompt must NOT be an argv element"
+        assert not any(prompt in a for a in inv.argv), "prompt must not be embedded in argv"
+
         # Reviewer now requests the stream-json transcript (+ required
         # --verbose) so the full tool-call stream is captured in .stdout;
         # the adapter extracts the terminal result envelope from it.
@@ -63,10 +68,10 @@ class TestBuildInvocation:
         # The worktree is granted tool access via --add-dir.
         assert "--add-dir" in inv.argv
         assert str(tmp_path) in inv.argv
-        # cwd is the worktree; env is inherited; nothing on stdin.
+        # cwd is the worktree; env is inherited.
         assert inv.cwd == tmp_path
         assert inv.env  # not empty
-        assert inv.stdin_text is None
+        # stdin now CARRIES the prompt — asserted above.
         assert inv.timeout_seconds is None
 
     @pytest.mark.parametrize(

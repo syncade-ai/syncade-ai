@@ -103,6 +103,23 @@ _NEXT_STEPS_60_DIFF_MALFORMED = (
     "  `core.quotepath` or a non-UTF-8 filename)."
 )
 
+_NEXT_STEPS_60_DIFF_TOO_LARGE = (
+    "- The reviewer-facing diff exceeded `[loop] max_diff_bytes` before any reviewer "
+    "was dispatched. The measured size and the ceiling are in `diff-refused.txt`. "
+    "Syncade refuses rather than truncating — a verdict on a partial diff is a verdict "
+    "on the wrong code. Narrow `--base` to a smaller range, split the PR, or raise "
+    "`[loop] max_diff_bytes` in `.syncade/config.toml`."
+)
+
+_NEXT_STEPS_60_PROMPT_TOO_LARGE = (
+    "- The assembled reviewer prompt exceeded the provider character ceiling before any "
+    "reviewer was dispatched. The oversized reviewer and char count are in `diff-refused.txt`. "
+    "The assembled prompt includes the diff, the reviewer template, and any prior-round "
+    "context. To reduce it: narrow `--base` to a smaller diff range, trim the reviewer "
+    "template in `.syncade/templates/`, or lower `[loop] max_diff_bytes` so the diff "
+    "contributes fewer characters."
+)
+
 _NEXT_STEPS_NO_CHANGES = (
     "- The diff resolved to empty before any reviewer was dispatched: "
     "the base ref resolved but no reviewable changes were found "
@@ -238,6 +255,8 @@ def _resolve_next_steps(
     *,
     no_changes_to_review: bool = False,
     fail_closed_headers: list[str] | None = None,
+    oversize_diff_bytes: int | None = None,
+    oversize_prompt_chars: int | None = None,
 ) -> str:
     """Pick the right Next-steps content for the given exit code +
     synthesizer outcome + test outcome + test-skip reason.
@@ -284,6 +303,10 @@ def _resolve_next_steps(
     # rest of this routing byte-identical.
     if fail_closed_headers is not None:
         return _NEXT_STEPS_60_DIFF_MALFORMED
+    if oversize_diff_bytes is not None:
+        return _NEXT_STEPS_60_DIFF_TOO_LARGE
+    if oversize_prompt_chars is not None:
+        return _NEXT_STEPS_60_PROMPT_TOO_LARGE
     if no_changes_to_review:
         return _NEXT_STEPS_NO_CHANGES
 

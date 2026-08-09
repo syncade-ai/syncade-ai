@@ -51,6 +51,8 @@ TerminationReason = Literal[
     "blockers_all_deactivated",
     "worktree_error",
     "diff_malformed",
+    "diff_too_large",
+    "prompt_too_large",
     "parse_failure",
     "config_error",
 ]
@@ -123,6 +125,18 @@ TerminationReason = Literal[
   dispatcher is invoked (D2, PR-h-02d); loop terminates with exit
   60. Distinct from ``worktree_error`` so tooling can tell "reviewer
   worktree failed" from "diff could not be safely filtered".
+- ``diff_too_large`` — the reviewer-facing diff (after stripping and
+  binary elision) exceeded ``[loop] max_diff_bytes``. The run is
+  refused before any dispatcher is invoked; loop terminates with exit
+  60 (PR-h-field-01 item 3 / PR-h-02e D2). The refusal message names
+  the measured size, the cap, and three ways to reduce the diff.
+- ``prompt_too_large`` — the assembled reviewer prompt (diff + spec +
+  template overhead) exceeded the hard PROVIDER ceiling. There is no
+  ``[loop] max_prompt_bytes`` knob and this must not imply one: the diff
+  is what an operator controls (``[loop] max_diff_bytes``), while the
+  prompt ceiling belongs to the provider (``codex exec`` refuses over
+  1,048,576 characters) and is not ours to relax. The run is refused
+  before any dispatcher is invoked; loop terminates with exit 60.
 - ``parse_failure`` — reviewer or synthesizer output couldn't be
   parsed; loop terminates with exit 70.
 - ``config_error`` — an adapter-lookup failure (e.g. unknown
@@ -177,10 +191,29 @@ class RoundResult:
     # "reviewed and approved" (round_exit_code=0, this=False) from
     # "nothing dispatched because diff was empty" (round_exit_code=0, this=True).
     no_changes_to_review: bool = False
+    # UTF-8 byte count of the reviewer-facing (filtered) diff, carried so the
+    # producer-phase manifest rewrite can reproduce what round.py measured without
+    # a second computation. None when not measured (e.g. diff_malformed refusal).
+    filtered_diff_bytes: int | None = None
+    # UTF-8 byte count of the raw diff (before repo-context stripping), carried so
+    # the producer-phase manifest rewrite and the no-changes path can supply the
+    # measured value without re-deriving it from the snapshot (which carries a
+    # sentinel on resume, making derivation fabricate a byte count).
+    # None when not measured (diff_malformed refusal; resume paths).
+    raw_diff_bytes: int | None = None
     # Set by _fail_closed_refusal_result (D2, PR-h-02d). Non-None means the run
     # was refused because these diff headers could not be identified. Allows
     # verdict.py to return "diff_malformed" instead of the generic "worktree_error".
     fail_closed_headers: list[str] | None = None
+    # Set by _diff_too_large_result (PR-h-02e D2, landed in PR-h-field-01). Non-None means the
+    # run was refused because the REVIEWER-FACING diff exceeded [loop] max_diff_bytes;
+    # it carries the measured size. Lets verdict.py return "diff_too_large" rather than
+    # the generic "worktree_error", so the manifest names the cause.
+    oversize_diff_bytes: int | None = None
+    # Set by _assembled_prompt_too_large_result. Non-None means the run was refused
+    # because an assembled reviewer prompt exceeded the provider's character ceiling;
+    # it carries the oversized char count. Lets verdict.py return "prompt_too_large".
+    oversize_prompt_chars: int | None = None
 
 
 @dataclass(frozen=True)

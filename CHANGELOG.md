@@ -7,6 +7,112 @@ include breaking changes.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-09
+
+Don't hurt the operator, and don't throw away work you already paid for. Two themes: a
+refused command now leaves your directory as it found it, and a run no longer dies for a
+mechanical reason unrelated to the code under review. The second theme came from another
+project running syncade as a tool and hitting two aborts that discarded whole runs — an
+argument-list limit that killed every reviewer in 0.0s, and a single mistyped character in a
+quotation that ended a 12-minute run at exit 70.
+
+### Changed
+
+- **A refused command no longer leaves a repository behind.** A mistyped brief path, an
+  unknown OpenSpec change-id, a broken `.syncade/config.toml`, an invalid CLI override or a
+  failed auth check are all detected before syncade touches your directory. Previously any of
+  them could create `.git`, a baseline commit, a tracked `.gitignore` and 33 exclude rules on
+  the way to exiting — and in an existing repo a mistyped filename was reported as a
+  default-branch problem.
+- **Auto-init only initializes an EMPTY directory.** A populated one is refused with
+  instructions, because the baseline commit captures whatever it finds and the exclusions are
+  defeatable — a key under a name no denylist knows, or your own `.gitignore` re-including
+  `.env` with `!`, both reached git history. `--allow-auto-init` overrides this deliberately;
+  it is informed consent, not a safe mode, and the warned-about leaks still occur under it.
+  Any pre-existing `.git` is refused regardless of the flag.
+- **`--install-skill` can no longer silently replace another mode.** Combining it with a
+  PR_DOC or any other one-shot mode was accepted, exited 0, and dropped the other intent —
+  `syncade <brief> --install-skill claude` ran no reviewers and reported success. All such
+  combinations are now rejected naming both flags.
+- **A refused run now REMOVES the repository it auto-initialized.** The protection above is
+  validate-before-mutate; this is its backstop, for refusals that happen after the mutation
+  (an unresolvable `--base`, an unreachable scope, a failure inside the run itself). If the
+  directory was empty before syncade touched it, the `.git` it created is removed again.
+
+  It removes **`.git` and nothing else.** Two things deliberately survive:
+
+  - the starter `.gitignore` — syncade never deletes a file whose bytes you could have edited;
+  - anything under `.syncade/` — run records are never deleted, by anything (`--gc` has the
+    same rule, because `--metrics` is rebuilt from that tree).
+
+  So a refused run in a fresh directory leaves no repository, and nothing else changes. Two
+  limits, both deliberate: with `--allow-auto-init` in a **populated** directory nothing is
+  removed at all (syncade cannot tell which files are yours, and leaving a repository behind is
+  the safer error), and an interrupted run keeps its repository so it stays recoverable.
+
+### Fixed
+
+- **A repo with committed binary files is reviewable again.** Screenshot baselines, vendored
+  fonts, any committed binary: syncade renders its diff with `--text` (the only defence
+  against a `.gitattributes` that hides real source changes), which turned 66 KB of real diff
+  into 3.1 MB of raw image bytes on the repo that reported this. That was passed to the
+  reviewer CLI as a command-line argument, and the OS refused it — `[Errno 7] Argument list
+  too long`, both reviewers dead in 0.0s, exit 40, **no review at all**. `--auth-check` and
+  `--selfcheck` had passed a minute earlier; neither builds a prompt, so neither could see it.
+
+  Three changes, all needed: the prompt now travels on **stdin**, binary file content is
+  **left out of the prompt** (paths and withheld byte counts are listed instead, so the
+  omission is disclosed), and the size is **checked before dispatch**. Binary detection reads
+  the bytes, never `git diff --numstat` — measured, git reports a plain text file marked
+  `*.py -diff` as binary exactly as it reports a PNG, so trusting it would let a committed
+  `.gitattributes` erase source changes from the reviewer's diff.
+
+- **A committed binary can no longer smuggle content into a reviewer's prompt.** syncade
+  captures subprocess output as bytes and decodes it explicitly. Previously it read child
+  output in text mode, where Python rewrites a lone carriage return to a newline — and since
+  binary files are rendered as raw text in the diff, a payload containing `\r` could forge a
+  `diff --git` boundary and slip past the binary filter. Found by the blind review panel.
+
+- **A synthesizer typo no longer discards the whole run.** The judge quotes each reviewer's
+  finding verbatim into `provenance[].original_description`, and syncade checks it. One
+  dropped backtick — in a quotation, not in the finding — ended a run at **exit 70** after
+  713 seconds of reviewer time, throwing away six valid findings and three unrun rounds.
+
+  syncade now **repairs** the quotation from the reviewer's own text and continues, recording
+  both strings in the round manifest. This is stricter than before, not looser: the rendered
+  quote used to be verbatim only because the check passed, and is now verbatim because it was
+  copied from the source. Inventing a `reviewer_name`, an out-of-range finding index, or a
+  wrong severity is still fatal — those are attribution claims with no ground truth to
+  restore, and the abort is reserved for them.
+
+### Added
+
+- **`[loop] max_diff_bytes`** (default `1000000`) — a ceiling on the diff a reviewer is
+  actually handed, measured after repo-context stripping and binary elision. Over it, the run
+  is refused before anything is dispatched (exit 60, `diff_too_large`) with the size, the
+  ceiling and what to do about it, rather than truncated — a verdict on a partial diff is a
+  verdict on the wrong code. `--doctor` predicts the same refusal for $0.
+
+  The default clears the largest diff this project has ever reviewed by ~7x, and sits just
+  under `codex exec`'s hard 1,048,576-character input limit so syncade's message arrives
+  before the provider's. Lower it if you want a tighter review surface.
+
+- `--allow-auto-init`, to initialize a git repository in a directory that already has files
+  in it. See the auto-init note above for what that commit can capture.
+- **Round manifests record diff size**: `snapshot.diff_bytes` (what the repo produced) and
+  `snapshot.diff_bytes_reviewed` (what a reviewer was handed, after repo-context stripping),
+  both UTF-8 byte counts. Durable artifact fields, so anything parsing
+  `round-N/manifest.json` will see them.
+
+  A size is recorded **only by the path that measured it**. Either field is `null` when a run
+  did not measure it — notably on a resumed round, which does not inherit the original run's
+  numbers. `null` therefore means "not measured", and is distinct from `0`, which means
+  "measured, and empty" (the all-stripped case, where a real diff filters to nothing). No
+  path infers a size, so a count is never fabricated for a diff nobody had.
+
+  There is still no diff size cap; this is the measurement a future cap needs, and it cannot
+  be backfilled.
+
 ## [0.3.0] — 2026-08-05
 
 Verdict integrity and review identity. This release is about two guarantees: that a verdict
@@ -39,9 +145,27 @@ code no reviewer had seen.
 - Hardening against `refs/replace/*` object substitution: every `git` subprocess now runs with
   `GIT_NO_REPLACE_OBJECTS=1`. Replacement refs live in the shared `.git` common dir and are
   producer-writable, and they substituted objects in commands that read a commit.
+- **All-deactivated-blockers is now exit 10 (decision needed), not SHIP.** When two or more
+  distinct reviewers each raise a blocker and the synthesizer deactivates every one of them,
+  the result is exit 10 (`blockers_all_deactivated`) with a `decision-needed.md`. Previously
+  this was mechanically indistinguishable from a clean SHIP. This is a terminal state — no
+  producer runs — because there is no active blocker to fix.
 
 ### Fixed
 
+- **The reviewer-facing diff is now hermetically isolated from repo config.** Every diff
+  invocation pins `--no-ext-diff`, `--no-textconv`, `core.attributesFile=/dev/null`, and
+  every setting that demonstrably changes diff bytes (prefix format, context lines, algorithm,
+  rename detection, etc.) via `-c` flags that outrank all config files. A repo-controlled
+  `diff.external` driver, textconv filter, or `.gitattributes` `-diff` marker can no longer
+  substitute the bytes reviewers see for something controlled by the repo being reviewed.
+- **The CLI pre-auth default-branch commit guard now defers for based, scoped, and resume
+  runs** instead of refusing them upfront. Whether those runs commit depends on the filtered
+  diff, which the CLI cannot compute before snapshotting. The CLI now refuses only when it can
+  *prove* the run commits (no `--base`/`--scope`, not a resume). All other cases are deferred
+  to `run_review`, which decides authoritatively at the run-entry choke — still before any
+  reviewer or producer subprocess. Previously, valid based/scoped/no-change runs on the
+  default branch were falsely refused.
 - **The reviewer-facing diff now decodes git's C-quoted paths.** Git quotes any path containing
   a non-ASCII byte, a quote, a backslash, or a control character, and matching the raw header
   text let most path shapes leak a file that was supposed to be stripped to a blind reviewer.

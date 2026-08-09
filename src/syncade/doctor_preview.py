@@ -27,14 +27,18 @@ from syncade.base_resolution import BaseResolutionError, resolve_scope
 from syncade.config import SyncadeConfig
 from syncade.diff_filter import (
     concealed_destinations,
+    elide_binary_hunks,
     filter_diff_for_reviewer,
     unidentifiable_sections,
 )
 from syncade.doctor_types import _OK, _RED, DoctorCheck
+from syncade.findings import get_findings_schema_string
 from syncade.metrics.aggregate import backfill
 from syncade.metrics.schema import fetch_actor_stats, fetch_runs, open_db
 from syncade.orchestrator.branch_guard import current_branch_name
+from syncade.orchestrator.round_no_changes import _CODEX_CHAR_CEILING
 from syncade.persistence import read_last_reviewed
+from syncade.prompts import load_reviewer_template_for, render_reviewer_prompt
 from syncade.snapshot import SnapshotError, take_snapshot
 
 # Coarse fallback ONLY (no local history): price one round from list prices at a NOMINAL
@@ -62,6 +66,19 @@ def _diff_size(diff_text: str) -> tuple[int, int]:
     return files, changed
 
 
+def reviewer_facing_bytes(diff_text: str, config: SyncadeConfig) -> int:
+    """UTF-8 size of what a reviewer would actually be handed.
+
+    The SAME two transforms the round applies, in the same order — repo-context stripping
+    then binary elision — so doctor's prediction and `[loop] max_diff_bytes`'s enforcement
+    cannot disagree about what "the diff" means. Doctor's row IS the prediction here: it has
+    no `run_review` downstream to be authoritative for it, so a false green sends the
+    operator on to spend the live auth and producer-commit legs.
+    """
+    stripped = filter_diff_for_reviewer(diff_text, config.review.strip_repo_context_files)
+    return len(elide_binary_hunks(stripped)[0].encode("utf-8"))
+
+
 def based_diff_classify(
     repo_root: Path,
     config: SyncadeConfig,
@@ -76,6 +93,12 @@ def based_diff_classify(
     - ``'no_changes'``: diff is known-empty; real run exits 0 before dispatch, no commit.
     - ``'malformed'``: diff has unidentifiable headers; real run exits 60 (diff_malformed),
       no commit — but this is a failure, not a benign no-op.
+    - ``'too_large'``: reviewer-facing diff exceeds ``[loop] max_diff_bytes``; real run
+      exits 60 (diff_too_large) before dispatch, no commit. Same shape as malformed.
+    - ``'prompt_too_large'``: assembled reviewer prompt exceeds the provider character
+      ceiling; real run exits 60 (prompt_too_large) before dispatch, no commit. Rendered
+      with a placeholder PR doc ref, so the size is a LOWER BOUND: this classification is
+      never wrong when it fires, and its absence promises nothing.
 
     Returns ``'dispatch'`` (conservative: guard applies) on any resolution or snapshot error
     — the plan check catches those failures with its own red; the branch check must not
@@ -94,12 +117,41 @@ def based_diff_classify(
         return "dispatch"  # cannot determine; be conservative
     if config.review.strip_repo_context_files and unidentifiable_sections(snap.diff_text):
         return "malformed"
+    _filtered = filter_diff_for_reviewer(snap.diff_text, config.review.strip_repo_context_files)
+    _filtered_elided, _ = elide_binary_hunks(_filtered)
+    if len(_filtered_elided.encode("utf-8")) > config.loop.max_diff_bytes:
+        return "too_large"
     if (
         snap.base_oid is not None
-        and not filter_diff_for_reviewer(snap.diff_text, config.review.strip_repo_context_files)
+        and not _filtered_elided
         and not concealed_destinations(snap.diff_text, config.review.strip_repo_context_files)
     ):
         return "no_changes"
+    # Prompt-size check: render the full prompt for each reviewer and see if it exceeds
+    # the provider character ceiling. Uses the placeholder "<pr-doc>" (same as check_plan
+    # when pr_doc_path is unknown), so this can undercount if the template repeats
+    # {pr_doc_path} — but without it the branch check would fire for prompt_too_large runs.
+    _diff_text = _filtered_elided or (
+        "(diff not provided; review against the full repo state at HEAD)"
+    )
+    _json_schema = get_findings_schema_string()
+    for _reviewer in config.reviewers:
+        try:
+            _tmpl = load_reviewer_template_for(
+                repo_root, provider=_reviewer.provider, template=_reviewer.template
+            )
+            _rendered = render_reviewer_prompt(
+                _tmpl,
+                pr_doc_path="<pr-doc>",
+                diff=_diff_text,
+                master_plan_path=None,
+                json_schema=_json_schema,
+                adversarial_lens=_reviewer.adversarial_lens,
+            )
+        except Exception:  # noqa: BLE001 — fail open; check_plan catches template errors
+            continue
+        if len(_rendered) > _CODEX_CHAR_CEILING:
+            return "prompt_too_large"
     return "dispatch"
 
 
@@ -132,7 +184,19 @@ def check_plan(
     """Preview the plan a real run would execute (C1): the resolved diff base + its size,
     the exact actor set (producer runs ONLY on NO-SHIP), and the round budget. Resolves the
     base the same way the CLI does — an unresolvable ``--scope`` or a bad ``--base`` is red,
-    matching the real run's exit-60 refusal. Read-only git, so inert."""
+    matching the real run's exit-60 refusal. Read-only git, so inert.
+
+    **The prompt-size portion is a LOWER BOUND, and does not claim otherwise.** doctor
+    cannot know the PR doc: ``--doctor`` is a one-shot mode and the CLI rejects it beside a
+    PR_DOC positional, so the reference is rendered as a placeholder. A template that
+    repeats ``{pr_doc_path}`` therefore renders longer in the real run than here.
+
+    That asymmetry is why the check is still worth having: exceeding the ceiling on a lower
+    bound means the real prompt certainly exceeds it, so a RED is always a true positive.
+    The converse is NOT claimed — a green plan row does not promise the prompt will fit, and
+    the real run refuses cheaply before provisioning if it does not. Four dogfood rounds
+    tried to make this exact (estimate -> render -> real PR-doc path -> unreachable from the
+    CLI); saying what it is beats a fourth attempt at what it cannot be."""
     if base_ref == "":
         return DoctorCheck(
             "plan",
@@ -173,6 +237,76 @@ def check_plan(
                         " check strip_repo_context_files config"
                     ),
                 )
+            # The cap refuses before dispatch in the real run — RED, same as malformed,
+            # so the cheap-red gate skips the live auth/producer-commit spend.
+            _reviewed = reviewer_facing_bytes(snap.diff_text, config)
+            if _reviewed > config.loop.max_diff_bytes:
+                return DoctorCheck(
+                    "plan",
+                    _RED,
+                    f"reviewer-facing diff is {_reviewed:,} bytes, over "
+                    f"[loop] max_diff_bytes ({config.loop.max_diff_bytes:,})"
+                    " — real run exits 60 (diff_too_large)",
+                    fix=(
+                        "narrow --base to a smaller range, split the PR, or raise "
+                        "[loop] max_diff_bytes"
+                    ),
+                )
+            # Exact assembled-prompt check: render the full round-0 prompt and measure it.
+            # The former template+diff estimate omitted the JSON schema (~517 chars) and the
+            # adversarial-lens block (~3,316 chars) — a lower bound that let doctor report OK
+            # for a run that exits 60 (prompt_too_large). Fails open on template errors.
+            _filtered_text = filter_diff_for_reviewer(
+                snap.diff_text, config.review.strip_repo_context_files
+            )
+            _filtered_text, _ = elide_binary_hunks(_filtered_text)
+            _diff_for_render = (
+                _filtered_text
+                if _filtered_text
+                else "(diff not provided; review against the full repo state at HEAD)"
+            )
+            # A PLACEHOLDER ref, because doctor cannot know the real one: `--doctor` is a
+            # one-shot mode and the CLI rejects it alongside a PR_DOC positional. That makes
+            # the rendered size a LOWER BOUND — a template repeating `{pr_doc_path}` renders
+            # longer in the real run than here.
+            #
+            # A lower bound is still worth checking, because the error is one-directional:
+            # if even the lower bound exceeds the ceiling, the real prompt certainly does, so
+            # a RED here is always a true positive. The converse does not hold and is not
+            # claimed — passing this check does not promise the run will fit. Same idiom the
+            # budget surfaces use ("a strict lower bound"), and the honest alternative to
+            # predicting exactly, which four dogfood rounds showed doctor cannot do.
+            _pr_doc_ref = "<pr-doc>"
+            _json_schema = get_findings_schema_string()
+            for _reviewer in config.reviewers:
+                try:
+                    _tmpl = load_reviewer_template_for(
+                        repo_root, provider=_reviewer.provider, template=_reviewer.template
+                    )
+                    _rendered = render_reviewer_prompt(
+                        _tmpl,
+                        pr_doc_path=_pr_doc_ref,
+                        diff=_diff_for_render,
+                        master_plan_path=None,
+                        json_schema=_json_schema,
+                        adversarial_lens=_reviewer.adversarial_lens,
+                    )
+                except Exception:  # noqa: BLE001 — template errors are checked live
+                    continue
+                _prompt_chars = len(_rendered)
+                if _prompt_chars > _CODEX_CHAR_CEILING:
+                    return DoctorCheck(
+                        "plan",
+                        _RED,
+                        f"assembled prompt for reviewer {_reviewer.name!r} is "
+                        f"{_prompt_chars:,} chars, over the provider "
+                        f"ceiling of {_CODEX_CHAR_CEILING:,}"
+                        " — real run exits 60 (prompt_too_large)",
+                        fix=(
+                            "trim the reviewer template in .syncade/templates/, narrow --base, "
+                            "or lower [loop] max_diff_bytes"
+                        ),
+                    )
             files, changed = _diff_size(snap.diff_text)
             # Name the OID the diff was actually taken against, not the ref the
             # operator typed. Under three-dot they differ whenever the branch is
@@ -181,7 +315,10 @@ def check_plan(
             # understated the preview in the one scenario it most matters.
             origin = base if two_dot else f"branch point of {base}"
             actual = snap.base_oid[:7] if snap.base_oid else base
-            diffdesc = f"diff from {actual} ({origin}): {files} file(s), {changed} changed line(s)"
+            diffdesc = (
+                f"diff from {actual} ({origin}): {files} file(s), {changed} changed line(s), "
+                f"{_reviewed:,}B reviewed of {config.loop.max_diff_bytes:,}B allowed"
+            )
         else:
             # No-diff-base path still probes snapshot to catch a corrupt git index that
             # would fail the real run's take_snapshot before dispatch.

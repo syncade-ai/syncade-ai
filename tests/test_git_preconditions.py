@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from syncade.git_preconditions import GitUnavailableError, ensure_repo_initialized
+from syncade.git_preconditions import (
+    GitUnavailableError,
+    ensure_repo_initialized,
+)  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +106,7 @@ def test_no_repo_with_git_present_initializes_and_returns_new_root(tmp_path):
     work.mkdir()
     assert not (work / ".git").exists()
 
-    result = ensure_repo_initialized(work)
+    result = ensure_repo_initialized(work, allow_populated=True)
 
     assert result == work.resolve()
     assert (work / ".git").is_dir()
@@ -183,7 +186,7 @@ def test_missing_git_binary_raises_git_unavailable(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(empty_bin))
 
     with pytest.raises(GitUnavailableError):
-        ensure_repo_initialized(work)
+        ensure_repo_initialized(work, allow_populated=True)
 
 
 # --- T2: conservative .gitignore + safe baseline commit ---------------------
@@ -241,7 +244,7 @@ def test_existing_gitignore_preserved_verbatim(tmp_path):
     custom = "# my own rules\n*.log\nsecret-stuff/\n"
     (work / ".gitignore").write_text(custom, encoding="utf-8")
 
-    ensure_repo_initialized(work)
+    ensure_repo_initialized(work, allow_populated=True)
 
     # Never clobbered — byte-for-byte the operator's file.
     assert (work / ".gitignore").read_text(encoding="utf-8") == custom
@@ -262,7 +265,7 @@ def test_secrets_and_junk_excluded_from_baseline_commit(tmp_path):
     # A real source file that SHOULD be tracked.
     (work / "app.py").write_text("print('hi')\n", encoding="utf-8")
 
-    ensure_repo_initialized(work)
+    ensure_repo_initialized(work, allow_populated=True)
 
     tracked = _tracked_files(work)
     assert ".env" not in tracked
@@ -288,7 +291,7 @@ def test_syncade_secrets_file_excluded_from_baseline_commit(tmp_path):
     secrets.parent.mkdir(parents=True)
     secrets.write_text('[producer]\napi_key = "sk-secret"\n', encoding="utf-8")
 
-    ensure_repo_initialized(work)
+    ensure_repo_initialized(work, allow_populated=True)
 
     # (a) git check-ignore matches (rc 0) and names the rule with -v.
     check = subprocess.run(
@@ -320,7 +323,7 @@ def test_syncade_run_state_excluded_but_config_tracked(tmp_path):
     (work / ".syncade" / "last-reviewed.json").write_text("{}\n", encoding="utf-8")
     (work / ".syncade" / "config.toml").write_text("[loop]\nmax_rounds = 2\n", encoding="utf-8")
 
-    ensure_repo_initialized(work)
+    ensure_repo_initialized(work, allow_populated=True)
 
     tracked = _tracked_files(work)
     assert not any(t.startswith(".syncade/runs/") for t in tracked)
@@ -343,7 +346,7 @@ def test_existing_gitignore_without_secret_patterns_still_excludes_syncade_secre
     secrets.write_text('[producer]\napi_key = "sk-secret"\n', encoding="utf-8")
     (work / "app.py").write_text("print('hi')\n", encoding="utf-8")
 
-    ensure_repo_initialized(work)
+    ensure_repo_initialized(work, allow_populated=True)
 
     # Excluded via .git/info/exclude even though .gitignore omits the pattern.
     check = subprocess.run(
@@ -388,7 +391,7 @@ def test_allow_empty_when_existing_gitignore_ignores_everything(tmp_path):
     (work / "whatever.txt").write_text("ignored\n", encoding="utf-8")
 
     # Must not raise — the staged set is empty, so a plain commit would fail.
-    ensure_repo_initialized(work)
+    ensure_repo_initialized(work, allow_populated=True)
 
     log = subprocess.run(
         ["git", "log", "--oneline"],
@@ -457,7 +460,7 @@ def test_existing_gitignore_without_secret_patterns_still_excludes_secrets(tmp_p
     (work / ".aws" / "credentials").write_text("[default]\nsecret=x\n", encoding="utf-8")
     (work / "app.py").write_text("print('hi')\n", encoding="utf-8")
 
-    ensure_repo_initialized(work)
+    ensure_repo_initialized(work, allow_populated=True)
 
     tracked = _tracked_files(work)
     assert ".env" not in tracked  # excluded by .git/info/exclude, not .gitignore
@@ -477,7 +480,7 @@ def test_gitignore_directory_does_not_leak_secrets(tmp_path):
     (work / ".env").write_text("SECRET=x\n", encoding="utf-8")
     (work / "app.py").write_text("x\n", encoding="utf-8")
 
-    ensure_repo_initialized(work)  # must not raise
+    ensure_repo_initialized(work, allow_populated=True)  # must not raise
 
     tracked = _tracked_files(work)
     assert ".env" not in tracked
@@ -494,7 +497,7 @@ def test_gitignore_symlink_to_regular_file_does_not_leak_secrets(tmp_path):
     (work / ".gitignore").symlink_to(target.name)  # symlink -> existing file
     (work / ".env").write_text("SECRET=x\n", encoding="utf-8")
 
-    ensure_repo_initialized(work)
+    ensure_repo_initialized(work, allow_populated=True)
 
     # git refuses to honor a symlinked .gitignore; info/exclude covers .env.
     assert ".env" not in _tracked_files(work)
@@ -508,10 +511,43 @@ def test_gitignore_dangling_symlink_not_followed_and_no_leak(tmp_path):
     (work / ".gitignore").symlink_to("nonexistent-target")  # dangling
     (work / ".env").write_text("SECRET=x\n", encoding="utf-8")
 
-    ensure_repo_initialized(work)
+    ensure_repo_initialized(work, allow_populated=True)
 
     assert ".env" not in _tracked_files(work)
     # The dangling symlink is left untouched; write_text must NOT have followed
     # it to materialize the target.
     assert (work / ".gitignore").is_symlink()
     assert not (work / "nonexistent-target").exists()
+
+
+def test_undo_auto_init_preserves_operator_files_under_syncade(tmp_path):
+    """Operator bytes placed under .syncade/ between auto-init and refusal must survive undo.
+
+    Emptiness settles who *created* something, not who last wrote it. If an operator drops
+    .syncade/config.toml while a refusal is in progress, deleting the whole .syncade/ tree
+    would destroy their work. undo_auto_init does not touch .syncade/ AT ALL, so this holds
+    for anything under it — no carve-out, and no rule about which entries are syncade's.
+    """
+    from syncade.git_preconditions import undo_auto_init
+
+    work = tmp_path / "w"
+    work.mkdir()
+
+    # Simulate what auto-init + a partial run creates: .git plus .syncade/runs/<id>/
+    (work / ".git").mkdir()
+    (work / ".syncade" / "runs" / "2026-01-01T00-00-00").mkdir(parents=True)
+
+    # Operator places a config file under .syncade/ AFTER auto-init
+    operator_config = work / ".syncade" / "config.toml"
+    operator_config.write_text("[producer]\n")
+
+    failed = undo_auto_init(work)
+
+    assert failed == [], f"undo_auto_init reported failures: {failed}"
+    assert not (work / ".git").exists(), ".git was not removed"
+    assert (work / ".syncade" / "runs" / "2026-01-01T00-00-00").is_dir(), (
+        "undo deleted a run directory — GC is forbidden from doing that (metrics rebuild "
+        "from the runs tree), and undo has no more licence than GC"
+    )
+    assert operator_config.exists(), "undo deleted an operator-created file under .syncade/"
+    assert operator_config.read_text() == "[producer]\n", "operator file content was altered"

@@ -211,10 +211,12 @@ def test_openspec_temp_pr_doc_removed_after_run_and_artifact_name_passed(tmp_pat
         consumed["body"] = pr_doc_path.read_text(encoding="utf-8")
         consumed["artifact_name"] = kwargs["pr_doc_artifact_name"]
         assert pr_doc_path.is_file()
+        _dispatch = types.SimpleNamespace(results=[], reviewer_subprocess_started=True)
         return types.SimpleNamespace(
             exit_code=0,
             artifacts=types.SimpleNamespace(run_dir=repo / ".syncade" / "runs" / "x"),
-            dispatch_result=types.SimpleNamespace(results=[]),
+            dispatch_result=_dispatch,
+            rounds=[types.SimpleNamespace(dispatch_result=_dispatch)],
         )
 
     monkeypatch.setattr("syncade.cli.run_review", fake_run_review)

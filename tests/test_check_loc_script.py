@@ -73,19 +73,3 @@ def test_gate_counts_code_lines_not_physical_lines():
     result = _run(str((code_max + physical_max) // 2))
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "code LOC" in result.stdout
-
-
-def test_resume_round_trip_fixture_is_the_only_targeted_exemption():
-    exempt_file = _REPO_ROOT / "tests" / "resume" / "test_round_trip.py"
-    exempt_loc = sum(
-        1
-        for line in exempt_file.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    )
-    result = _run("500")
-    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
-    assert (
-        f"tests/resume/test_round_trip.py: {exempt_loc} code LOC > 500 "
-        "(exempt: cohesive resume round-trip fixture)"
-    ) in result.stdout
-    assert "1 targeted exemption" in result.stdout

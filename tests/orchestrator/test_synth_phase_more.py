@@ -171,9 +171,9 @@ class TestSynthesizerPhase:
             f"R2.1 regression: cwd is not a syncade-synth workspace: {cwd_str!r}"
         )
 
-        # 3. prompt (positional final argv arg per codex's clap
-        # ordering) — must not reference the repo-side pr_doc path.
-        prompt = captured["argv"][-1]
+        # 3. prompt on stdin (NOT argv, PR-h-field-01 item 1) — must not reference the
+        # repo-side pr_doc path.
+        prompt = captured["input_text"]
         original_pr_doc_str = str(pr_doc.resolve())
         # The prompt should reference the workspace copy of the PR
         # doc, not the original. The original-path string should
@@ -255,7 +255,8 @@ class TestSynthesizerPhase:
             master_workspace = cwd / "master-plan" / master_plan_path.name
             captured["pr_doc_workspace_content"] = pr_doc_workspace.read_text()
             captured["master_workspace_content"] = master_workspace.read_text()
-            del env, timeout, input_text
+            captured["input_text"] = input_text
+            del env, timeout
             stdout = "\n".join(
                 [
                     _json.dumps({"type": "thread.started", "thread_id": "t"}),
@@ -320,7 +321,7 @@ class TestSynthesizerPhase:
 
         # The prompt's pr_doc_path and master_plan_path placeholders
         # reference DISTINCT paths (different subdirs in the workspace).
-        prompt = captured["argv"][-1]
+        prompt = captured["input_text"]
         cwd_str = str(captured["cwd"])
         # Both subdirs appear in the rendered prompt
         assert f"{cwd_str}/pr-doc/{pr_doc.name}" in prompt

@@ -99,6 +99,8 @@ def persist_run_summary(
     branch_already_advanced: bool = False,
     no_changes_to_review: bool = False,
     fail_closed_headers: list[str] | None = None,
+    oversize_diff_bytes: int | None = None,
+    oversize_prompt_chars: int | None = None,
 ) -> Path:
     """Write ``<round_dir>/summary.md`` — a human-readable run summary.
 
@@ -186,6 +188,10 @@ def persist_run_summary(
         exit_label = "NO_CHANGES_TO_REVIEW"
     elif fail_closed_headers is not None:
         exit_label = "DIFF_MALFORMED"
+    elif oversize_diff_bytes is not None:
+        exit_label = "DIFF_TOO_LARGE"
+    elif oversize_prompt_chars is not None:
+        exit_label = "PROMPT_TOO_LARGE"
     else:
         exit_label = _EXIT_CODE_LABELS.get(exit_code, "UNKNOWN")
     branch = snapshot.branch or "(detached HEAD)"
@@ -258,6 +264,15 @@ def persist_run_summary(
             lines.append(
                 "- **Outcome:** not applicable (no reviewers were dispatched — diff refused)"
             )
+        elif oversize_diff_bytes is not None:
+            lines.append(
+                "- **Outcome:** not applicable (no reviewers were dispatched — diff too large)"
+            )
+        elif oversize_prompt_chars is not None:
+            lines.append(
+                "- **Outcome:** not applicable "
+                "(no reviewers were dispatched — assembled prompt too large)"
+            )
         else:
             lines.append(
                 "- **Outcome:** skipped (a reviewer failed; cold "
@@ -325,6 +340,15 @@ def persist_run_summary(
         elif fail_closed_headers is not None:
             lines.append(
                 "- **Outcome:** not applicable (no reviewers were dispatched — diff refused)"
+            )
+        elif oversize_diff_bytes is not None:
+            lines.append(
+                "- **Outcome:** not applicable (no reviewers were dispatched — diff too large)"
+            )
+        elif oversize_prompt_chars is not None:
+            lines.append(
+                "- **Outcome:** not applicable "
+                "(no reviewers were dispatched — assembled prompt too large)"
             )
         elif test_skip_reason is not None and test_skip_reason in _SKIP_REASON_MESSAGES:
             lines.append(f"- **Outcome:** {_SKIP_REASON_MESSAGES[test_skip_reason]}")
@@ -494,6 +518,8 @@ def persist_run_summary(
                 check_results,
                 no_changes_to_review=no_changes_to_review,
                 fail_closed_headers=fail_closed_headers,
+                oversize_diff_bytes=oversize_diff_bytes,
+                oversize_prompt_chars=oversize_prompt_chars,
             )
         )
     lines.append("")

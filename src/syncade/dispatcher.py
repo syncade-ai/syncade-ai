@@ -126,6 +126,10 @@ class DispatchResult:
 
     results: list[ReviewerRunResult]
     total_duration_seconds: float
+    # True iff Phase 3 (subprocess dispatch) was actually entered.
+    # Adapter-lookup and auth-preflight failures return non-empty ``results`` without
+    # starting any reviewer subprocess; this flag distinguishes them from real dispatch.
+    reviewer_subprocess_started: bool = False
 
     @property
     def all_succeeded(self) -> bool:
@@ -381,6 +385,7 @@ def dispatch_reviewers(
     return DispatchResult(
         results=results,
         total_duration_seconds=time.monotonic() - start,
+        reviewer_subprocess_started=True,
     )
 
 

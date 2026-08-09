@@ -65,7 +65,10 @@ class TestTheCliActuallyRefuses:
         spawned: list[int] = []
         monkeypatch.setattr(cli, "run_review", lambda *a, **k: spawned.append(1))
 
-        rc = cli.main([str(repo / "pr.md"), "--repo-root", str(repo)])
+        # `--allow-auto-init`: PR-h-04 item B refuses auto-init in a POPULATED directory
+        # by default (a baseline commit there captures whatever it finds). This fixture
+        # writes a brief into the dir, so the flag is setup, not the thing under test.
+        rc = cli.main([str(repo / "pr.md"), "--repo-root", str(repo), "--allow-auto-init"])
 
         assert rc == CONFIG_ERROR, "a run that would bill the wrong account must not start"
         assert not spawned, "REVIEWERS RAN — the whole point is to refuse BEFORE spending"
@@ -121,9 +124,31 @@ class TestTheRunAlwaysSaysWhoIsPaying:
         )
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-real")
         monkeypatch.setattr(ap, "probe_codex_state", lambda *a, **k: ("subscription", ""))
-        monkeypatch.setattr(cli, "run_review", lambda *a, **k: type("R", (), {"exit_code": 0})())
+        monkeypatch.setattr(
+            cli,
+            "run_review",
+            lambda *a, **k: type(
+                "R",
+                (),
+                {
+                    "exit_code": 0,
+                    "dispatch_result": type("D", (), {"results": [object()]})(),
+                    "rounds": [
+                        type(
+                            "Rnd",
+                            (),
+                            {
+                                "dispatch_result": type(
+                                    "D2", (), {"reviewer_subprocess_started": True}
+                                )(),
+                            },
+                        )()
+                    ],
+                },
+            )(),
+        )
 
-        cli.main([str(repo / "pr.md"), "--repo-root", str(repo), "--quiet"])
+        cli.main([str(repo / "pr.md"), "--repo-root", str(repo), "--quiet", "--allow-auto-init"])
 
         err = capsys.readouterr().err
         assert "[syncade] auth:" in err, "a --quiet run must still say who is being billed"

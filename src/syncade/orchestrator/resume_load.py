@@ -162,7 +162,8 @@ def load_completed_round(round_dir: Path):
     ``ReviewerOutput`` (from ``.parsed.json``), per-synth
     ``SynthesizerOutput`` (from ``synthesizer.parsed.json``),
     per-test outcome + exit code, per-producer outcome + SHAs +
-    narrative.
+    narrative. Diff byte counts are deliberately NOT rehydrated (see
+    the ``filtered_diff_bytes`` note at the construction site).
 
     PRECONDITION: this round is in :attr:`ResumePlan.completed_rounds`
     — i.e., :func:`_round_manifest_indicates_phase_failure` returned
@@ -305,6 +306,7 @@ def load_completed_round(round_dir: Path):
     dispatch_result = DispatchResult(
         results=reviewer_results,
         total_duration_seconds=total_duration,
+        reviewer_subprocess_started=bool(reviewer_results),
     )
 
     # --- Synthesizer ------------------------------------------------
@@ -465,6 +467,11 @@ def load_completed_round(round_dir: Path):
         producer_result=producer_result,
         round_exit_code=round_exit_code,
         artifacts=artifacts,
+        # Diff sizes are NOT rehydrated. A resumed round re-persists with `null`, which is
+        # honest: this process did not measure that diff. Carrying the numbers forward meant
+        # trusting (and therefore validating) arbitrary on-disk values, and mixing a
+        # force-drift resume's current snapshot with the original round's counts. Losing a
+        # few resumed rounds from the size history is cheaper than a history that can lie.
         # check_results: intentionally left at its empty-list default —
         # not rehydrated, by the same lossy contract as raw_subprocess_result
         # above. Resumed rounds don't re-run persistence, and nothing

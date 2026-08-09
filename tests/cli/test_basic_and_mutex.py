@@ -163,7 +163,11 @@ def test_bad_config_returns_50_and_names_offending_field(tmp_path, capsys):
     _init_git_repo(tmp_path)
     (tmp_path / ".syncade").mkdir()
     (tmp_path / ".syncade" / "config.toml").write_text('[producer]\ntypo_field = "x"\n')
-    rc = main(["--repo-root", str(tmp_path), "some-pr.md"])
+    # A REAL brief: PR-h-04 item A validates the path before anything mutates, so a
+    # nonexistent one would now (correctly) be reported first and this test would be
+    # asserting error precedence rather than config handling.
+    (tmp_path / "some-pr.md").write_text("# PR\n")
+    rc = main(["--repo-root", str(tmp_path), str(tmp_path / "some-pr.md")])
     assert rc == 50
     captured = capsys.readouterr()
     assert "typo_field" in captured.err

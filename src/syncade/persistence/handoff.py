@@ -39,6 +39,8 @@ _HANDOFF_TERMINATION_REASON_LABELS: dict[str, str] = {
     "test_subprocess_error": "test subprocess error",
     "worktree_error": "worktree provisioning error",
     "diff_malformed": "diff filter refusal (unidentifiable headers)",
+    "diff_too_large": "diff exceeds [loop] max_diff_bytes",
+    "prompt_too_large": "assembled reviewer prompt exceeds provider ceiling",
     "parse_failure": "output parse failure",
     "config_error": "config error",
 }

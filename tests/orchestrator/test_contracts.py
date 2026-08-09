@@ -106,3 +106,28 @@ class TestLookupSiteMonkeyPatches:
         import syncade.orchestrator.loop_round_step as step_module
 
         assert orch._run_round_step.__globals__ is vars(step_module)
+
+
+def test_no_subprocess_run_still_advertises_its_persistence_path(repo_with_pr_doc, capsys):
+    """The inverse of a suppression added and removed during dogfood 3.
+
+    An adapter-lookup failure still writes a round directory, and undo no longer removes
+    `.syncade/`, so the path it prints is real. Suppressing it hid a directory that exists.
+    """
+
+    def _failing_factory(provider):
+        raise ValueError("no adapter (injected)")
+
+    repo, pr_doc = repo_with_pr_doc
+    result = run_review(
+        repo_root=repo,
+        pr_doc_path=pr_doc,
+        config=_two_reviewer_config(),
+        adapter_factory=_failing_factory,
+    )
+
+    assert not any(r.dispatch_result.reviewer_subprocess_started for r in result.rounds)
+    assert "persisting reviewer outputs" in capsys.readouterr().out, (
+        "a run that wrote a round directory did not say where it is"
+    )
+    assert result.artifacts.round_dir.is_dir(), "fixture must actually persist a round dir"

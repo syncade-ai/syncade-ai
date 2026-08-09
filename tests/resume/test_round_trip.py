@@ -707,3 +707,71 @@ def test_resume_producer_retries_round_trip(tmp_path: Path):
     assert rehydrated_0 is not None
     assert rehydrated_0.producer_result is not None
     assert rehydrated_0.producer_result.retries == 0
+
+
+def test_load_completed_round_does_not_rehydrate_diff_sizes(tmp_path: Path):
+    """Diff byte counts are deliberately NOT carried across a resume.
+
+    Three tests used to live here asserting the opposite — that a completed round's sizes
+    were rehydrated, and that corrupted ones were rejected. Both went with the code they
+    covered. Carrying the numbers forward meant TRUSTING arbitrary on-disk values, which then
+    required validating them (booleans, negatives, legacy-absent), and a force-drift resume
+    still mixed the current snapshot with the original round's counts. Two blind review
+    rounds kept finding new ways for the rehydrated number to be wrong.
+
+    A resumed round now re-persists `null`: this process did not measure that diff, and
+    saying so is honest. Losing a few resumed rounds from the size history is cheaper than a
+    history that can lie.
+    """
+    from datetime import UTC, datetime
+
+    from syncade.dispatcher import DispatchResult, ReviewerRunResult
+    from syncade.findings import ReviewerOutput
+    from syncade.orchestrator.resume import load_completed_round
+    from syncade.persistence import persist_reviewer_result, persist_round_manifest
+    from syncade.snapshot import Snapshot
+
+    run_dir = tmp_path / ".syncade" / "runs" / "2026-08-05T10-00-00"
+    round_dir = run_dir / "round-0"
+    round_dir.mkdir(parents=True)
+
+    snapshot = Snapshot(
+        repo_root=run_dir.parent.parent.parent.parent,
+        commit_sha="a" * 40,
+        branch="work",
+        base_ref="HEAD~1",
+        diff_text="diff --git a/x.py b/x.py\n+x = 1\n",
+        dirty_state="clean",
+    )
+    reviewer = ReviewerRunResult(
+        reviewer_name="rv1",
+        provider="fake",
+        output=ReviewerOutput(
+            verdict="NO-SHIP",
+            findings=[],
+            summary="no issues",
+            priority_order=[],
+            coverage_gaps=[],
+            dismissed_concerns=[],
+        ),
+        error=None,
+        duration_seconds=1.0,
+    )
+    persist_reviewer_result(round_dir, reviewer, None)
+    persist_round_manifest(
+        round_dir,
+        snapshot,
+        DispatchResult(results=[reviewer], total_duration_seconds=1.0),
+        30,
+        datetime(2026, 8, 5, 10, 0, 0, tzinfo=UTC),
+        round_idx=0,
+        filtered_diff_bytes=42,
+        raw_diff_bytes=4242,
+    )
+
+    rehydrated = load_completed_round(round_dir)
+    assert rehydrated is not None
+    assert rehydrated.filtered_diff_bytes is None, (
+        "a resumed round must not claim a diff size this process did not measure"
+    )
+    assert rehydrated.raw_diff_bytes is None

@@ -115,6 +115,109 @@ def _unquote_path(token: str) -> str:
     return out.decode("utf-8")
 
 
+def _split_sections(diff_text: str) -> list[list[str]]:
+    """Split a unified diff into per-file sections on ``diff --git`` boundaries.
+
+    Line endings are kept so retained sections reassemble byte-for-byte. Content before
+    the first ``diff --git`` (anomalous for git diff, but handled defensively) becomes a
+    leading section with no header, which callers always keep — it is the PREAMBLE, not a
+    file, and conflating the two would delete legitimate leading text.
+
+    Splits on ``\\n`` only, not Python's universal newlines. ``splitlines()`` treats ``\\r``
+    as a line separator, so a binary payload containing ``\\r`` immediately followed by
+    ``diff --git …`` would be split into a fake section boundary — either leaking binary
+    bytes that follow a syntactically valid fake header, or triggering a spurious
+    ``diff_malformed`` refusal when the fake header is malformed. Splitting on ``\\n`` alone
+    keeps the ``\\r`` inside its containing line.
+    """
+    sections: list[list[str]] = []
+    current: list[str] = []
+    raw_parts = diff_text.split("\n")
+    # Reconstruct lines with their \n endings; last fragment has none.
+    lines: list[str] = [p + "\n" for p in raw_parts[:-1]]
+    if raw_parts[-1]:  # non-empty trailing fragment (diff not ending with \n)
+        lines.append(raw_parts[-1])
+    for line in lines:
+        if line.startswith("diff --git ") and current:
+            sections.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        sections.append(current)
+    return sections
+
+
+def elide_binary_hunks(diff_text: str) -> tuple[str, list[str]]:
+    """Replace binary file content with a one-line notice. Returns ``(diff, elided_paths)``.
+
+    ``snapshot`` renders the diff with ``--text`` — the only lever against attribute-driven
+    suppression, since a committed ``.gitattributes`` marked ``-diff`` otherwise collapses a
+    real source change to "Binary files ... differ". The cost is that a genuine binary is
+    emitted as raw text: measured on the reported repo, 12 committed PNG baselines turned
+    65,961 B of real diff into 3,129,026 B, which no reviewer can read and which displaces
+    the diff it is meant to judge.
+
+    **Detection is by CONTENT, never by git's own report, and that is the whole design.**
+    ``git diff --numstat`` looks like the right oracle and is not: measured, it reports
+    ``-\t-`` for a plain text file an attacker marked ``*.py -diff``, exactly as it does for
+    a real PNG, and ``--text`` does not change its answer. Filtering on it would let a
+    committed ``.gitattributes`` erase source changes from the reviewer's diff — reopening
+    the hole ``--text`` exists to close.
+
+    So this applies git's OWN heuristic to the bytes instead: a NUL byte means binary.
+    That cannot be forged by an attributes file. U+FFFD replacement characters are
+    deliberately NOT a signal — a Latin-1-encoded source file is full of them, and dropping
+    real source from review is far worse than passing some noise through.
+
+    Both sides are covered by construction: a DELETED binary inflates identically (its
+    content is emitted in full as removed lines), so a PR that merely drops a vendored
+    asset is as exposed as one that adds it. Nothing here keys on added paths.
+
+    The header lines are preserved so the reviewer still sees that the path changed, and
+    the notice names the size withheld — the omission is disclosed, never silent.
+    """
+    if not diff_text or "\0" not in diff_text:
+        return diff_text, []
+
+    kept: list[str] = []
+    elided: list[str] = []
+    for section in _split_sections(diff_text):
+        body_start = _binary_body_start(section)
+        if body_start is None:
+            kept.extend(section)
+            continue
+        withheld = sum(len(line.encode("utf-8", errors="replace")) for line in section[body_start:])
+        paths, _ = _decode_header(section[0])
+        path = paths[1] if paths else "<unparseable path>"
+        elided.append(path)
+        kept.extend(section[:body_start])
+        kept.append(f"[syncade: binary file content omitted — {withheld} bytes not shown]\n")
+    # Total contract: no NUL leaves this function. Section-based elision covers every
+    # `diff --git` file, but a headerless PREAMBLE is kept by design (it is not a file),
+    # so a stray NUL there would otherwise reach a provider that has no reason to accept
+    # one. Sectioned binary content is already gone; this only sweeps the remainder.
+    return "".join(kept).replace("\x00", ""), elided
+
+
+def _binary_body_start(section: list[str]) -> int | None:
+    """Index of the first content line of a binary section, or ``None`` if it is not binary.
+
+    Only a section with a ``diff --git`` header can be elided; a headerless leading section
+    is the preamble. The split point is the first hunk header (``@@``) when there is one, so
+    the file-mode/index metadata a reviewer may want survives; otherwise it is the line after
+    the header, which covers git's own ``Binary files ... differ`` form.
+    """
+    if not section or not section[0].startswith("diff --git "):
+        return None
+    if not any("\0" in line for line in section):
+        return None
+    for i, line in enumerate(section):
+        if line.startswith("@@"):
+            return i + 1
+    return 1
+
+
 def filter_diff_for_reviewer(diff_text: str, strip_files: Iterable[str]) -> str:
     """Remove the diff hunks of ``strip_files`` from a unified diff.
 
@@ -155,24 +258,8 @@ def filter_diff_for_reviewer(diff_text: str, strip_files: Iterable[str]) -> str:
     if not strip_basenames:
         return diff_text
 
-    # Split into per-file sections on ``diff --git`` boundaries, keeping
-    # line endings so retained hunks are reassembled byte-for-byte. Any
-    # content before the first ``diff --git`` (anomalous for git diff,
-    # but handled defensively) becomes a leading section with no header,
-    # which is always kept.
-    sections: list[list[str]] = []
-    current: list[str] = []
-    for line in diff_text.splitlines(keepends=True):
-        if line.startswith("diff --git ") and current:
-            sections.append(current)
-            current = [line]
-        else:
-            current.append(line)
-    if current:
-        sections.append(current)
-
     kept: list[str] = []
-    for section in sections:
+    for section in _split_sections(diff_text):
         redacted = _redacted_boundary_rename(section[0], strip_basenames)
         if redacted is not None:
             kept.append(redacted)
@@ -270,9 +357,10 @@ def unidentifiable_sections(diff_text: str) -> list[str]:
 
     Returns the header lines themselves so the refusal can name what it could not read.
     """
+    # split('\n') rather than splitlines() — see _split_sections for why.
     return [
-        line.rstrip("\n")
-        for line in diff_text.splitlines()
+        line
+        for line in diff_text.split("\n")
         if line.startswith("diff --git ") and _decode_header(line)[0] is None
     ]
 
@@ -301,7 +389,7 @@ def concealed_destinations(diff_text: str, strip_files: Iterable[str]) -> list[s
     if not strip_basenames:
         return []
     concealed: list[str] = []
-    for line in diff_text.splitlines():
+    for line in diff_text.split("\n"):  # split('\n') — see _split_sections for why
         if not line.startswith("diff --git "):
             continue
         paths, _ = _decode_header(line)

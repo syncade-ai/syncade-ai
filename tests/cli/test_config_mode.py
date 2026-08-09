@@ -247,8 +247,9 @@ def test_global_set_does_not_materialize_repo_section(tmp_path, monkeypatch):
 def test_list_get_outside_git_repo_ignore_cwd_config(tmp_path, monkeypatch, capsys):
     """Outside a git repo, `--config` inspects the CURRENT state: cwd/.syncade/config.toml is NOT a
     repo layer (no git repo → no repo layer), so it neither shows as `repo` nor bleeds into the
-    effective config. But a review run WOULD `git init` and read it, so a note must warn of the
-    divergence rather than pretend the file cannot exist (dogfood finding F3)."""
+    effective config. A note warns of the divergence rather than pretending the file cannot exist
+    (dogfood finding F3). A review run with --allow-auto-init would `git init` and consume the file;
+    without it, a non-empty dir (like this one) is refused — either way there is a divergence."""
     g = tmp_path / "global.toml"
     g.write_text("")
     _use_global(monkeypatch, g)

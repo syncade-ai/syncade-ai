@@ -11,7 +11,7 @@ from pathlib import Path
 
 from syncade.dispatcher import DispatchResult, ReviewerRunResult
 from syncade.findings import ReviewerOutput
-from syncade.orchestrator import RunArtifacts, RunResult
+from syncade.orchestrator import RoundArtifacts, RoundResult, RunArtifacts, RunResult
 from syncade.snapshot import Snapshot
 
 # ---------------------------------------------------------------------------
@@ -65,9 +65,43 @@ def _run_result(
     synth_result=None,
     findings_md_path: Path | None = None,
     synthesizer_paths=None,
+    termination_reason: str | None = None,
+    reviewer_subprocess_started: bool | None = None,
 ) -> RunResult:
+    # Auto-detect: runs with reviewer results started a subprocess; runs with no
+    # results (no_changes_to_review, diff_malformed) did not. Pass explicitly False
+    # to represent adapter-lookup / auth-preflight failures, which return non-empty
+    # results without starting any reviewer subprocess.
+    if reviewer_subprocess_started is None:
+        reviewer_subprocess_started = bool(results)
     run_dir = Path("/tmp/repo/.syncade/runs/2026-05-14T10-00-00")
     round_dir = run_dir / "round-0"
+    dispatch = DispatchResult(
+        results=list(results),
+        total_duration_seconds=15.0,
+        reviewer_subprocess_started=reviewer_subprocess_started,
+    )
+    rounds: list[RoundResult] = []
+    if reviewer_subprocess_started:
+        rounds = [
+            RoundResult(
+                round_idx=0,
+                snapshot=_snapshot(),
+                dispatch_result=dispatch,
+                synth_result=None,
+                test_result=None,
+                test_skip_reason=None,
+                test_worktree_error=None,
+                producer_result=None,
+                round_exit_code=exit_code,
+                artifacts=RoundArtifacts(
+                    round_idx=0,
+                    round_dir=round_dir,
+                    manifest_path=round_dir / "manifest.json",
+                    summary_path=round_dir / "summary.md",
+                ),
+            )
+        ]
     return RunResult(
         artifacts=RunArtifacts(
             run_dir=run_dir,
@@ -78,9 +112,11 @@ def _run_result(
             synthesizer_paths=synthesizer_paths,
         ),
         snapshot=_snapshot(),
-        dispatch_result=DispatchResult(results=list(results), total_duration_seconds=15.0),
+        dispatch_result=dispatch,
         exit_code=exit_code,
         synth_result=synth_result,
+        termination_reason=termination_reason,
+        rounds=rounds,
     )
 
 

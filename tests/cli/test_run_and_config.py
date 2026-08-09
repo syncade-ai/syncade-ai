@@ -30,7 +30,12 @@ def test_repo_root_tilde_is_expanded(tmp_path, monkeypatch):
     syncade_dir.mkdir()
     (syncade_dir / "config.toml").write_text('[producer]\ntypo = "x"\n')
 
-    rc = main(["--repo-root", "~/myrepo", "some-pr.md"])
+    # A REAL brief under the EXPANDED path: PR-h-04 item A validates the brief before
+    # anything mutates, so a nonexistent one would be reported before the config error
+    # this test is about. Placing it at the expanded location also strengthens the
+    # tilde claim — a literal "~/myrepo" would not find it.
+    (myrepo / "some-pr.md").write_text("# PR\n")
+    rc = main(["--repo-root", "~/myrepo", "~/myrepo/some-pr.md"])
     assert rc == 50  # proves tilde was expanded and bad config was loaded
 
 
@@ -208,10 +213,19 @@ def _patch_run_review(monkeypatch, captured: dict, tmp_path: Path) -> None:
 
     def fake_run_review(**kwargs):
         captured.update(kwargs)
+        # Create the run dir this stub already CLAIMS to have produced. The real run_review
+        # writes it once the snapshot succeeds, and PR-h-04.6 reads its presence to decide
+        # whether a run produced anything worth keeping — a stub that only names the path
+        # looks to undo like a run that did nothing, and its repository gets removed.
+        run_dir = tmp_path / ".syncade" / "runs" / "x"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        _dispatch = types.SimpleNamespace(results=[], reviewer_subprocess_started=True)
+        _round = types.SimpleNamespace(dispatch_result=_dispatch)
         return types.SimpleNamespace(
             exit_code=0,
-            artifacts=types.SimpleNamespace(run_dir=tmp_path / ".syncade" / "runs" / "x"),
-            dispatch_result=types.SimpleNamespace(results=[]),
+            artifacts=types.SimpleNamespace(run_dir=run_dir),
+            dispatch_result=_dispatch,
+            rounds=[_round],
         )
 
     monkeypatch.setattr(cli, "run_review", fake_run_review)
@@ -294,11 +308,37 @@ def test_run_in_non_git_dir_initializes_repo_and_proceeds(tmp_path, monkeypatch)
     captured: dict = {}
     _patch_run_review(monkeypatch, captured, tmp_path)
 
-    rc = main(["--repo-root", str(tmp_path), str(pr_doc)])
+    # `--allow-auto-init`: the dir holds pr.md, and PR-h-04 item B refuses auto-init in a
+    # populated directory by default. The behaviour under test is "proceeds instead of
+    # exiting 60", not the new policy — which has its own test below.
+    rc = main(["--repo-root", str(tmp_path), str(pr_doc), "--allow-auto-init"])
 
     assert rc == 0  # proceeded into (stubbed) run_review — no exit 60
     assert (tmp_path / ".git").is_dir()  # repo was initialized
     assert captured  # run_review was actually called
+
+
+def test_run_in_a_populated_non_git_dir_is_refused_without_the_opt_in(tmp_path, capsys):
+    """The CLI-level counterpart of the policy: refused, inert, and told how to proceed.
+
+    Auto-init used to commit whatever it found here. Three leaks were measured — a key under
+    a name no denylist knows, the operator's own `!.env` negation, and a symlinked `.git`
+    that sent `git init` outside the directory. The default now refuses; `--allow-auto-init`
+    is the deliberate override, covered by the test above.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git not on PATH")
+    pr_doc = tmp_path / "pr.md"
+    pr_doc.write_text("# PR\n")
+    (tmp_path / "deploy-notes.txt").write_text("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI\n")
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    rc = main(["--repo-root", str(tmp_path), str(pr_doc)])
+
+    assert rc == 60
+    assert not (tmp_path / ".git").exists(), "refused, but a repo was created anyway"
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    assert "--allow-auto-init" in capsys.readouterr().err
 
 
 def test_run_existing_repo_makes_no_spurious_baseline_commit(tmp_path, monkeypatch):

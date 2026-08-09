@@ -16,15 +16,34 @@ misattributed its source.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from syncade.dispatcher import ReviewerRunResult
 from syncade.findings import Severity
 from syncade.synthesis import SynthesizerOutput, SynthesizerOutputError
 
 
+@dataclass(frozen=True)
+class ProvenanceRepair:
+    """One provenance quotation corrected from the reviewer's own text.
+
+    Recorded rather than silent: the operator must be able to see that a synthesizer
+    miscopied a source, both because it is a signal about that model's fidelity and
+    because "we quietly rewrote the model's output" is not something to hide.
+    """
+
+    consolidated_index: int
+    provenance_index: int
+    reviewer_name: str
+    original_index: int
+    synthesizer_text: str
+    reviewer_text: str
+
+
 def _validate_provenance_against_reviewers(
     output: SynthesizerOutput,
     reviewer_results: list[ReviewerRunResult],
-) -> None:
+) -> list[ProvenanceRepair]:
     """Cross-input validation: every ``provenance`` entry must point
     at a real reviewer + a real finding within that reviewer's
     output.
@@ -86,6 +105,7 @@ def _validate_provenance_against_reviewers(
         severities_by_name[r.reviewer_name] = [f.severity for f in r.output.findings]
         texts_by_name[r.reviewer_name] = [f.finding for f in r.output.findings]
 
+    repairs: list[ProvenanceRepair] = []
     for consolidated_idx, finding in enumerate(output.consolidated_findings):
         for prov_idx, prov in enumerate(finding.provenance):
             # Unknown reviewer name → ghost provenance.
@@ -154,18 +174,35 @@ def _validate_provenance_against_reviewers(
             if _normalize_whitespace(prov.original_description) != _normalize_whitespace(
                 actual_text
             ):
-                raise SynthesizerOutputError(
-                    f"synthesizer provenance original_description does not match "
-                    f"reviewer {prov.reviewer_name!r}'s actual finding "
-                    f"{prov.original_index} text (consolidated_findings"
-                    f"[{consolidated_idx}].provenance[{prov_idx}]).\n"
-                    f"  reviewer wrote: {actual_text!r}\n"
-                    f"  synthesizer recorded: {prov.original_description!r}\n"
-                    f"Provenance must quote the reviewer verbatim — a restated "
-                    f"source can be narrowed into something dismissible, and it "
-                    f"renders in findings.md as the reviewer's own words. Check "
-                    f"synthesizer.stdout for the raw output."
+                # REPAIR, not abort (PR-h-field-01 item 5). Everything that could be an
+                # ATTRIBUTION attack has already been verified above: the reviewer exists,
+                # the index is in range, and the severity matches. What is left is a
+                # transcription error in a QUOTATION of a finding — and the ground truth is
+                # right here in `reviewer_results`, which is how we know it is wrong.
+                #
+                # This is strictly STRONGER than the abort it replaces. Before, the rendered
+                # text was verbatim only because the check happened to pass — we trusted the
+                # synthesizer's copy. Now it is verbatim BY CONSTRUCTION, copied from the
+                # source. Nothing a synthesizer writes in this field can reach findings.md.
+                #
+                # It cost a real run to learn: one dropped backtick in a finding about
+                # `style={{ backdropFilter: ... }}` aborted a run at exit 70 after 713
+                # seconds of reviewer wall-clock, discarding six valid findings and three
+                # unrun rounds. The exposure is proportional to reviewer verbosity, and
+                # findings that quote code are exactly the ones full of backticks and braces.
+                repairs.append(
+                    ProvenanceRepair(
+                        consolidated_index=consolidated_idx,
+                        provenance_index=prov_idx,
+                        reviewer_name=prov.reviewer_name,
+                        original_index=prov.original_index,
+                        synthesizer_text=prov.original_description,
+                        reviewer_text=actual_text,
+                    )
                 )
+                prov.original_description = actual_text
+
+    return repairs
 
 
 def _validate_reviewer_blockers_passed_through(

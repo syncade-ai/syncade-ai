@@ -152,3 +152,60 @@ class TestDiffMalformedPhaseFailure:
         manifest = self._diff_malformed_manifest()
         manifest["diff_filter_refusal_headers"] = None
         assert _round_manifest_indicates_phase_failure(manifest) is False
+
+
+class TestSizeRefusalPhaseFailure:
+    """Regression: diff_too_large and prompt_too_large rounds must be classified as
+    phase failures so plan_resume retries them rather than treating them as cleanly
+    completed rounds.
+
+    Before the fix, _round_manifest_indicates_phase_failure only checked
+    diff_filter_refusal_headers. A diff_too_large round had reviewers=[] and
+    round_exit_code=60, which looked identical to a successful no-dispatch round —
+    plan_resume treated it as completed (with max_rounds=1 this raised the
+    degenerate-state error; with max_rounds>1 it resumed at round 1 incorrectly).
+    """
+
+    def _size_refusal_manifest(self, refusal_reason: str) -> dict:
+        return {
+            "reviewers": [],
+            "synthesizer": None,
+            "test_run": None,
+            "test_skip_reason": None,
+            "producer": None,
+            "round_exit_code": 60,
+            "refusal_reason": refusal_reason,
+        }
+
+    def test_diff_too_large_refusal_reason_is_phase_failure(self):
+        """refusal_reason='diff_too_large' → phase failure (retry)."""
+        manifest = self._size_refusal_manifest("diff_too_large")
+        assert _round_manifest_indicates_phase_failure(manifest) is True
+
+    def test_prompt_too_large_refusal_reason_is_phase_failure(self):
+        """refusal_reason='prompt_too_large' → phase failure (retry)."""
+        manifest = self._size_refusal_manifest("prompt_too_large")
+        assert _round_manifest_indicates_phase_failure(manifest) is True
+
+    def test_diff_malformed_via_refusal_reason_is_phase_failure(self):
+        """refusal_reason='diff_malformed' also triggers (new unified path)."""
+        manifest = self._size_refusal_manifest("diff_malformed")
+        assert _round_manifest_indicates_phase_failure(manifest) is True
+
+    def test_unknown_refusal_reason_is_not_phase_failure(self):
+        """An unrecognised refusal_reason does not trigger — future-proofing."""
+        manifest = self._size_refusal_manifest("something_else")
+        assert _round_manifest_indicates_phase_failure(manifest) is False
+
+    def test_no_refusal_reason_no_headers_is_not_phase_failure(self):
+        """A round with no refusal discriminators and empty reviewers[] is not a phase
+        failure — this is the no_changes_to_review shape (exit 0, success)."""
+        manifest = {
+            "reviewers": [],
+            "synthesizer": None,
+            "test_run": None,
+            "test_skip_reason": None,
+            "producer": None,
+            "round_exit_code": 0,
+        }
+        assert _round_manifest_indicates_phase_failure(manifest) is False

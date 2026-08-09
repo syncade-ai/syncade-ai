@@ -227,8 +227,8 @@ class TestFailClosedRefusal:
 
         adapters = [TrackingAdapter(canned_output=_ship()) for _ in range(2)]
         with (
-            patch("syncade.orchestrator.round.filter_diff_for_reviewer") as mock_filter,
-            patch("syncade.orchestrator.round.unidentifiable_sections") as mock_unid,
+            patch("syncade.orchestrator.round_predispatch.filter_diff_for_reviewer") as mock_filter,
+            patch("syncade.orchestrator.round_predispatch.unidentifiable_sections") as mock_unid,
         ):
             mock_unid.return_value = ['diff --git "x/bad.py" b/bad.py']
             mock_filter.return_value = ""
@@ -253,8 +253,12 @@ class TestFailClosedRefusal:
 
         # 3a: context-only — filter drops everything, unidentifiable returns []
         with (
-            patch("syncade.orchestrator.round.filter_diff_for_reviewer", return_value=""),
-            patch("syncade.orchestrator.round.unidentifiable_sections", return_value=[]),
+            patch(
+                "syncade.orchestrator.round_predispatch.filter_diff_for_reviewer", return_value=""
+            ),
+            patch(
+                "syncade.orchestrator.round_predispatch.unidentifiable_sections", return_value=[]
+            ),
         ):
             result_3a = run_review(
                 repo_root=repo,
@@ -271,9 +275,11 @@ class TestFailClosedRefusal:
         # 3b: unreadable — filter drops everything, unidentifiable returns something
         adapters2 = [FakeAdapter(canned_output=_ship()) for _ in range(2)]
         with (
-            patch("syncade.orchestrator.round.filter_diff_for_reviewer", return_value=""),
             patch(
-                "syncade.orchestrator.round.unidentifiable_sections",
+                "syncade.orchestrator.round_predispatch.filter_diff_for_reviewer", return_value=""
+            ),
+            patch(
+                "syncade.orchestrator.round_predispatch.unidentifiable_sections",
                 return_value=['diff --git "bad" b/bad'],
             ),
         ):
@@ -301,9 +307,11 @@ class TestFailClosedRefusal:
         adapters = [FakeAdapter(canned_output=_ship()) for _ in range(2)]
         bad_header = 'diff --git "x/bad\xc3\xafve.py" b/bad.py'
         with (
-            patch("syncade.orchestrator.round.filter_diff_for_reviewer", return_value=""),
             patch(
-                "syncade.orchestrator.round.unidentifiable_sections",
+                "syncade.orchestrator.round_predispatch.filter_diff_for_reviewer", return_value=""
+            ),
+            patch(
+                "syncade.orchestrator.round_predispatch.unidentifiable_sections",
                 return_value=[bad_header],
             ),
         ):

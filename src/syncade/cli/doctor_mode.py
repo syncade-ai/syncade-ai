@@ -52,6 +52,11 @@ def _run_doctor(args) -> int:
     # Mirror the CLI's own run resolution so the branch preview matches what a real
     # `syncade <pr-doc>` would do for the same flags (C1). repo always pre-exists here
     # (discover_repo_root succeeded), so the auto-init default-branch exemption never applies.
+    # NOTE: there is deliberately no PR-doc here. `--doctor` is a one-shot mode and the CLI
+    # rejects `--doctor` with a PR_DOC positional (cli/validate.py), so any `args.pr_doc`
+    # plumbing would be unreachable — a dogfood round shipped exactly that and a blind panel
+    # caught it. The prompt-size preview renders with a placeholder ref instead, which makes
+    # its number a LOWER BOUND; see doctor_preview.check_plan for why that is still useful.
     return run_doctor(
         config,
         repo_root,

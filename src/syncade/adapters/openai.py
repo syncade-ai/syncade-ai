@@ -177,8 +177,8 @@ class CodexAdapter:
         - ``--add-dir <worktree>``: grants the reviewer tool-access
           to its worktree (explicit is safer than implicit, same as
           AnthropicAdapter)
-        - ``<prompt>``: positional, LAST (codex's clap parsing
-          requires positional args after all flags)
+        - prompt on STDIN (PR-h-field-01 item 1): ``codex exec`` reads the prompt
+          from stdin when no positional PROMPT is given; argv is flag-only
 
         The subprocess runs with ``cwd = worktree_path`` and inherits
         the caller's environment so existing ``codex`` auth (in
@@ -219,20 +219,21 @@ class CodexAdapter:
             argv.append(_YOLO_FLAG)
         else:  # trusted-execute
             argv.extend(["-s", _TRUSTED_SANDBOX, "-c", _TRUSTED_APPROVAL_CONFIG])
+        # The prompt goes on STDIN, never argv — see AnthropicAdapter.build_invocation.
+        # `codex exec` reads instructions from stdin when no positional PROMPT is given.
         argv.extend(
             [
                 "-C",
                 str(worktree_path),
                 "--add-dir",
                 str(worktree_path),
-                prompt,
             ]
         )
         return Invocation(
             argv=argv,
             cwd=worktree_path,
             env=apply_auth_to_env(worktree_scoped_env(worktree_path), reviewer_config),
-            stdin_text=None,
+            stdin_text=prompt,
             timeout_seconds=None,
         )
 

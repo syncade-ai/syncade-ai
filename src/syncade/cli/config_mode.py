@@ -166,9 +166,11 @@ def run_config(config_args: list[str], *, args) -> int:
 
 def _ignored_repo_config_note(repo_root: Path, in_git: bool) -> str | None:
     """`--config` inspects the CURRENT state, so outside a git repo it does not read
-    ``cwd/.syncade/config.toml`` (no repo → no repo layer). But a REVIEW run would ``git init`` the
-    dir and THEN consume that file, so a present-but-ignored non-git repo config is a divergence
-    between inspection and a run — surfaced as a note (on stderr, so ``get`` stdout stays clean)."""
+    ``cwd/.syncade/config.toml`` (no repo → no repo layer). A REVIEW run with
+    ``--allow-auto-init`` would ``git init`` the dir and THEN consume that file; without
+    ``--allow-auto-init``, a non-empty dir is refused. Either way there is a divergence between
+    ``--config`` inspection and a run — surfaced as a note (on stderr, so ``get`` stdout stays
+    clean)."""
     if in_git:
         return None
     repo_cfg = repo_root / CONFIG_RELATIVE_PATH
@@ -176,8 +178,7 @@ def _ignored_repo_config_note(repo_root: Path, in_git: bool) -> str | None:
         return None
     return (
         f"[syncade] note: {repo_cfg} exists but this directory is not a git repo, so --config does "
-        "not read it. A review run here would `git init` first and then consume it; run `git init` "
-        "to manage it as the repo layer."
+        "not read it. Run `git init` to manage it as the repo layer."
     )
 
 

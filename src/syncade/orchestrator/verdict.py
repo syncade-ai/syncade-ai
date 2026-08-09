@@ -42,6 +42,10 @@ def _classify_phase_failure(round_result: RoundResult) -> TerminationReason:
     if exit_code == WORKTREE_ERROR:
         if round_result.fail_closed_headers is not None:
             return "diff_malformed"
+        if round_result.oversize_diff_bytes is not None:
+            return "diff_too_large"
+        if round_result.oversize_prompt_chars is not None:
+            return "prompt_too_large"
         return "worktree_error"
     if exit_code == REVIEWER_OUTPUT_UNPARSEABLE:
         return "parse_failure"

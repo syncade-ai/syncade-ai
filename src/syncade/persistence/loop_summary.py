@@ -44,6 +44,8 @@ _TERMINATION_REASON_LABELS: dict[str, str] = {
     "blockers_all_deactivated": "decision needed (reviewers' blockers all deactivated)",
     "worktree_error": "worktree provisioning error",
     "diff_malformed": "diff filter refusal (unidentifiable headers)",
+    "diff_too_large": "diff exceeds [loop] max_diff_bytes",
+    "prompt_too_large": "assembled reviewer prompt exceeds provider ceiling",
     "parse_failure": "output parse failure",
     "config_error": "config error",
 }
@@ -194,6 +196,15 @@ def persist_loop_summary(
             lines.append("- Reviewers: not dispatched (diff was empty before review)")
         elif r.fail_closed_headers:
             lines.append("- Reviewers: not dispatched (diff refused — unidentifiable headers)")
+        elif r.oversize_diff_bytes is not None:
+            lines.append(
+                f"- Reviewers: not dispatched (diff too large — {r.oversize_diff_bytes:,} bytes)"
+            )
+        elif r.oversize_prompt_chars is not None:
+            lines.append(
+                f"- Reviewers: not dispatched (assembled prompt too large — "
+                f"{r.oversize_prompt_chars:,} chars)"
+            )
         elif r.dispatch_result is not None and r.dispatch_result.all_succeeded:
             n_reviewers = len(r.dispatch_result.successes)
             lines.append(f"- Reviewers: {n_reviewers} succeeded")
@@ -203,7 +214,14 @@ def persist_loop_summary(
         else:
             lines.append("- Reviewers: did not run")
         # Synth
-        if r.synth_result is None:
+        _is_refusal = (
+            r.fail_closed_headers is not None
+            or r.oversize_diff_bytes is not None
+            or r.oversize_prompt_chars is not None
+        )
+        if r.synth_result is None and _is_refusal:
+            lines.append("- Synthesizer: not applicable (run refused before dispatch)")
+        elif r.synth_result is None:
             lines.append("- Synthesizer: skipped")
         elif r.synth_result.output is not None:
             active = sum(1 for f in r.synth_result.output.consolidated_findings if not f.dismissed)
@@ -217,7 +235,9 @@ def persist_loop_summary(
             err = type(r.synth_result.error).__name__
             lines.append(f"- Synthesizer: failed ({err})")
         # Test re-run
-        if r.test_result is None:
+        if r.test_result is None and _is_refusal:
+            lines.append("- Test re-run: not applicable (run refused before dispatch)")
+        elif r.test_result is None:
             lines.append(f"- Test re-run: skipped ({r.test_skip_reason or 'unknown'})")
         elif r.test_result.outcome == "subprocess_error":
             err = type(r.test_result.error).__name__ if r.test_result.error else "Unknown"

@@ -57,12 +57,14 @@ class RunStatus:
 
 
 _active: RunStatus | None = None
+_began: bool = False
 
 
 def begin(run_dir: Path, started_at: datetime) -> RunStatus:
     """Create + register the active breadcrumb and write the first ``running`` record."""
-    global _active
+    global _active, _began
     _active = RunStatus(Path(run_dir) / STATUS_FILENAME, started_at, os.getpid())
+    _began = True
     _active.running("starting")
     return _active
 
@@ -82,12 +84,27 @@ def finalize_active(reason: str, exit_code: int | None) -> None:
 
 
 def clear_active() -> None:
-    global _active
+    global _active, _began
     _active = None
+    _began = False
 
 
 def active() -> RunStatus | None:
     return _active
+
+
+def began() -> bool:
+    """Did :func:`begin` run in this process since the last :func:`clear_active`?
+
+    ``active()`` cannot answer this: :func:`finalize_active` clears it, so by the time a
+    caller handles an exception ``run_review`` re-raised, ``active()`` reads ``None`` for a
+    run that had very much begun. A caller that used it to decide "was this a clean refusal?"
+    deleted the operator's repository and its artifacts after a real mid-run failure.
+
+    This flag is set at the one moment the run takes ownership — immediately after the run
+    directory is created — and only ``clear_active`` (in-process reuse) resets it.
+    """
+    return _began
 
 
 def _pid_alive(pid: int) -> bool:

@@ -44,6 +44,10 @@ class SynthesizerResult:
             :class:`SubprocessTimeoutError`'s partial stdout/stderr
             with sentinel ``returncode=-1``, same convention as
             :class:`ReviewerRunResult`.
+        provenance_repairs: Provenance quotations corrected from the reviewer's
+            own text (PR-h-field-01 item 5). Empty on the normal path. Non-empty means
+            the synthesizer miscopied a source it had correctly attributed; the
+            rendered text is the reviewer's, and this records that it happened.
         retries: Number of EXTRA synth subprocess attempts consumed
             riding out transient provider blips (429/5xx/dropped
             socket) before this outcome. ``0`` when the first attempt
@@ -58,6 +62,7 @@ class SynthesizerResult:
     retries: int = 0
     usage: Usage | None = field(default=None)
     provider: str | None = None
+    provenance_repairs: tuple[object, ...] = ()
     model: str | None = None
 
     def __post_init__(self) -> None:

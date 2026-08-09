@@ -486,10 +486,23 @@ class TestAdversarialReviewFindings:
 
         assert before == after, "diff.renameLimit=1 changed rename detection"
 
-    def test_binary_diff_nul_bytes_stripped_from_diff_text(self, tmp_path: Path) -> None:
-        """``--text`` forces binary content into the diff as raw bytes, which
-        can include NUL. Python subprocess rejects argv with embedded NUL
-        characters, so they must be stripped from ``diff_text``."""
+    def test_nul_bytes_SURVIVE_into_diff_text_and_are_removed_at_prompt_assembly(
+        self, tmp_path: Path
+    ) -> None:
+        """INVERTED by PR-h-field-01. The old assertion was "NUL must not survive", justified by
+        "Python subprocess rejects argv with embedded NUL". Item 1 moved the prompt to
+        stdin, so that justification is gone — and item 2 needs these bytes: a NUL is git's
+        own binary heuristic and the ONLY binary signal an attacker cannot forge with a
+        `.gitattributes` `-diff` entry.
+
+        Stripping at snapshot time silently blinded that detection. Measured on the
+        reported repo: 6,667 NULs removed, after which all 12 committed PNGs read as text
+        and the 1.6 MB diff went to the provider whole.
+
+        The guarantee did not weaken, it MOVED — the property that matters was never "the
+        snapshot holds no NUL", it was "no binary content reaches a reviewer". Both halves
+        are asserted here so the pair cannot drift apart.
+        """
         repo = tmp_path / "repo"
         _init_repo(repo)
         base = _commit(repo, {"f.bin": "clean\n"}, "base")
@@ -499,7 +512,16 @@ class TestAdversarialReviewFindings:
 
         snap = take_snapshot(repo, base_ref=base)
 
-        assert "\x00" not in snap.diff_text, "NUL byte survived into diff_text"
+        assert "\x00" in snap.diff_text, (
+            "NUL was stripped from diff_text again — that is the binary signal, and "
+            "removing it here makes elide_binary_hunks blind to every real binary"
+        )
+
+        from syncade.diff_filter import elide_binary_hunks
+
+        reviewer_diff, elided = elide_binary_hunks(snap.diff_text)
+        assert "\x00" not in reviewer_diff, "binary bytes reached the reviewer diff"
+        assert elided == ["f.bin"], f"the binary path was not disclosed: {elided}"
 
     def test_base_oid_populated_when_base_ref_given(self, tmp_path: Path) -> None:
         """Snapshot must carry the resolved base OID, not just the symbolic ref,

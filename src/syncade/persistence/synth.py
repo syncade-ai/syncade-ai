@@ -153,7 +153,9 @@ def _synthesizer_manifest_entry(synth_result: SynthesizerResult | None) -> dict[
          "dismissed_count": int | null,
          "active_blocker_count": int | null,
          "active_minor_count": int | null,
-         "active_nit_count": int | null
+         "active_nit_count": int | null,
+         "provenance_repairs": [ {reviewer_name, original_index,
+                                  synthesizer_text, reviewer_text} ] | []
        }
 
     On success: counts populated, ``error_path`` AND ``error_type``
@@ -199,6 +201,22 @@ def _synthesizer_manifest_entry(synth_result: SynthesizerResult | None) -> dict[
             "active_blocker_count": active_by_sev["blocker"],
             "active_minor_count": active_by_sev["minor"],
             "active_nit_count": active_by_sev["nit"],
+            # Non-empty means the synthesizer miscopied a source it had correctly
+            # attributed, and syncade corrected the quotation from the reviewer's own
+            # text (PR-h-field-01 item 5). Recorded rather than silent: it is a signal about
+            # that model's fidelity, and rewriting a model's output without saying so
+            # is not something to hide. Both strings are kept so the operator can judge.
+            "provenance_repairs": [
+                {
+                    "reviewer_name": r.reviewer_name,
+                    "original_index": r.original_index,
+                    "consolidated_index": r.consolidated_index,
+                    "provenance_index": r.provenance_index,
+                    "synthesizer_text": r.synthesizer_text,
+                    "reviewer_text": r.reviewer_text,
+                }
+                for r in synth_result.provenance_repairs
+            ],
         }
 
     # Failure path. error_path is null when no .error.txt will be
@@ -220,4 +238,5 @@ def _synthesizer_manifest_entry(synth_result: SynthesizerResult | None) -> dict[
         "active_blocker_count": None,
         "active_minor_count": None,
         "active_nit_count": None,
+        "provenance_repairs": [],
     }

@@ -153,7 +153,8 @@ class AnthropicAdapter:
         The argv matches the form documented in
         the CLI output format:
 
-        - ``claude -p <prompt>`` (prompt as a positional argument)
+        - ``claude -p`` with prompt on STDIN (PR-h-field-01 item 1): avoids the execve
+          argument-list limit; stdin is read when no positional prompt is given
         - ``--output-format stream-json --verbose``: JSONL transcript on
           stdout (every tool_use/tool_result event), terminated by the
           ``{"type":"result"}`` envelope. ``--verbose`` is required by
@@ -189,10 +190,14 @@ class AnthropicAdapter:
         """
         self._validate_provider(reviewer_config.provider)
         self._validate_permissions(reviewer_config.permissions)
+        # The prompt goes on STDIN, never argv: a reviewer diff can exceed the
+        # execve argument ceiling (measured 1,044,422 B on macOS 15/arm64) and the
+        # child then never exists — `[Errno 7] Argument list too long`, 0.0s, exit 40,
+        # before any review happens. Pass on ONE channel only; both CLIs append a
+        # piped stdin as an extra block when a positional prompt is also given.
         argv: list[str] = [
             "claude",
             "-p",
-            prompt,
             # stream-json (+ required --verbose under -p) so the reviewer's
             # full tool-call transcript lands in the persisted .stdout for
             # auditability; the terminal {"type":"result"} line carries the
@@ -214,7 +219,7 @@ class AnthropicAdapter:
             argv=argv,
             cwd=worktree_path,
             env=apply_auth_to_env(worktree_scoped_env(worktree_path), reviewer_config),
-            stdin_text=None,
+            stdin_text=prompt,
             timeout_seconds=None,
         )
 

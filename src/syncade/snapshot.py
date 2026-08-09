@@ -465,10 +465,16 @@ def take_snapshot(
                 f"git diff {base_oid}..{commit_sha} failed in {repo_root} "
                 f"(base_ref {base_ref!r}): {diff_stderr.strip()}"
             )
-        # `--text` forces git to emit raw binary content as text, which can
-        # include NUL bytes. Python's subprocess rejects argv strings
-        # containing NUL, so strip them before the diff enters any prompt.
-        diff_text = _strip_hunk_function_context(diff_stdout.replace("\x00", ""))
+        # `--text` forces git to emit raw binary content as text, which can include NUL
+        # bytes. Those NULs used to be stripped HERE, because the prompt was passed as an
+        # argv element and Python's subprocess rejects NUL in argv. PR-h-field-01 item 1 moved
+        # the prompt to stdin, which removed that constraint — and item 2 needs the NULs,
+        # because a NUL byte is git's own binary heuristic and the only binary signal an
+        # attacker cannot forge with a `.gitattributes` `-diff` entry. Stripping them here
+        # silently blinded that detection (measured: 6,667 NULs removed, every one of the
+        # 12 committed PNGs then read as text). `diff_filter.elide_binary_hunks` removes
+        # binary content — NULs included — at prompt assembly, after detection.
+        diff_text = _strip_hunk_function_context(diff_stdout)
 
     # Working-tree cleanliness probe. `git status --porcelain` returns
     # a stable, machine-parseable list (one line per affected path)

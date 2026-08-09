@@ -48,8 +48,10 @@ _FOREIGN = {
     "--into": "scripts/oss-release.sh",
     "--is-ancestor": "git merge-base",
     "--no-ff": "git merge",
+    "--numstat": "git diff --numstat (the binary-report oracle PR-h-field-01 rejected)",
     "--no-replace-objects": "git",
     "--pretty": "git log",
+    "--text": "git diff --text (forces binary content out as text)",
     "--seed": "uv venv",
     "--verify": "git rev-parse --verify",
 }

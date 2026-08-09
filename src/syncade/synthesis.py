@@ -96,7 +96,16 @@ class FindingProvenance(BaseModel):
     reviewer_name: str = Field(..., min_length=1)
     original_severity: Severity
     original_index: int = Field(..., ge=0)
-    original_description: str = Field(..., min_length=1)
+    # NO length or non-blank constraint, deliberately (PR-h-field-01, dogfood round 4).
+    # Every provenance entry passes through
+    # `synthesizer.validation._validate_provenance_against_reviewers`, which OVERWRITES this
+    # field with the source reviewer's own text. Whatever the model wrote here is discarded,
+    # so validating it rejects runs over a value that was never going to be used: a blank or
+    # whitespace-only quote aborted the whole run at exit 70 — the exact failure class the
+    # repair exists to eliminate, surviving through the schema instead of the validator.
+    # The guarantee did not weaken; it moved from "the model must write it correctly" to
+    # "syncade copies it from the source", which is strictly stronger.
+    original_description: str
 
     @field_validator("reviewer_name")
     @classmethod
@@ -113,23 +122,6 @@ class FindingProvenance(BaseModel):
                 "reviewer_name must contain non-whitespace content; got "
                 "an all-whitespace value which provides no provenance "
                 "attribution"
-            )
-        return v
-
-    @field_validator("original_description")
-    @classmethod
-    def _validate_original_description_nonblank(cls, v: str) -> str:
-        """``original_description`` must contain at least one
-        non-whitespace character.
-
-        Same whitespace-only lesson as
-        :meth:`_validate_reviewer_name_nonblank`.
-        """
-        if not v.strip():
-            raise ValueError(
-                "original_description must contain non-whitespace content; "
-                "got an all-whitespace value which preserves no reviewer "
-                "framing"
             )
         return v
 

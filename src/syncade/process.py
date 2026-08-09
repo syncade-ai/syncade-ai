@@ -108,7 +108,7 @@ def _decode_timeout_output(output: str | bytes | None) -> str:
             return ""
 
 
-def _kill_direct_process_if_running(proc: subprocess.Popen[str]) -> None:
+def _kill_direct_process_if_running(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is None:
         try:
             proc.kill()
@@ -116,7 +116,7 @@ def _kill_direct_process_if_running(proc: subprocess.Popen[str]) -> None:
             pass
 
 
-def _kill_process_group_if_running(proc: subprocess.Popen[str]) -> None:
+def _kill_process_group_if_running(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is not None:
         return
     try:
@@ -132,16 +132,16 @@ def _kill_process_group_if_running(proc: subprocess.Popen[str]) -> None:
 # cleanup. terminate_active_child_groups() lets the dispatcher's interrupt path
 # kill those groups so each communicate() returns at once instead of the executor
 # hanging in shutdown(wait=True) until the reviewer timeout.
-_active_procs: set[subprocess.Popen[str]] = set()
+_active_procs: set[subprocess.Popen[bytes]] = set()
 _active_procs_lock = threading.Lock()
 
 
-def _register_proc(proc: subprocess.Popen[str]) -> None:
+def _register_proc(proc: subprocess.Popen[bytes]) -> None:
     with _active_procs_lock:
         _active_procs.add(proc)
 
 
-def _unregister_proc(proc: subprocess.Popen[str]) -> None:
+def _unregister_proc(proc: subprocess.Popen[bytes]) -> None:
     with _active_procs_lock:
         _active_procs.discard(proc)
 
@@ -162,7 +162,7 @@ def terminate_active_child_groups() -> int:
 
 
 def _drain_after_timeout(
-    proc: subprocess.Popen[str],
+    proc: subprocess.Popen[bytes],
     timeout_exc: subprocess.TimeoutExpired,
 ) -> tuple[str, str]:
     initial_stdout = _decode_timeout_output(timeout_exc.stdout)
@@ -175,7 +175,10 @@ def _drain_after_timeout(
             _decode_timeout_output(drain_exc.stdout) or initial_stdout,
             _decode_timeout_output(drain_exc.stderr) or initial_stderr,
         )
-    return stdout or initial_stdout, stderr or initial_stderr
+    return (
+        _decode_timeout_output(stdout) or initial_stdout,
+        _decode_timeout_output(stderr) or initial_stderr,
+    )
 
 
 def _git_hardened_env(argv: list[str], env: dict[str, str] | None) -> dict[str, str] | None:
@@ -273,17 +276,17 @@ def run_subprocess(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            # Decode child output as UTF-8 with replacement rather than the
-            # parent locale + errors="strict". Two failures this closes:
-            # (1) a non-UTF-8 locale (LANG=C) raises UnicodeDecodeError on any
-            # non-ASCII byte; (2) SIGKILL-on-timeout truncates a multi-byte
-            # sequence at the buffer boundary so the drain communicate() below
-            # raises instead of returning the partial output the timeout
-            # contract promises. errors="replace" never raises and yields
-            # replacement chars, keeping the partial-output guarantee.
-            encoding="utf-8",
-            errors="replace",
+            # Capture as bytes rather than text. text=True enables Python's
+            # universal newline translation (\r and \r\n → \n), which converts
+            # carriage-return bytes inside binary payload hunks before
+            # diff_filter sees the text. A binary containing \r followed by
+            # "diff --git ..." produces a fake section boundary after that
+            # normalization, letting non-NUL bytes escape elision or triggering
+            # a false diff_malformed refusal. Manual decode below preserves \r.
+            # The two concerns that originally drove text=True are handled at
+            # decode time: (1) non-UTF-8 locale → errors="replace"; (2)
+            # SIGKILL-on-timeout truncates a multi-byte sequence at a buffer
+            # boundary → errors="replace" still never raises.
             # New session → new process group on POSIX, so we can kill
             # the whole tree on timeout instead of orphaning grandchildren.
             start_new_session=True,
@@ -297,9 +300,12 @@ def run_subprocess(
         raise SubprocessError(f"failed to launch {argv[0]!r}: {exc}") from exc
 
     _register_proc(proc)
+    input_bytes = input_text.encode("utf-8") if input_text is not None else None
     try:
         try:
-            stdout, stderr = proc.communicate(input=input_text, timeout=timeout)
+            stdout_b, stderr_b = proc.communicate(input=input_bytes, timeout=timeout)
+            stdout = stdout_b.decode("utf-8", errors="replace") if stdout_b else ""
+            stderr = stderr_b.decode("utf-8", errors="replace") if stderr_b else ""
         except subprocess.TimeoutExpired as timeout_exc:
             # Kill the whole process group so descendants die too. SIGKILL
             # is non-negotiable here — we already decided the child has

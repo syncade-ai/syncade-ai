@@ -402,7 +402,7 @@ Common exit codes the operator may see:
   failed when reviewers shipped.
 - `40` — reviewer / synthesizer / producer subprocess error.
 - `50` — config error.
-- `60` — worktree / dirty-tree / loop-mode refusal, or diff_malformed (unidentifiable headers, fail-closed).
+- `60` — worktree / dirty-tree / loop-mode refusal; or `diff_malformed` (unidentifiable diff headers, fail-closed); or `diff_too_large` (reviewer-facing diff exceeds `[loop] max_diff_bytes`); or `prompt_too_large` (assembled prompt exceeds provider ceiling).
 - `70` — reviewer or synthesizer output unparseable.
 
 (Full table in the exit-code contract above.)

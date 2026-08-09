@@ -35,9 +35,25 @@ class TestFindingProvenance:
             FindingProvenance(**_provenance(reviewer_name=blank))
 
     @pytest.mark.parametrize("blank", ["", "   ", "\n\t "])
-    def test_rejects_whitespace_only_original_description(self, blank: str) -> None:
-        with pytest.raises(ValidationError):
-            FindingProvenance(**_provenance(original_description=blank))
+    def test_accepts_a_blank_original_description_because_the_repair_replaces_it(
+        self, blank: str
+    ) -> None:
+        """INVERTED by PR-h-field-01 (dogfood round 4 found the hole this closes).
+
+        The schema used to reject a blank quote. That is a value the model wrote and syncade
+        DISCARDS: every provenance entry passes through
+        `_validate_provenance_against_reviewers`, which overwrites this field with the source
+        reviewer's own text. Rejecting it therefore ended a whole run at exit 70 over a string
+        that was never going to be used — the exact failure class the repair exists to
+        eliminate, surviving through the schema instead of the validator.
+
+        The guarantee did not weaken, it MOVED: from "the model must write it correctly" to
+        "syncade copies it from the source", which is strictly stronger. The companion
+        assertion — that a blank really is replaced — lives in
+        tests/synthesizer/test_provenance_repair.py, so the pair cannot drift apart.
+        """
+        prov = FindingProvenance(**_provenance(original_description=blank))
+        assert prov.original_description == blank, "the model's value should survive to repair"
 
     def test_rejects_negative_index(self) -> None:
         with pytest.raises(ValidationError):

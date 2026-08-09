@@ -179,3 +179,64 @@ def test_config_mutex_with_install_skill(tmp_path, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "--config cannot be combined with --install-skill" in err
+
+
+# ---------------------------------------------------------------------------
+# PR-h-04: context-only flags rejected outside their meaningful modes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--metrics", "--allow-auto-init"],
+        ["--gc", "--allow-auto-init"],
+        ["--install-skill", "claude", "--allow-auto-init"],
+        ["--resume", "some-run-id", "--allow-auto-init"],
+        ["--config", "list", "--allow-auto-init"],
+        ["--selfcheck", "--allow-auto-init"],
+        ["--auth-check", "--allow-auto-init"],
+    ],
+    ids=lambda a: a[0],
+)
+def test_allow_auto_init_rejected_outside_review_mode(tmp_path, capsys, argv):
+    """--allow-auto-init is meaningful only with a PR_DOC or --openspec review invocation.
+
+    Before this guard, it was silently accepted with every one-shot mode.
+    """
+    rc = main(["--repo-root", str(tmp_path), *argv])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--allow-auto-init is meaningful only with a review invocation" in err
+
+
+# ---------------------------------------------------------------------------
+# --install-skill: review-loop-only flags must be rejected
+# ---------------------------------------------------------------------------
+
+_INSTALL_SKILL_LOOP_FLAGS = (
+    ("--force-dirty", ["--force-dirty"]),
+    ("--allow-default-branch", ["--allow-default-branch"]),
+    ("--timeout", ["--timeout", "60"]),
+    ("--preset", ["--preset", "cheap"]),
+    ("--max-rounds", ["--max-rounds", "2"]),
+    ("--worktree-base", ["--worktree-base", "/tmp/wb"]),
+)
+
+
+@pytest.mark.parametrize(
+    "flag,extra_argv",
+    _INSTALL_SKILL_LOOP_FLAGS,
+    ids=[m[0] for m in _INSTALL_SKILL_LOOP_FLAGS],
+)
+def test_install_skill_rejects_loop_only_flags(tmp_path, capsys, flag, extra_argv):
+    """--install-skill must refuse review-loop-only flags rather than silently ignoring them.
+
+    Previously these flags were accepted with --install-skill, exit 0, and the
+    skill was written. An operator who supplied --timeout or --preset expecting a
+    review got a skill install instead.
+    """
+    rc = main(["--repo-root", str(tmp_path), "--install-skill", "claude", *extra_argv])
+    assert rc == 2, f"expected exit 2 for --install-skill + {flag}, got {rc}"
+    err = capsys.readouterr().err
+    assert f"--install-skill cannot be combined with {flag}" in err

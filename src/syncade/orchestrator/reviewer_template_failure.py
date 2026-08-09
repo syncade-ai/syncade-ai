@@ -24,6 +24,8 @@ def _reviewer_template_failure_result(
     started_at: datetime,
     resumed_under_drift: bool,
     error: Exception,
+    filtered_diff_bytes: int | None = None,
+    raw_diff_bytes: int | None = None,
 ) -> RoundResult:
     """Build a phase-failure result for reviewer-template load/render errors."""
     message = f"reviewer template render failed: {error}"
@@ -55,6 +57,8 @@ def _reviewer_template_failure_result(
         producer_provider=config.producer.provider,
         producer_model=config.producer.model,
         check_results=[],
+        filtered_diff_bytes=filtered_diff_bytes,
+        raw_diff_bytes=raw_diff_bytes,
     )
     persist_run_summary(
         round_dir,
@@ -90,4 +94,6 @@ def _reviewer_template_failure_result(
         round_exit_code=REVIEWER_FAILURE,
         artifacts=artifacts,
         check_results=[],
+        filtered_diff_bytes=filtered_diff_bytes,
+        raw_diff_bytes=raw_diff_bytes,
     )

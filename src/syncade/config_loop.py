@@ -46,6 +46,32 @@ class LoopConfig(BaseModel):
         "infinity rejected via a field_validator; pydantic's gt=0 admits both "
         "unaided). The CLI's --timeout flag overrides this per-invocation.",
     )
+    max_diff_bytes: int = Field(
+        default=1_000_000,
+        gt=0,
+        description=(
+            "Ceiling on the REVIEWER-FACING diff, in UTF-8 bytes — measured after "
+            "repo-context stripping and binary elision, i.e. exactly what reaches the "
+            "model's context, not what the repo produced. A run whose diff exceeds it is "
+            "refused before any subprocess is dispatched (exit 60, "
+            "termination_reason='diff_too_large'), consistent with diff_malformed: if we "
+            "cannot show reviewers the change, we decline to render a verdict on it. "
+            "Narrow --base or split the PR.\n\n"
+            "The default is calibrated, not guessed, in two directions. Upper bound: "
+            "`codex exec` hard-refuses input over 1,048,576 CHARACTERS "
+            "(input_error_code=input_too_large) — a UTF-8 byte cap of 1,000,000 keeps the "
+            "diff under that in every encoding, since bytes >= characters, so syncade's own "
+            "actionable message always fires before the provider's opaque one. Lower bound: "
+            "across the 30 measured rounds in this repo's run corpus the largest "
+            "reviewer-facing diff was 147,171 B (median 77,026), so the default has ~7x "
+            "headroom over observed reality and refuses nothing that works today. Lower it "
+            "deliberately if you want a tighter review surface — this wave's evidence is "
+            "that large diffs converge poorly (a 25-commit diff gave 4/4/4/3/5 findings and "
+            "never converged; a 3-commit one gave 1/1/0 to SHIP on the same panel).\n\n"
+            "NOT a token cap: `claude -p` limits by TOKENS (1,000,000), which bytes cannot "
+            "predict, so a token-limit refusal is still possible on that provider."
+        ),
+    )
     budget_tokens: int | None = Field(
         default=None,
         gt=0,
@@ -123,6 +149,20 @@ class LoopConfig(BaseModel):
             "timeout_seconds.'"
         ),
     )
+
+    @field_validator("max_diff_bytes", mode="before")
+    @classmethod
+    def _strict_max_diff_bytes(cls, value: object) -> object:
+        # Same rule as [gc]'s integers (PR-v2-9): pydantic's lax mode silently coerces a
+        # quoted number ("0"->0), an exact float (1.0->1), and a boolean (bool subclasses
+        # int, so true->1). Any of those here is a typo with a severe outcome — true->1
+        # would refuse EVERY run for a one-byte ceiling. Reject all three (exit 50).
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"max_diff_bytes must be a plain integer (got {value!r}); quoted numbers, "
+                "floats, and booleans are rejected"
+            )
+        return value
 
     @field_validator("test_command")
     @classmethod

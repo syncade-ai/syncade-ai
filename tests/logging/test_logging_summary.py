@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from syncade.dispatcher import ReviewerRunResult
 from syncade.logging import Logger
 from tests.logging._helpers import (
@@ -333,3 +335,41 @@ class TestSummarySynthParseFailurePointers:
         assert len(lines) == 3
         assert "claude-reviewer" in out
         assert "synthesizer.stdout" in out
+
+
+# ---------------------------------------------------------------------------
+# Pre-dispatch no-op runs do not advertise artifact paths
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactPathsAreAlwaysAdvertised:
+    """The inverse of a suppression this file used to pin, and the reason it is gone.
+
+    Three separate print sites were suppressed across three dogfood rounds so a refusal would
+    not advertise paths the CLI then deleted. That chase only existed because undo removed
+    `.syncade/`; it no longer does, so every advertised path survives and suppression is not
+    only unnecessary but WRONG — it keyed on `termination_reason`/dispatch state (a property
+    of the RUN) while survival depends on whether the directory started empty (a property the
+    logger cannot see). Measured: in a pre-existing repo, `no_changes_to_review` keeps its run
+    directory, and the suppression hid the pointer to it in the common case.
+    """
+
+    @pytest.mark.parametrize(
+        ("reason", "code"), [("no_changes_to_review", 0), ("diff_malformed", 60)]
+    )
+    def test_normal_mode_advertises_artifact_and_summary_paths(self, reason, code, capsys):
+        logger = Logger("normal")
+        logger.summary(_run_result(termination_reason=reason, exit_code=code))
+        out = capsys.readouterr().out
+        assert "artifacts:" in out and "summary:" in out, (
+            f"{reason} hid the run record; those files are on disk and the operator is not "
+            f"told where they are"
+        )
+
+    @pytest.mark.parametrize(
+        ("reason", "code"), [("no_changes_to_review", 0), ("diff_malformed", 60)]
+    )
+    def test_quiet_mode_advertises_the_summary_path(self, reason, code, capsys):
+        logger = Logger("quiet")
+        logger.summary(_run_result(termination_reason=reason, exit_code=code))
+        assert "summary at" in capsys.readouterr().out, f"{reason} hid the summary path"

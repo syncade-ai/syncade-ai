@@ -99,6 +99,11 @@ def persist_loop_manifest(
                 "base_ref": r.snapshot.base_ref,
                 "base_oid": r.snapshot.base_oid,
                 "diff_present": bool(r.snapshot.diff_text),
+                # Mirror the per-round manifest's size history fields.
+                # Both are None when not measured (diff_malformed, resume); see
+                # round_manifest.py for the full rationale.
+                "diff_bytes": r.raw_diff_bytes,
+                "diff_bytes_reviewed": r.filtered_diff_bytes,
             },
             "reviewers": (
                 [_reviewer_manifest_entry(rr) for rr in r.dispatch_result.results]
@@ -121,6 +126,27 @@ def persist_loop_manifest(
         # checks[] presence/shape.
         if r.check_results:
             entry["checks"] = [_check_manifest_entry(c) for c in r.check_results]
+        # Mirror the per-round manifest's refusal discriminator fields so the loop
+        # manifest is self-sufficient for tooling that wants to classify per-round
+        # refusal causes without reading individual round-N/manifest.json files.
+        if r.fail_closed_headers is not None:
+            entry["diff_filter_refusal_headers"] = r.fail_closed_headers
+        # Derive refusal_reason the same way round_no_changes.py does: fail_closed_headers
+        # → diff_malformed; oversize_diff_bytes → diff_too_large; oversize_prompt_chars →
+        # prompt_too_large. Only one is set per run; written only when non-None.
+        _refusal_reason: str | None
+        if r.fail_closed_headers is not None:
+            _refusal_reason = "diff_malformed"
+        elif r.oversize_diff_bytes is not None:
+            _refusal_reason = "diff_too_large"
+        elif r.oversize_prompt_chars is not None:
+            _refusal_reason = "prompt_too_large"
+        else:
+            _refusal_reason = None
+        if _refusal_reason is not None:
+            entry["refusal_reason"] = _refusal_reason
+        if r.oversize_prompt_chars is not None:
+            entry["oversize_prompt_chars"] = r.oversize_prompt_chars
         round_entries.append(entry)
 
     manifest = {

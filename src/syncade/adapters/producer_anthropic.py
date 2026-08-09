@@ -124,10 +124,14 @@ class AnthropicProducerAdapter:
         """
         self._validate_provider(producer_config.provider)
         self._validate_permissions(producer_config.permissions)
+        # The prompt goes on STDIN, never argv: a reviewer diff can exceed the
+        # execve argument ceiling (measured 1,044,422 B on macOS 15/arm64) and the
+        # child then never exists — `[Errno 7] Argument list too long`, 0.0s, exit 40,
+        # before any review happens. Pass on ONE channel only; both CLIs append a
+        # piped stdin as an extra block when a positional prompt is also given.
         argv: list[str] = [
             "claude",
             "-p",
-            prompt,
             "--output-format",
             "json",
             "--model",
@@ -143,7 +147,7 @@ class AnthropicProducerAdapter:
             argv=argv,
             cwd=worktree_path,
             env=apply_auth_to_env(worktree_scoped_env(worktree_path), producer_config),
-            stdin_text=None,
+            stdin_text=prompt,
             timeout_seconds=None,
         )
 

@@ -138,7 +138,7 @@ The verdict is mechanical — the LLMs never decide the exit code directly.
 | `30` | Findings present, test failed, or producer stalled |
 | `40` | A subprocess failed |
 | `50` | Config error |
-| `60` | Environment / worktree / repo problem |
+| `60` | Environment / worktree / repo problem — also a refused run: the diff is unreadable, or too large for a reviewer to be asked to read (`diff_too_large` / `prompt_too_large`) |
 | `70` | Reviewer or synthesizer output couldn't be parsed |
 
 ## Configuration
@@ -150,6 +150,7 @@ Zero-config works out of the box. To customize, add `.syncade/config.toml`:
 max_rounds = 3                  # recommended default; hard ceiling is 10
 timeout_seconds = 1800          # per SUBPROCESS, not per round; see below
 test_command = "pytest -q"      # optional third convergence leg
+max_diff_bytes = 1_000_000      # refuse rather than review a diff this large (exit 60)
 
 [[reviewers]]
 name = "codex-reviewer"

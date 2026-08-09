@@ -209,10 +209,35 @@ class TestProvenanceQuoteValidation:
         ],
         ids=["rewritten", "truncated", "recased", "reworded"],
     )
-    def test_any_rewrite_is_rejected(self, quote: str) -> None:
-        with pytest.raises(SynthesizerOutputError) as exc:
-            _validate_provenance_against_reviewers(self._output(quote), self._reviewer_results())
-        msg = str(exc.value)
-        assert "original_description does not match" in msg
-        assert self._SOURCE in msg  # the operator sees what the reviewer really wrote
-        assert quote in msg  # ...and what the synthesizer substituted
+    def test_any_rewrite_is_REPAIRED_not_rendered(self, quote: str) -> None:
+        """INVERTED by PR-h-field-01 item 5 — and PR-h-01's guarantee got STRONGER, not weaker.
+
+        The property increment C bought was: *the operator never reads a fabricated quote
+        attributed to a reviewer who never wrote it.* Aborting delivered that by refusing
+        the whole run. Repair delivers it by construction — `original_description` is
+        OVERWRITTEN with the reviewer's own text, so no string a synthesizer authors can
+        reach findings.md at all. Before, the rendered quote was verbatim only because the
+        check happened to pass; now it is verbatim because it was copied from the source.
+
+        What abort bought and repair must not lose is the SIGNAL that the model rewrote a
+        source. That is why every repair is recorded with both strings, and asserted here.
+
+        The abort's cost was measured: one dropped backtick in a finding about
+        `style={{ backdropFilter: ... }}` ended a run at exit 70 after 713 seconds of
+        reviewer wall-clock, discarding six valid findings and three unrun rounds. Nothing
+        distinguishes that from a deliberate rewrite at validation time, and it does not
+        need to — the ground truth is in `reviewer_results` either way.
+        """
+        output = self._output(quote)
+        repairs = _validate_provenance_against_reviewers(output, self._reviewer_results())
+
+        # The fabrication never reaches the rendered artifact.
+        rendered = output.consolidated_findings[0].provenance[0].original_description
+        assert rendered == self._SOURCE, "a synthesizer-authored quote survived into the output"
+
+        # ...and the operator can still see that it happened, with both strings.
+        assert len(repairs) == 1, "the rewrite was corrected silently — the signal is lost"
+        assert repairs[0].reviewer_text == self._SOURCE
+        assert repairs[0].synthesizer_text == quote
+        assert repairs[0].reviewer_name == "rv1"
+        assert repairs[0].original_index == 0

@@ -95,6 +95,22 @@ def validate_command_shape(args, parser) -> int | None:
             file=sys.stderr,
         )
         return CLI_USAGE_ERROR
+    # --resume "" is always invalid: nargs="?" means bare --resume gives "latest";
+    # an explicit empty string is neither a run-id nor a valid alias.
+    if args.resume is not None and not args.resume:
+        print(
+            "[syncade] error: --resume requires a non-empty run-id; "
+            "pass --resume alone to resume the latest eligible run",
+            file=sys.stderr,
+        )
+        return CLI_USAGE_ERROR
+    # --spec-audit "" is always invalid: the path argument cannot be empty.
+    if args.spec_audit is not None and not args.spec_audit:
+        print(
+            "[syncade] error: --spec-audit requires a non-empty path",
+            file=sys.stderr,
+        )
+        return CLI_USAGE_ERROR
     # --resume reuses the original run's base_ref from run-init.json.
     if args.resume and args.base is not None:
         print(
@@ -331,6 +347,50 @@ def validate_command_shape(args, parser) -> int | None:
         rejection = _reject_diff_base_flags(args, "--install-skill")
         if rejection is not None:
             return rejection
+        # ...and it is mutually exclusive with every OTHER mode, which it was not.
+        # Measured: all 9 pairings — including `syncade <brief> --install-skill claude` —
+        # were ACCEPTED, exit 0, with the other intent silently dropped. An operator asking
+        # for a review got a skill install and a success code. Same shape as --doctor's list
+        # above; `test_mode_pairs_are_all_rejected` derives the matrix from the parser, so a
+        # mode added later is covered without editing either list.
+        for _flag, _used in (
+            ("a PR_DOC positional argument", bool(args.pr_doc)),
+            ("--resume", bool(args.resume)),
+            ("--selfcheck", args.selfcheck),
+            ("--auth-check", args.auth_check),
+            ("--spec-audit", bool(args.spec_audit)),
+            ("--draft-spec", args.draft_spec),
+            ("--openspec", args.openspec is not None),
+            ("--gc", args.gc),
+            ("--metrics", args.metrics),
+            # --config is deliberately ABSENT: _reject_config_mode_conflicts below already
+            # covers that pair and words it from --config's side. Listing it here would be
+            # duplicate coverage that only changes which flag the message names first.
+            # Review-loop-only flags: accepted by the parser but meaningless in installer mode.
+            # Silently ignoring them lets an operator supply real review intent that is lost.
+            ("--force-dirty", getattr(args, "force_dirty", False)),
+            ("--allow-default-branch", getattr(args, "allow_default_branch", False)),
+            ("--timeout", args.timeout is not None),
+            ("--preset", args.preset is not None),
+            ("--max-rounds", args.max_rounds is not None),
+            ("--worktree-base", args.worktree_base is not None),
+        ):
+            if _used:
+                print(
+                    f"[syncade] error: --install-skill cannot be combined with {_flag}",
+                    file=sys.stderr,
+                )
+                return 2
+    # --allow-auto-init controls whether the review entry path may git-init a populated
+    # directory; it is meaningless (and silently ignored) in every other mode.
+    _allow_auto_init_applies = bool(args.pr_doc) or (args.openspec is not None)
+    if args.allow_auto_init and not _allow_auto_init_applies:
+        print(
+            "[syncade] error: --allow-auto-init is meaningful only with a review invocation "
+            "(a PR_DOC or --openspec); it has no effect in one-shot modes",
+            file=sys.stderr,
+        )
+        return CLI_USAGE_ERROR
     _config_conflict = _reject_config_mode_conflicts(args)
     if _config_conflict is not None:
         return _config_conflict

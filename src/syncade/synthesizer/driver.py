@@ -497,7 +497,7 @@ def run_synthesizer(
         # awareness of the input reviewer set; the orchestrator does,
         # so the check lives here.
         try:
-            _validate_provenance_against_reviewers(output, reviewer_results)
+            _prov_repairs = _validate_provenance_against_reviewers(output, reviewer_results)
             # cluster quotes must be verbatim substrings of the
             # reviewer-original finding text — the cannot-invent guarantee for
             # the descriptive-only root-cause clusters. Runs after provenance
@@ -527,4 +527,5 @@ def run_synthesizer(
             error=None,
             duration_seconds=time.monotonic() - run_start,
             raw_subprocess_result=subprocess_result,
+            provenance_repairs=tuple(_prov_repairs),
         )

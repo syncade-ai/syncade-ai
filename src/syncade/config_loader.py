@@ -127,9 +127,10 @@ def load_config(
         include_repo: When ``True`` (default), the repo layer (``<repo_root>/.syncade/config.toml``)
             participates. ``False`` drops it — used by ``--config`` when the cwd is NOT inside a git
             repo. ``--config`` inspects the CURRENT state (no repo → no repo layer), so a stray
-            ``cwd/.syncade/config.toml`` is not read as the repo layer. (A *review* run differs: it
-            ``git init``s the dir first and then DOES read that file; ``--config`` surfaces that
-            divergence as a note rather than silently adopting or ignoring the file.)
+            ``cwd/.syncade/config.toml`` is not read as the repo layer. (A *review* run with
+            ``--allow-auto-init`` would ``git init`` the dir first and THEN read that file; without
+            it, a non-empty dir is refused. ``--config`` surfaces the divergence as a note rather
+            than silently adopting or ignoring the file.)
     """
     global_path = (
         global_config_path if global_config_path is not None else _default_global_config_path()

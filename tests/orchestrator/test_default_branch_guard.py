@@ -538,7 +538,31 @@ class TestAutoInitExemption:
         monkeypatch.setattr(
             cli,
             "run_review",
-            lambda *a, **k: reached.append(1) or type("R", (), {"exit_code": 0})(),
+            lambda *a, **k: (
+                reached.append(1)
+                or type(
+                    "R",
+                    (),
+                    {
+                        "exit_code": 0,
+                        "dispatch_result": type("D", (), {"results": [object()]})(),
+                        "rounds": [
+                            type(
+                                "Rnd",
+                                (),
+                                {
+                                    "dispatch_result": type(
+                                        "D2", (), {"reviewer_subprocess_started": True}
+                                    )(),
+                                },
+                            )()
+                        ],
+                    },
+                )()
+            ),
         )
-        cli.main(["brief.md", "--max-rounds", "2", "--base", "HEAD"])
+        # `--allow-auto-init`: PR-h-04 item B refuses auto-init in a POPULATED directory
+        # by default (a baseline commit there captures whatever it finds). This fixture
+        # writes a brief into the dir, so the flag is setup, not the thing under test.
+        cli.main(["brief.md", "--max-rounds", "2", "--base", "HEAD", "--allow-auto-init"])
         assert reached, "auto-inited fresh dir was refused by the guard instead of proceeding"

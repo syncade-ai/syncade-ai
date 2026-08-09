@@ -43,6 +43,10 @@ def persist_round_manifest(
     producer_model: str | None = None,
     check_results: list[TestRunResult] | None = None,
     diff_filter_refusal_headers: list[str] | None = None,
+    filtered_diff_bytes: int | None = None,
+    raw_diff_bytes: int | None = None,
+    oversize_prompt_chars: int | None = None,
+    refusal_reason: str | None = None,
 ) -> Path:
     """Write ``<round_dir>/manifest.json`` summarizing the round.
 
@@ -152,6 +156,22 @@ def persist_round_manifest(
             "base_ref": snapshot.base_ref,
             "base_oid": snapshot.base_oid,
             "diff_present": bool(snapshot.diff_text),
+            # Size history for a future diff cap. There is no cap today, and picking a
+            # threshold without history would be a guess; recording costs nothing and cannot
+            # be backfilled, so every run from here on is a datapoint.
+            #
+            # Two numbers because they answer different questions: `diff_bytes` is what the
+            # repo produced, `diff_bytes_reviewed` is what a reviewer was actually handed
+            # AFTER repo-context stripping — and a cap must threshold on the latter, since
+            # that is what reaches the model's context.
+            #
+            # BOTH are supplied by the caller that MEASURED them, and this writer never
+            # infers one. Deriving `diff_bytes` from `snapshot.diff_text` looked free and was
+            # not: a resumed round's snapshot carries a SENTINEL rather than the real diff, so
+            # the derivation fabricated a byte count for a diff nobody had. `null` means "not
+            # measured on this path" and is honest; a fabricated integer is not.
+            "diff_bytes": raw_diff_bytes,
+            "diff_bytes_reviewed": filtered_diff_bytes,
         },
         "reviewers": [_reviewer_manifest_entry(r) for r in dispatch_result.results],
         "synthesizer": _synthesizer_manifest_entry(synth_result),
@@ -200,6 +220,18 @@ def persist_round_manifest(
     # "reviewer worktree failed" from "diff section(s) were unidentifiable".
     if diff_filter_refusal_headers is not None:
         manifest["diff_filter_refusal_headers"] = diff_filter_refusal_headers
+
+    # present ONLY on a before-dispatch size refusal. Machine-readable discriminator
+    # for the resume planner and tooling: "diff_malformed", "diff_too_large", or
+    # "prompt_too_large". Distinct from diff_filter_refusal_headers (legacy field for
+    # diff_malformed only) so all three refusal reasons are uniformly detectable.
+    if refusal_reason is not None:
+        manifest["refusal_reason"] = refusal_reason
+
+    # present ONLY on a prompt_too_large refusal. Carries the measured assembled prompt
+    # size so tooling can tell the operator by how much and for which reviewer.
+    if oversize_prompt_chars is not None:
+        manifest["oversize_prompt_chars"] = oversize_prompt_chars
 
     manifest_path = round_dir / "manifest.json"
     atomic_write_json(manifest_path, manifest, sort_keys=False)

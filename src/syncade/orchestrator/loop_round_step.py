@@ -373,12 +373,19 @@ def _run_round_step(
         # are re-written below — findings.md and the raw *.check.* files
         # would silently disagree with summary.md / manifest.json.
         check_results=round_result.check_results,
+        filtered_diff_bytes=round_result.filtered_diff_bytes,
+        raw_diff_bytes=round_result.raw_diff_bytes,
     )
 
     # Re-write the manifest with the producer section now populated.
+    # Use round_result.snapshot (the snapshot the reviewers actually saw), not
+    # current_snapshot: on a force-drift budget-abort resume, current_snapshot
+    # reflects the drifted HEAD while round_result.snapshot was rehydrated from
+    # the completed round's persisted state. In the normal (non-resume) path the
+    # two are identical so this change is safe for both paths.
     persist_round_manifest(
         round_dir,
-        current_snapshot,
+        round_result.snapshot,
         round_result.dispatch_result,
         round_result.round_exit_code,
         started_at,
@@ -390,12 +397,14 @@ def _run_round_step(
         producer_provider=config.producer.provider,
         producer_model=config.producer.model,
         check_results=round_result.check_results,
+        filtered_diff_bytes=round_result.filtered_diff_bytes,
+        raw_diff_bytes=round_result.raw_diff_bytes,
     )
     # Re-render summary.md after the producer phase so the per-round summary
     # includes the producer section and producer-aware next-step guidance.
     persist_run_summary(
         round_dir,
-        current_snapshot,
+        round_result.snapshot,
         round_result.dispatch_result,
         round_result.round_exit_code,
         started_at,

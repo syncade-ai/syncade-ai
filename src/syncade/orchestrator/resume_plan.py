@@ -70,10 +70,15 @@ def _round_manifest_indicates_phase_failure(manifest: dict) -> bool:
     escalation, because the operator's decision now lets the round
     proceed. Either way we drop + retry rather than re-use partial state.
     """
-    # A diff_malformed round must be retried: the diff-filter refused
-    # the run before any reviewer was dispatched, so the round is
-    # incomplete. A resumed attempt may succeed if the underlying
-    # issue (malformed git path headers) is gone.
+    # A before-dispatch refusal must be retried: the run refused without dispatching
+    # any reviewer, so the round is incomplete. A resumed attempt may succeed if the
+    # underlying issue (malformed headers, oversize diff, oversize prompt) is resolved.
+    # `refusal_reason` is the unified discriminator added in PR-h-field-01 round 1;
+    # `diff_filter_refusal_headers` is the legacy per-run artifact for diff_malformed
+    # runs written before that field existed — both are checked for backward compat.
+    _refusal_reason = manifest.get("refusal_reason")
+    if _refusal_reason in {"diff_malformed", "diff_too_large", "prompt_too_large"}:
+        return True
     if manifest.get("diff_filter_refusal_headers") is not None:
         return True
     try:
