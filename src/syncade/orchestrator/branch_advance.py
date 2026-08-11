@@ -49,7 +49,7 @@ def _run_git(argv: list[str], *, cwd: Path, logger: Logger) -> SubprocessResult 
     try:
         return run_subprocess(argv, cwd=cwd, timeout=_GIT_TIMEOUT_SECONDS)
     except SubprocessError as exc:
-        logger.warning(
+        logger.safety(
             f"orchestrator: git command {argv[:2]!r} failed before completion: {exc}. "
             "The branch ref was not advanced. The loop will terminate as "
             "producer_stalled to prevent the next round from dispatching reviewers "
@@ -90,7 +90,7 @@ def _advance_branch_ref(
     if they want to keep the commits.
     """
     if snapshot.branch is None:
-        logger.warning(
+        logger.safety(
             f"orchestrator: producer committed {producer_result.ending_sha[:12]} "
             f"on a detached HEAD; the operator was on detached HEAD at "
             f"invocation, so no named branch ref to advance. The "
@@ -123,7 +123,7 @@ def _advance_branch_ref(
     if is_ancestor is None:
         return "update_ref_failed"
     if is_ancestor.returncode != 0:
-        logger.warning(
+        logger.safety(
             f"orchestrator: producer's ending SHA "
             f"({producer_result.ending_sha[:12]}) is NOT a descendant "
             f"of the round-start SHA ({producer_result.starting_sha[:12]}); "
@@ -152,7 +152,7 @@ def _advance_branch_ref(
     if update is None:
         return "update_ref_failed"
     if update.returncode != 0:
-        logger.warning(
+        logger.safety(
             f"orchestrator: git update-ref refs/heads/{snapshot.branch} "
             f"failed: {update.stderr.strip()[:200]!r}. The producer's "
             f"commits are in .git but the branch ref wasn't advanced. "

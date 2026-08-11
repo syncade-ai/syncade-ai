@@ -7,6 +7,31 @@ include breaking changes.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-08-11
+
+### Fixed
+
+- **A warning that could cost you the review's work is no longer silenced by `--quiet`.** When
+  the fixer commits, syncade advances your branch but does not touch your working tree, so
+  `git status` afterwards shows what looks like a staged revert of the work it just did —
+  committing that silently undoes the run. syncade warns about this and offers the
+  non-destructive recovery, but the warning went out at normal verbosity only, so anyone running
+  quietly saw nothing. Disclosures about where committed work ended up are now always printed:
+  that one, plus the cases where the branch could not be advanced, the fixer committed onto a
+  detached HEAD, or its commit was not a descendant of where the round started.
+
+### Changed
+
+- **The README says what the default review panel actually is, and why.** The recommended setup
+  is two OpenAI reviewers running different prompts — one standard, one adversarial — which is
+  diverse in prompt but not across model vendors. That is a measured recommendation rather than
+  a default nobody revisited: reviewing the same change in the same round, the OpenAI reviewer
+  raised roughly three times as many findings as the Anthropic one. Every reviewer, the judge
+  and the fixer remain independently configurable, so a cross-vendor panel is one setting away.
+- **What a run costs is now stated before you start one**, from measurement rather than
+  estimate, along with a short list of known limitations — including that a clean verdict is
+  evidence rather than proof, since the panel is not deterministic.
+
 ## [0.5.0] — 2026-08-11
 
 ### Fixed
@@ -343,6 +368,7 @@ Initial public release.
   (`scripts/install-skill.sh`).
 
 [Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.1.0...HEAD
+[0.5.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.5.1
 [0.5.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.5.0
 [0.4.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.4.0
 [0.3.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.3.0

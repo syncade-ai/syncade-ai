@@ -55,6 +55,27 @@ class Logger:
     def warning(self, message: str) -> None:
         self._emit_warning(f"warning: {message}")
 
+    def safety(self, message: str) -> None:
+        """A disclosure about the DISPOSITION OF COMMITTED WORK — never suppressed (PR-h-13).
+
+        `--quiet` is for progress, not for safety. The class this exists for is narrow and
+        answerable in one sentence: *where did the producer's commits go, and is my tree
+        consistent with that?* A branch that did or did not advance, a commit stranded on a
+        detached HEAD, a non-descendant ending SHA, a failed `update-ref` — and above all the
+        working tree left holding a fully STAGED REVERT of the producer's work, where the
+        operator's next `git commit` silently undoes the run.
+
+        That last one is not hypothetical: it happened twice in one session on 2026-08-10, with
+        the warning visible and an experienced operator driving. Under `--quiet` there would
+        have been nothing at all. The auth block and the default-branch disclosure already
+        bypass quiet for the same reason; this gives that rule a name instead of a hand-rolled
+        `print` at each site.
+
+        Deliberately NOT this class: dirty-tree and untracked-file notes, resume-drift notes,
+        auto-prune failures. They describe the run, not the fate of work already committed.
+        """
+        self._emit_err(f"warning: {message}")
+
     def event(self, message: str, *, error: bool = False) -> None:
         if error:
             self._emit_err(message)

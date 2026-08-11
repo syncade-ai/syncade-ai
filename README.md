@@ -1,6 +1,6 @@
 # syncade
 
-**A blind, cross-model review loop that catches and fixes the bugs your coding agent can't see in
+**A blind, multi-judge review loop that catches and fixes the bugs your coding agent can't see in
 its own work.**
 
 syncade reviews your changes with a panel of blind reviewers that share none of the context, prompt,
@@ -28,10 +28,13 @@ syncade attacks the code from outside that failure distribution:
 - **Blind and isolated.** Reviewers run as fresh CLI subprocesses with zero shared context: not your
   session, not each other, not the producer's narrative. They start from the diff and the spec, so the
   gap between the two is visible to them and invisible to whatever wrote the code.
-- **Cross-prompt and cross-model by design.** A bug survives only if every judge misses it. Independent
-  reviewers running different prompts (a standard pass and an adversarial one) and different models
-  from different labs have far less overlap in what they miss, so the surviving set shrinks toward
-  zero.
+- **Diverse judges by design.** A bug survives only if every judge misses it, so the reviewers are
+  deliberately not interchangeable. Out of the box you get **cross-prompt** diversity — a standard
+  reviewer and an adversarial one, same model, different instructions — and that alone is worth
+  more than it sounds. Across **341 runs on this codebase over ten weeks**, the panel raised 407
+  blocking findings — and **56% of them were caught by only one of the two reviewers** (126 by the
+  adversarial one, 101 by the standard one). Drop either and you lose half, and not the same half.
+  Every actor is independently configurable, so **cross-model / cross-lab** is one setting away.
 - **It finds and fixes.** On a no-ship verdict a producer attempts the fix and commits, then the loop
   runs again, converging to a shippable state instead of just handing you a report.
 - **The verdict is mechanical.** Ship or no-ship is an exit code computed from the consolidated
@@ -77,6 +80,15 @@ deliberately; it still lists what it destroys.
 - `git`. (`lsof` is optional — only `syncade --gc` uses it.)
 
 Check your setup any time with `syncade --doctor`.
+
+**What a run costs.** Measured across 90 priced runs on this repo: **median $4.42**, 90th
+percentile **$15.63**, worst observed **$35.50**. A clean single-round review lands nearer $2;
+the expensive tail is multi-round loops where a producer rewrites code each round. If your
+`claude` / `codex` CLIs are signed in to a subscription the marginal cost is **$0** — that is how
+every run in this project has been paid for, which is precisely why these numbers are easy to
+forget. On API billing it is real money. `syncade --doctor` previews the cost of the run you are
+about to start, and `--budget-usd N` (or `[loop] budget_usd`) stops the loop at a ceiling instead
+of reporting the damage afterwards.
 
 ## Quick start
 
@@ -125,11 +137,18 @@ of the box. And every actor is now fully configurable: set the provider and mode
 **cross-model / cross-lab** (e.g. one OpenAI reviewer + one Anthropic reviewer) whenever you want a
 second lab's perspective.
 
-**We recommend `codex` (OpenAI) models as your blind reviewers.** In our own dogfooding they review
-harder and ship less leniently than the alternatives — we offlined an Anthropic reviewer and reverted
-a `gpt-5.6` panel after both audited too leniently. So the recommended default stays two codex
-reviewers; reach for cross-model deliberately, not by
-default.
+**We recommend `codex` (OpenAI) models as your blind reviewers.** Not a shrug at the alternatives —
+a measurement. On mixed panels in our own dogfooding, reviewing the *same diff in the same round*,
+the OpenAI reviewer raised **1.18 findings per reviewer-round against the Anthropic reviewer's
+0.38**; across the whole corpus it is 6.37 findings per run against 0.57. We offlined an Anthropic reviewer and reverted a
+`gpt-5.6` panel after both audited too leniently.
+
+Read that with its limits: one codebase, one language, and a small Anthropic sample (13
+reviewer-rounds). Fewer findings is not automatically worse — it can mean fewer false positives —
+so the leniency reading rests on the two reversals as much as on the ratio. It is enough for a
+default, not enough for a law. Reach for cross-model deliberately; the config is there precisely
+so you can test that recommendation against your own repo, and we would like to hear if it does
+not hold.
 
 ## The verdict is an exit code
 
@@ -210,6 +229,27 @@ syncade runs AI coding-agent CLIs with **elevated tool access on your repo**:
 Running syncade is comparable to running the target repo's `Makefile` — it executes code
 with your permissions. See **[SECURITY.md](SECURITY.md)** for the full threat model and how
 to report a vulnerability.
+
+## Known limitations
+
+Early access. These are measured, not suspected.
+
+- **A clean verdict is evidence, not proof.** The panel is not deterministic: on two runs 25
+  minutes apart over byte-identical code, one raised two blockers and the other shipped clean.
+  Both findings were real. If a SHIP arrives over code you did not change since a NO-SHIP, treat
+  it as the weaker signal — compare the verdict to what the *code* changed, not to the previous
+  verdict.
+- **NO-SHIP runs keep their worktrees.** They are preserved so you can inspect what a reviewer
+  saw, and `syncade --gc` deliberately will not reclaim a run that is still resumable — so
+  `<worktree_base>` grows, and each worktree is a full checkout. It reached 4.4 GB on this
+  machine before a cleanup. Point `worktree_base` somewhere you do not mind, delete old run
+  directories once you are done with them, and run `git worktree prune` afterwards: removing the
+  directory does not remove git's registration of it.
+- **The producer commits to your current branch.** That is the design — it fast-forwards only,
+  refuses the default branch without `--allow-default-branch`, and prints every commit it made.
+  Your working tree is *not* updated to match, so `git status` afterwards shows what looks like a
+  staged revert; sync with `git stash && git reset --hard HEAD && git stash pop` rather than
+  committing it. syncade warns about this and the warning is not suppressible.
 
 ## Development
 

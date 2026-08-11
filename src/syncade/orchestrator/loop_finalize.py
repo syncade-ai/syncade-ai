@@ -37,8 +37,13 @@ def _warn_branch_advanced(*, branch: str, repo_root, logger) -> None:
 
     Shared by the normal finalize tail and the early ``test_worktree_error``
     re-raise path so the operator hears the identical message on both (N3).
+
+    Uses ``logger.safety``, not ``logger.warning``: under ``--quiet`` this was suppressed
+    entirely (PR-h-13), and it is the ONLY thing standing between an operator and a
+    ``git commit`` that silently reverts the producer's work — the tree still holds the
+    pre-advance content, so `git status` shows a fully staged revert.
     """
-    logger.warning(
+    logger.safety(
         f"orchestrator: branch refs/heads/{branch} "
         f"has been advanced to the latest producer commit, "
         f"but your working tree at {repo_root} is NOT "
