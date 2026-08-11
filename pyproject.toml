@@ -1,10 +1,15 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# 77.0.1, not 68 (PR-h-10 item 4). The old floor was a declared claim nobody had run: this
+# project uses PEP 639 (`license = "Apache-2.0"` as an SPDX expression plus `license-files`),
+# which setuptools only understands from 77.0.0. Measured — 76.1.0 aborts the build with
+# "`project.license` must be valid exactly by one definition", 77.0.1 produces both the sdist
+# and the wheel. 77.0.0 itself does not exist on PyPI, so 77.0.1 is the true minimum.
+requires = ["setuptools>=77.0.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "syncade"
-version = "0.4.0"
+version = "0.5.0"
 description = "External blind multi-judge review orchestrator for AI-assisted coding"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -40,7 +45,12 @@ Issues = "https://github.com/syncade-ai/syncade-ai/issues"
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.5.0",
+    # Bounded to the 0.15 series (PR-h-10 item 4). ruff is pre-1.0 and its FORMATTER changes
+    # between minors, so an open lower bound makes `ruff format --check` non-deterministic: a
+    # release can turn `main` red with no code change, and the old floor was not merely loose
+    # but wrong — measured, ruff 0.5.0 reports 204 lint errors and would reformat 76 files on
+    # this tree. Both ends of this range are verified clean. Raise it deliberately.
+    "ruff>=0.15.0,<0.16.0",
 ]
 
 [project.scripts]

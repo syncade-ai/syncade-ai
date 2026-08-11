@@ -7,6 +7,56 @@ include breaking changes.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-11
+
+### Fixed
+
+- **`--install-skill` no longer destroys files it did not write.** It replaced the whole
+  destination directory: measured on a real skill folder, a hand-edited `SKILL.md` was
+  overwritten and two unrelated files were deleted — at exit 0, with no prompt, warning or
+  backup.
+
+  It now checks first, and refuses (exit 60) if installing would lose anything, naming every
+  file and what would happen to it. `--force-install` overrides that deliberately and still
+  lists what it destroys.
+
+  Deciding what is yours is done by **content**, not by filename or a marker file: syncade
+  records the checksum of every file it writes, so a file it wrote in an older version is
+  recognised and an ordinary upgrade needs no flag, while anything else is treated as yours.
+  A missing or damaged record makes it more cautious, never less. Installing for both
+  harnesses at once is all-or-nothing — a failure on one no longer leaves the other
+  half-upgraded, and syncade refuses outright if your two harness directories are the same
+  or one sits inside the other, since installing both would have one write into the other. A destination that is a symlink to your own checkout is still replaced as
+  documented; a symlink you created *inside* the destination is now treated as yours.
+
+- **Declared dependency floors are now the versions that actually work.** The build
+  requirement said `setuptools>=68`, which cannot build this project at all — the license
+  metadata format it uses needs 77 or newer, so an environment resolving to the declared
+  floor failed outright. `pydantic>=2.0` was also untrue in practice: one configuration
+  default was an integer where the schema says float, which older pydantic warns about, and
+  syncade's own test leg treats warnings as errors. The default is now a float, and CI
+  installs the declared floors on every run so a floor that stops working is a build failure
+  rather than a surprise for whoever installs from source.
+
+- **`ruff` is bounded to a tested range.** It was declared with no upper bound, so a new
+  release could fail the formatting check with no code change.
+
+- **Continuous integration reports again.** Every gate ran as a sequential step in one job,
+  so the first failure stopped the rest: a single test-fixture bug meant linting, formatting,
+  the file-length cap and both leak checks had not executed on any push since this repository
+  went public. Gates are now independent jobs, and each reports its own result.
+
+- **The documentation no longer implies syncade is on PyPI.** The bundled skill guides said
+  installation works from `pip install syncade`; it does not — install from the repository as
+  the README shows.
+
+### Removed
+
+- **`scripts/install-skill.sh`.** `syncade --install-skill` is the supported installer and
+  the only one that was ever published; the shell copy was a dev-only convenience that had
+  to be taught every safety rule twice.
+
+
 ## [0.4.0] — 2026-08-09
 
 Don't hurt the operator, and don't throw away work you already paid for. Two themes: a
@@ -293,4 +343,11 @@ Initial public release.
   (`scripts/install-skill.sh`).
 
 [Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.1.0...HEAD
+[0.5.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.5.0
+[0.4.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.4.0
+[0.3.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.3.0
+[0.2.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.2.0
 [0.1.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.1.0
+<!-- 0.2.0 - 0.4.0 shipped as commits and were TAGGED RETROSPECTIVELY in PR-h-10 item 6, at
+     the commits whose pyproject carried each version. Two public commits are titled
+     "syncade v0.2.0"; the later one is the tag target. -->

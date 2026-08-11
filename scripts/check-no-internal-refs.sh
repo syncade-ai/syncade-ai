@@ -63,6 +63,7 @@ tierA="$( { git grep -niE -e "$tierA_pattern" -- . "${tierA_exclude[@]}"; \
             git grep -niE -e "$tierA_pattern" -- docs/config-reference.md; } | sort -u || true )"
 report "DANGLING reference to an EXCLUDED (unshipped) file in a shipped file:" "$tierA"
 
+
 # --- Tier B: internal PR-number citations, banned in user-facing docs + skill bundles -----------
 tierB_pattern='PR-v2-[0-9]|pr-v2-[0-9]|PR-[0-9]|pr-[0-9]|PR #[0-9]'
 tierB_paths=(
@@ -72,6 +73,36 @@ tierB_paths=(
 )
 tierB="$(git grep -niE -e "$tierB_pattern" -- "${tierB_paths[@]}" | sort -u || true)"
 report "INTERNAL PR-number reference in a user-facing doc / skill bundle:" "$tierB"
+
+# --- Tier A2: references to a scripts/ path that is NOT IN THIS TREE ------------------------------
+# The pattern above is a hand-maintained list of doc paths, so it only catches what someone
+# thought to add. It missed two real dangling refs in one PR: CONTRIBUTING.md told public
+# contributors to run scripts/check-no-private-identifiers.sh, which is dev-repo-only, and the
+# first fix for that named scripts/oss-release.sh, which does not ship either.
+#
+# This needs no list. In snapshot mode the tree IS the public snapshot, so any scripts/ path
+# named by a USER-FACING file either exists here or is a promise the reader cannot keep. Skipped
+# on the dev tree, where every script legitimately exists.
+#
+# Scoped to the same paths as tier B, and for the same reason already recorded there: in src/
+# and tests/ a scripts/ path is usually test DATA or maintainer context (a fixture command like
+# `scripts/check.sh`, a docstring naming the dev tooling), not an instruction anyone will follow.
+# Widening it there produced exactly those false positives.
+if [ -n "${SYNCADE_OSS_SNAPSHOT:-}" ]; then
+  tierA2=""
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    file="${hit%%:*}"
+    for ref in $(printf '%s\n' "$hit" | grep -oE 'scripts/[A-Za-z0-9._-]+\.(sh|py)' | sort -u); do
+      [ -e "$ref" ] || tierA2="${tierA2}${file}: references missing ${ref}"$'\n'
+    done
+    # CHANGELOG is exempt: announcing a REMOVAL has to name the thing removed, and
+    # "scripts/install-skill.sh was deleted" is a true statement about a file that is
+    # correctly absent — the opposite of a promise the reader cannot keep.
+  done < <(git grep -nE 'scripts/[A-Za-z0-9._-]+\.(sh|py)' -- "${tierB_paths[@]}" ':!CHANGELOG.md' || true)
+  report "Shipped file references a scripts/ path absent from the snapshot:" \
+    "$(printf '%s' "$tierA2" | sort -u)"
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo "FAIL: scrub internal dev references before any public push." >&2

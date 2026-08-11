@@ -37,7 +37,12 @@ class LoopConfig(BaseModel):
         ),
     )
     timeout_seconds: float = Field(
-        default=1800,
+        # 1800.0, not 1800: the annotation says float, and an int default makes pydantic 2.0
+        # emit a serializer warning on every `config.model_dump()` ("Expected `float` but got
+        # `int`"). Harmless in isolation, fatal in context — the loop's own test leg runs
+        # `pytest -W error`, so at the declared floor that one int turned 279 tests red while
+        # the dev machine (pydantic 2.13) saw nothing (PR-h-10 item 4).
+        default=1800.0,
         gt=0,
         description="Per-subprocess wall-clock timeout in seconds. The fallback "
         "wall-clock cap for every leg: each reviewer, the judge, the test run, "

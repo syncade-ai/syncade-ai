@@ -6,9 +6,24 @@ on:
     branches:
       - main
 
+# THREE JOBS, NOT ONE (PR-h-10 item 2). This was a single job whose gates were sequential
+# steps, so the first failure ended the run: one test-fixture bug kept ruff, the formatter,
+# compileall, the LOC cap, BOTH leak gates and the whitespace check from executing on every
+# push since the repo went public. A gate that cannot report is not a gate.
+#
+# The split follows what each gate actually depends on, which also stops the
+# version-independent gates from running once per Python:
+#
+#   tests       the only gate that needs the version matrix
+#   static      needs the installed package + dev tools, but only one Python
+#   repo-gates  needs neither -- git, awk and stdlib python3 only, so no install at all
+#
+# Within a job the gate steps carry `if: ${{ !cancelled() }}` so a failure still lets its
+# siblings report. Setup steps deliberately do NOT: if the install fails there is nothing
+# meaningful to lint.
 jobs:
-  non-smoke:
-    name: non-smoke gates (py${{ matrix.python-version }})
+  tests:
+    name: tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -21,44 +36,198 @@ jobs:
       UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Install package and dev tools
         run: |
           uv venv --seed
           uv pip install -e ".[dev]"
 
+      # No PRIVATE_IDENTIFIERS secret here. The gate's BEHAVIOURAL tests generate their own
+      # one-off token list, so they run everywhere; only the "gate source carries no real token"
+      # test needs the operator's list and skips without it.
+      #
+      # An earlier version of this comment claimed the suite runs in oss-release.sh. It does not:
+      # oss-release runs pytest INSIDE the staged snapshot, which excludes oss-scrub.py, so this
+      # module's skipif suppressed all 8 tests there. A blind reviewer caught the false claim.
       - name: Run non-smoke tests
         run: uv run python -m pytest -q
 
+  static:
+    name: static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Install package and dev tools
+        run: |
+          uv venv --seed
+          uv pip install -e ".[dev]"
+
       - name: Run ruff lint
+        if: ${{ !cancelled() }}
         run: uv run ruff check .
 
       - name: Check ruff formatting
+        if: ${{ !cancelled() }}
         run: uv run ruff format --check .
 
       - name: Compile source
+        if: ${{ !cancelled() }}
         run: uv run python -m compileall -q src
 
+  # A declared floor nobody installs is a guess (PR-h-10 item 4). Both of this project's were
+  # wrong: `setuptools>=68` could not build it at all (PEP 639 needs 77+), and `pydantic>=2.0`
+  # emitted a serializer warning that `-W error` turned into 279 failures. `--resolution
+  # lowest-direct` derives the floors from pyproject rather than restating them, so this leg
+  # cannot drift from what the package claims.
+  #
+  # `-W error` deliberately: the loop's own test leg runs with it, and running anything laxer
+  # here is how a warning that breaks a real review stays invisible in CI.
+  oldest-deps:
+    name: oldest supported deps (py3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Install at the declared floors
+        run: |
+          uv venv --seed
+          uv pip install --resolution lowest-direct -e ".[dev]"
+
+      # `uv run` RE-SYNCS the environment from pyproject/[dependency-groups] before executing,
+      # which silently reinstalls the newest allowed versions and undoes the floor install
+      # above -- measured, this leg reported pydantic==2.13.4 / pytest==9.1.1 while claiming to
+      # test 2.0 / 8.0.0, i.e. it was green having tested nothing it advertised. Call the venv's
+      # interpreter directly so what is installed is what runs.
+      - name: Report the versions actually under test
+        if: ${{ !cancelled() }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import importlib.metadata as m
+          for p in ("pydantic", "pytest", "ruff"):
+              print(f"{p}=={m.version(p)}")
+          PY
+
+      - name: Fail if the floors were not actually installed
+        if: ${{ !cancelled() }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import importlib.metadata as m, sys, tomllib
+          spec = tomllib.load(open("pyproject.toml", "rb"))
+          declared = spec["project"]["dependencies"] + spec["project"]["optional-dependencies"]["dev"]
+          floors = {}
+          for req in declared:
+              name = req.split(">=")[0].split("<")[0].split("==")[0].strip()
+              if ">=" in req:
+                  floors[name] = req.split(">=")[1].split(",")[0].strip()
+          # Compare as padded int tuples: "8.0" and "8.0.0" are the same version, and a string
+          # compare would report a false mismatch and make this assertion useless noise.
+          def norm(v):
+              parts = [int(x) for x in v.split(".") if x.isdigit()]
+              return tuple((parts + [0, 0, 0])[:3])
+          bad = {n: (want, m.version(n)) for n, want in floors.items()
+                 if norm(m.version(n)) != norm(want)}
+          if bad:
+              print("NOT at declared floor (want, got):", bad, file=sys.stderr)
+              sys.exit(1)
+          print("confirmed at declared floors:", floors)
+          PY
+
+      - name: Run tests with warnings as errors
+        if: ${{ !cancelled() }}
+        run: .venv/bin/python -m pytest -W error -q
+
+      - name: Run ruff lint at the floor
+        if: ${{ !cancelled() }}
+        run: .venv/bin/ruff check .
+
+      - name: Check ruff formatting at the floor
+        if: ${{ !cancelled() }}
+        run: .venv/bin/ruff format --check .
+
+  repo-gates:
+    name: repo gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the whitespace gate below has something to compare against.
+          fetch-depth: 0
+
       - name: Check file length gate
+        if: ${{ !cancelled() }}
         run: scripts/check-loc.sh 500
 
-      - name: Check for private identifiers (leak gate)
-        run: scripts/check-no-private-identifiers.sh
+      # NOTE: check-no-private-identifiers.sh is deliberately NOT run here (PR-h-10 items 1-2).
+      # Since item 1 it reads an UNTRACKED token list, and a runner can only hold one by putting
+      # those identifiers into GitHub's secret store — the opposite of the point, and more so
+      # because one of the two is a CLIENT's project name, not the operator's. It is enforced
+      # where that is sufficient: scripts/oss-release.sh runs it on the dev tree before
+      # publishing, and that is the ONLY path to the public repo. The trade is feedback latency,
+      # not coverage. A producer re-added a secret-based gate here three rounds running because
+      # the brief still demanded it; the brief has been corrected.
 
       # On the dev tree this verifies the PUBLIC SNAPSHOT this tree would produce (it stages +
       # scrubs, then scans). It was the only repo gate missing from CI, because before PR-h-03
       # item 7 a raw dev-tree scan was unavoidably red.
       - name: Check for internal references (public leak gate)
+        if: ${{ !cancelled() }}
         run: scripts/check-no-internal-refs.sh
 
+      # `git diff --check` with no arguments compares the WORKING TREE to the index, and a fresh
+      # checkout has no unstaged changes — so on a runner it could only ever pass. It has been a
+      # gate protecting nothing (found while splitting the jobs in item 2). Check the range this
+      # push or PR actually contributes:
+      #   - pull_request: merge-base of the PR's base branch (covers the whole PR diff)
+      #   - push: github.event.before (covers all commits in the push, not just the last one)
+      #   - fallback: merge-base of origin/main, then HEAD~1 if we ARE origin/main
+      # Using HEAD~1 as the fallback for push-to-main was a false green for multi-commit pushes —
+      # it checked only the final commit while earlier commits in the same push could carry
+      # trailing whitespace.
       - name: Check whitespace errors
-        run: git diff --check
+        if: ${{ !cancelled() }}
+        env:
+          BEFORE_SHA: ${{ github.event.before || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          if [ -n "$PR_BASE_SHA" ]; then
+            base=$(git merge-base "$PR_BASE_SHA" HEAD 2>/dev/null || true)
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && \
+               git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            base="$BEFORE_SHA"
+          else
+            base=$(git merge-base origin/main HEAD 2>/dev/null || true)
+          fi
+          if [ -z "$base" ] || [ "$base" = "$(git rev-parse HEAD)" ]; then
+            base=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+          fi
+          echo "checking $base..HEAD"
+          git diff --check "$base" HEAD

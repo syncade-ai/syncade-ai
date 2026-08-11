@@ -518,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.install_skill is not None:
         from syncade.cli.install_skill import install_skill
 
-        return install_skill(args.install_skill)
+        return install_skill(args.install_skill, force=args.force_install)
     if args.config is not None:
         from syncade.cli.config_mode import run_config
 

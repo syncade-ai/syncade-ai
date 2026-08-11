@@ -60,3 +60,6 @@ htmlcov/
 # may extract this to a separate marketplace/distribution repo; until
 # then the skill markdown ships in-tree.
 !.claude/skills/
+
+# Private-identifier list for the pre-publish leak gate — never tracked.
+.private-identifiers

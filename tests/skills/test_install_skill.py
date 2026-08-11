@@ -3,21 +3,11 @@ wheel-bundled copies stay in sync with the canonical ones (PR-v2-26 items 6 + E)
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
 _REPO = Path(__file__).resolve().parents[2]
-_SCRIPT = _REPO / "scripts" / "install-skill.sh"
-
-# The convenience shell installer is dev-only and is not part of the pip-installable package
-# (`syncade --install-skill`, covered below, is the shipped installer). Skip its tests wherever the
-# script is absent — e.g. the public release tree — so the suite stays green there.
-_needs_script = pytest.mark.skipif(
-    not _SCRIPT.exists(),
-    reason="scripts/install-skill.sh not present (dev-only convenience installer)",
-)
 
 
 @pytest.mark.parametrize("name", ["SKILL.md", "README.md"])
@@ -36,49 +26,6 @@ def test_bundled_skill_matches_canonical(harness, canonical, name):
     )
 
 
-def _run(target: str, home: Path, codex_home: Path | None = None):
-    env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
-    if codex_home is not None:
-        env["CODEX_HOME"] = str(codex_home)
-    return subprocess.run(
-        [str(_SCRIPT), target], capture_output=True, text=True, env=env, cwd=str(_REPO)
-    )
-
-
-@_needs_script
-def test_installs_both_harnesses(tmp_path):
-    home, codex_home = tmp_path / "home", tmp_path / "codex"
-    r = _run("all", home, codex_home)
-    assert r.returncode == 0, r.stderr
-    claude_skill = home / ".claude" / "skills" / "syncade" / "SKILL.md"
-    codex_skill = codex_home / "skills" / "syncade" / "SKILL.md"
-    assert claude_skill.is_file() and codex_skill.is_file()
-    # content is the repo's canonical skill, not a stub
-    assert claude_skill.read_text() == (_REPO / ".claude/skills/syncade/SKILL.md").read_text()
-
-
-@_needs_script
-def test_codex_home_defaults_to_dot_codex(tmp_path):
-    # No CODEX_HOME → must fall back to $HOME/.codex.
-    r = _run("codex", tmp_path)
-    assert r.returncode == 0, r.stderr
-    assert (tmp_path / ".codex" / "skills" / "syncade" / "SKILL.md").is_file()
-
-
-@_needs_script
-def test_idempotent_reinstall(tmp_path):
-    assert _run("claude", tmp_path).returncode == 0
-    assert _run("claude", tmp_path).returncode == 0  # second run must not fail
-    assert (tmp_path / ".claude" / "skills" / "syncade" / "SKILL.md").is_file()
-
-
-@_needs_script
-def test_unknown_target_fails(tmp_path):
-    r = _run("bogus", tmp_path)
-    assert r.returncode != 0
-    assert "unknown target" in r.stderr.lower()
-
-
 # --- the `syncade --install-skill` subcommand (item E: pip-friendly, no checkout) ---
 
 
@@ -93,6 +40,25 @@ def test_subcommand_installs_from_bundled_package(tmp_path, monkeypatch):
     assert claude.is_file() and codex.is_file()
     # content is the bundled package copy
     assert claude.read_text() == (_REPO / "src/syncade/skills/claude/SKILL.md").read_text()
+
+
+def test_subcommand_reinstall_is_idempotent(tmp_path, monkeypatch):
+    """Ported from the shell installer's test when that script was deleted (PR-h-04.5 item 1).
+
+    It was the ONE behaviour the shell suite covered that the shipped installer did not, so
+    deleting the script without this would have quietly reduced coverage while claiming a
+    cleanup.
+    """
+    from syncade.cli.install_skill import install_skill
+
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    home, codex_home = tmp_path / "home", tmp_path / "cx"
+
+    assert install_skill("claude", home=home, codex_home=codex_home) == 0
+    assert install_skill("claude", home=home, codex_home=codex_home) == 0, (
+        "a second install of an unmodified destination must succeed"
+    )
+    assert (home / ".claude" / "skills" / "syncade" / "SKILL.md").is_file()
 
 
 def test_subcommand_codex_home_defaults_under_home(tmp_path, monkeypatch):

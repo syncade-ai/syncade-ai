@@ -62,6 +62,12 @@ Then install the harness integration so you can invoke it as `/syncade`:
 syncade --install-skill        # Claude Code + Codex; or: --install-skill claude | codex
 ```
 
+Installing **refuses rather than overwrites**. If anything in the destination is not something
+syncade wrote — a skill you hand-edited, an unrelated file you keep there — it exits without
+touching the directory and names every file at risk. Ordinary upgrades need no flag: syncade
+recognises its own past output by content, not by filename. Use `--force-install` to overwrite
+deliberately; it still lists what it destroys.
+
 **Requirements**
 - **Python 3.11+**, on **macOS or Linux** (on Windows, use WSL).
 - **`codex`** (OpenAI), on your `PATH` and authenticated — required for the default

@@ -201,8 +201,9 @@ when you work inside this repo.
 syncade --install-skill claude      # copies it to ~/.claude/skills/syncade/
 ```
 
-This works from a plain `pip install syncade` (the skill is bundled in the
-package). Skills load at session start, so restart Claude Code (or open a session
+This works from any installed copy of syncade (the skill ships inside the
+package) — `pip install .` from a checkout, or `pip install git+<repo-url>`.
+syncade is not published on PyPI. Skills load at session start, so restart Claude Code (or open a session
 in the target project) to pick it up. The `syncade` CLI it shells out to must be on
 your `PATH`. Developers who want the installed skill to track a checkout can
 `ln -sfn "$PWD/.claude/skills/syncade" ~/.claude/skills/syncade` instead.

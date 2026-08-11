@@ -414,7 +414,16 @@ class TestAdversarialReviewFindings:
         sub_v2_sha = _commit(sub_repo, {"x.py": "v2\n"}, "sub-v2")
         _git(outer / "sub", "fetch", "-q", "origin")
         _git(outer / "sub", "checkout", "-q", sub_v2_sha)
-        _git(outer, "add", "sub")
+        # `ignore = all` hides the gitlink from porcelain, and HOW COMPLETELY IS VERSION-DEPENDENT:
+        # git 2.50 still stages it via `git add` (merely hiding it from `git diff --cached`), while
+        # git 2.54 stages nothing and the commit dies with "nothing to commit, working tree clean".
+        # That is why this passed on a developer's machine and failed on every CI runner.
+        # `-c submodule.sub.ignore=none` does NOT rescue it — measured, still nothing staged.
+        #
+        # Write the gitlink with plumbing, which no ignore setting can suppress. Staging the bump
+        # is SETUP, not the claim: the claim is that `take_snapshot` refuses to be silenced by
+        # `ignore = all`, and the committed `.gitmodules` carrying it is untouched.
+        _git(outer, "update-index", "--add", "--cacheinfo", f"160000,{sub_v2_sha},sub")
         _git(outer, "commit", "-m", "bump sub")
 
         snap = take_snapshot(outer, base_ref=base)

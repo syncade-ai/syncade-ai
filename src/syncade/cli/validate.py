@@ -160,6 +160,14 @@ def validate_command_shape(args, parser) -> int | None:
         )
         return CLI_USAGE_ERROR
     # --force-drift only has meaning during resume.
+    if args.force_install and args.install_skill is None:
+        print(
+            "[syncade] error: --force-install requires --install-skill; it overrides the "
+            "installer's refusal to destroy files it did not write, and has no meaning "
+            "outside that context",
+            file=sys.stderr,
+        )
+        return CLI_USAGE_ERROR
     if args.force_drift and not args.resume:
         print(
             "[syncade] error: --force-drift requires --resume; it "

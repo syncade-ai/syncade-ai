@@ -314,7 +314,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Install the bundled /syncade Agent Skill into your harness skill "
         "directories (~/.claude/skills and $CODEX_HOME/skills), then exit. Works from a "
         "pip install (no checkout needed). Default target 'all'; pass 'claude' or 'codex' "
-        "to install just one.",
+        "to install just one. REFUSES (exit 60) if the destination holds files syncade did "
+        "not write — an edited SKILL.md, or anything else you put there — naming each one "
+        "instead of destroying it.",
+    )
+    parser.add_argument(
+        "--force-install",
+        action="store_true",
+        help="With --install-skill only: overwrite a destination that holds files syncade "
+        "did not write. The casualties are still listed; this is informed consent, not a "
+        "safe mode. Without --install-skill, passing it is a CLI error (exit 2).",
     )
     parser.add_argument(
         "--config",

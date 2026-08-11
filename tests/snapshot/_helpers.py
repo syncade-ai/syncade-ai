@@ -11,15 +11,27 @@ import subprocess
 from pathlib import Path
 
 
+class GitCommandError(subprocess.CalledProcessError):
+    """``CalledProcessError`` that actually shows what git said.
+
+    ``check=True`` with piped output discards exactly the text explaining WHY: a CI-only
+    failure surfaced as a bare ``returned non-zero exit status 1``, with no way to tell
+    "nothing to commit" from a protocol refusal. That cost a diagnosis round (PR-h-10 item 3).
+
+    Subclassing rather than raising something new keeps ``except subprocess.CalledProcessError``
+    working — ``test_snapshot.py`` relies on it to skip when git lacks sha256 support.
+    """
+
+    def __str__(self) -> str:
+        return f"{super().__str__()}\n--- stdout ---\n{self.stdout}--- stderr ---\n{self.stderr}"
+
+
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     """Run a git command in ``repo`` and return the completed process."""
-    return subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=check,
-    )
+    proc = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+    if check and proc.returncode != 0:
+        raise GitCommandError(proc.returncode, proc.args, proc.stdout, proc.stderr)
+    return proc
 
 
 def _init_repo(repo_path: Path) -> None:

@@ -1,0 +1,212 @@
+name: release
+
+# Tag-triggered, because a release should be a thing you can point at. Until PR-h-10 item 6
+# there was no release workflow at all: releases were a hand-run shell script, three of the four
+# shipped versions were never tagged, and nothing ever install-tested the artifact anyone would
+# actually download.
+#
+# It does NOT publish to PyPI. syncade is not on PyPI, and shipping metadata implying otherwise
+# was the false claim this item removed; adding the upload later is one job, gated on a decision
+# to claim the name.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # sigstore, for build provenance
+  attestations: write
+
+# NOTE the contrast with ci.yml, which puts `if: ${{ !cancelled() }}` on its gate steps so one
+# failure still lets the others report. That is right for gates and WRONG here: this pipeline
+# publishes. An earlier version copied the pattern, and a run whose attestation failed went on to
+# create the GitHub Release anyway — an unattested artifact, published. Release steps therefore
+# use default fail-fast semantics: nothing after a failure runs, so nothing unverified ships.
+jobs:
+  release:
+    name: build, verify and publish the artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the whitespace gate compares against origin/main and needs ancestors,
+          # and check-no-internal-refs.sh stages + scrubs which may walk the working tree.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      # This repo has SHIPPED THE WRONG VERSION TWICE — two separate public commits are both
+      # titled "syncade v0.2.0" because pyproject was not bumped. A tag that disagrees with the
+      # package it builds is not a release, so refuse before building anything.
+      - name: Refuse if the tag and pyproject disagree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')"
+          echo "tag=$tag pyproject=$pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $pkg" >&2
+            exit 1
+          fi
+
+      - name: Install package and dev tools
+        run: |
+          uv venv --seed
+          uv pip install -e ".[dev]"
+
+      # Build FIRST so that every gate below runs against the exact source that went into the
+      # artifact. Gating the source checkout before building means packaging could hypothetically
+      # include different content without any gate catching it. After building we extract the sdist
+      # (a tarball of the source that went in) and run all static gates against those exact files.
+      - name: Build sdist and wheel
+        run: uv build --out-dir dist
+
+      # Extract the sdist so the static gates below can target the artifact's own source tree,
+      # not the working-tree checkout. The sdist has a single top-level directory; --strip-components
+      # removes it so /tmp/sdist-src/src/ is the src/ that is in the artifact.
+      - name: Extract sdist source for artifact gating
+        run: |
+          mkdir -p /tmp/sdist-src
+          tar xf dist/*.tar.gz -C /tmp/sdist-src --strip-components=1
+
+      - name: Run ruff lint on artifact source
+        run: .venv/bin/ruff check /tmp/sdist-src/src/
+
+      - name: Check ruff formatting of artifact source
+        run: .venv/bin/ruff format --check /tmp/sdist-src/src/
+
+      - name: Compile artifact source
+        run: .venv/bin/python -m compileall -q /tmp/sdist-src/src/
+
+      # LOC gate uses git ls-files (needs the repo), so it runs from the working tree — the same
+      # Python files as the sdist for this project (no code generation happens at build time).
+      - name: Check file length gate
+        run: scripts/check-loc.sh 500
+
+      # No private-identifier gate here. It is dev-repo-only (it needs oss-stage.sh) and its
+      # token list is untracked, so a runner could only hold one via a secret — declined, since
+      # one of the two identifiers is a client's. oss-release.sh runs it on the dev tree before
+      # anything reaches the public repo, which is the only path there.
+
+      - name: Check for internal references (public leak gate)
+        run: scripts/check-no-internal-refs.sh
+
+      - name: Check whitespace errors
+        env:
+          BEFORE_SHA: ${{ github.event.before || '' }}
+        run: |
+          # For tag pushes github.event.before is all-zeros (new tag) or a prior tag SHA.
+          # Use it when it resolves to a real commit; otherwise fall back to origin/main merge-base.
+          if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && \
+             git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            base="$BEFORE_SHA"
+          else
+            base=$(git merge-base origin/main HEAD 2>/dev/null || true)
+          fi
+          if [ -z "$base" ] || [ "$base" = "$(git rev-parse HEAD)" ]; then
+            base=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+          fi
+          echo "checking $base..HEAD"
+          git diff --check "$base" HEAD
+
+      # Swap the editable install for the wheel and run the full test suite. This proves the
+      # artifact (not just the source tree) is importable and correct — data-file gaps, missing
+      # entry points, and packaging mistakes that only affect the wheel would otherwise reach
+      # release unchecked.
+      - name: Run test suite against the built wheel
+        run: |
+          .venv/bin/pip uninstall -y syncade
+          .venv/bin/pip install "$(ls dist/*.whl)"
+          .venv/bin/python -m pytest -q
+
+      # Install-test the EXACT artifact, in a venv that has never seen the source tree. Testing
+      # the checkout instead would pass while the wheel is missing its package data — which is
+      # precisely the bug class that matters here, since templates/ and skills/ are data files
+      # the CLI cannot run without.
+      - name: Install-test the built wheel
+        run: |
+          wheel="$(ls dist/*.whl)"
+          echo "installing $wheel"
+          python -m venv /tmp/verify
+          /tmp/verify/bin/python -m pip install --quiet --upgrade pip
+          /tmp/verify/bin/python -m pip install --quiet "$wheel"
+
+          echo "--- console script resolves and reports the tagged version ---"
+          got="$(/tmp/verify/bin/syncade --version | tr -d '[:space:]')"
+          echo "syncade --version -> $got"
+          case "$got" in
+            *"${GITHUB_REF_NAME#v}"*) ;;
+            *) echo "::error::--version ($got) does not contain ${GITHUB_REF_NAME#v}" >&2; exit 1 ;;
+          esac
+
+          echo "--- packaged data files are present in the installed package ---"
+          /tmp/verify/bin/python - <<'PY'
+          from importlib.resources import files
+          import sys
+          missing = []
+          for pkg, name in [
+              ("syncade.templates", "reviewer.md"),
+              ("syncade.skills.claude", "SKILL.md"),
+              ("syncade.skills.codex", "SKILL.md"),
+          ]:
+              try:
+                  if not files(pkg).joinpath(name).is_file():
+                      missing.append(f"{pkg}/{name}")
+              except (ModuleNotFoundError, FileNotFoundError):
+                  missing.append(f"{pkg}/{name}")
+          if missing:
+              print("MISSING packaged data:", missing, file=sys.stderr)
+              sys.exit(1)
+          print("packaged data OK")
+          PY
+
+          echo "--- the README's install claim actually works from the artifact ---"
+          HOME=/tmp/fakehome /tmp/verify/bin/syncade --install-skill claude
+          test -f /tmp/fakehome/.claude/skills/syncade/SKILL.md \
+            || { echo "::error::--install-skill produced no SKILL.md" >&2; exit 1; }
+
+      # The sdist is published alongside the wheel; install-test it too so a packaging error
+      # that only affects the sdist (e.g. a missing MANIFEST.in entry) is caught before release.
+      - name: Install-test the built sdist
+        run: |
+          sdist="$(ls dist/*.tar.gz)"
+          echo "installing $sdist"
+          python -m venv /tmp/verify-sdist
+          /tmp/verify-sdist/bin/python -m pip install --quiet --upgrade pip
+          /tmp/verify-sdist/bin/python -m pip install --quiet "$sdist"
+
+          echo "--- console script resolves and reports the tagged version ---"
+          got="$(/tmp/verify-sdist/bin/syncade --version | tr -d '[:space:]')"
+          echo "syncade --version -> $got"
+          case "$got" in
+            *"${GITHUB_REF_NAME#v}"*) ;;
+            *) echo "::error::--version ($got) does not contain ${GITHUB_REF_NAME#v}" >&2; exit 1 ;;
+          esac
+
+      # Sigstore attestation is unavailable on user-owned PRIVATE repositories ("Feature not
+      # available for user-owned private repositories" — measured, not assumed). Releases are cut
+      # from the PUBLIC repo. A tag pushed to the private mirror still builds, tests, and
+      # install-tests, but neither attests nor publishes — an unattested release would violate
+      # the signed-release invariant.
+      - name: Attest build provenance
+        if: ${{ github.event.repository.visibility == 'public' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Create the GitHub Release
+        if: ${{ github.event.repository.visibility == 'public' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "syncade $GITHUB_REF_NAME" \
+            --generate-notes
