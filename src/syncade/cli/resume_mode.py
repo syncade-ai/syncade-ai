@@ -88,6 +88,34 @@ def _resolve_resume_budget(config, args, plan):
     return config
 
 
+def _report_hard_kill(run_dir: Path, run_status) -> None:
+    """Say so when the run being resumed was HARD-KILLED (PR-h-field-02).
+
+    ``run_status.is_stale_running`` has existed since the breadcrumb landed and, until now,
+    nothing in the product called it — a ``running`` state against a dead pid was detectable and
+    never reported. Three field runs died exactly that way, and the operator's only clue was a
+    status file still claiming the run was in progress.
+
+    Nothing in-process can finalize that file after SIGKILL, by definition. What CAN be fixed is
+    the silence: resume is where someone goes after a run vanishes, so resume is where it should
+    be told what it is looking at.
+    """
+    try:
+        status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not run_status.is_stale_running(status):
+        return
+    phase = status.get("phase") or "an unrecorded phase"
+    print(
+        f"[syncade] the run you are resuming was HARD-KILLED during '{phase}' — its status file "
+        f"still reads 'running' because nothing in the process survived to finalize it "
+        f"(SIGKILL, OOM, or the machine going down). Completed rounds are intact and will be "
+        f"reused; the interrupted round is dropped and retried.",
+        file=sys.stderr,
+    )
+
+
 def _run_resume(args) -> int:
     """Dispatch ``syncade --resume <run-id>``.
 
@@ -169,6 +197,7 @@ def _run_resume(args) -> int:
         # If the resumed round escalated, read the operator's decision (refuses with
         # ResumeError when none was recorded). Read BEFORE run_review drops the round dir.
         operator_decision = read_resume_decision(runs_root / run_id, plan.resumed_round)
+        _report_hard_kill(runs_root / run_id, run_status)
     except ResumeError as exc:
         print(f"[syncade] resume error: {exc}", file=sys.stderr)
         return WORKTREE_ERROR

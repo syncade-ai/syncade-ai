@@ -7,9 +7,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
 from syncade.findings import ReviewerOutputError
+from syncade.retry import is_usage_limit_error
 from syncade.synthesis import SynthesizerOutputError
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from syncade.orchestrator import RunResult
 
 LogLevel = Literal["quiet", "normal"]
@@ -33,6 +36,58 @@ def _budget_stop_line(run_result: RunResult) -> str:
         f"{loop_summary} for the API-equivalent tally (a valuation, not billed money; "
         f"a lower bound if any cost was unpriced)."
     )
+
+
+def _quota_candidates(
+    run_result: RunResult,
+) -> Iterator[tuple[BaseException | None, str | None]]:
+    """Every actor that could have been the one refused, with its provider.
+
+    A quota is ACCOUNT-wide, so whichever actor reaches the provider first discovers it — and
+    after the routing fix that is as often the judge or the producer as a reviewer. Scanning
+    only the reviewers left both of those printing a bare "the provider", which is the one
+    thing this line exists to avoid saying.
+    """
+    for r in run_result.dispatch_result.results:
+        yield r.error, r.provider
+    synth = run_result.synth_result
+    if synth is not None:
+        yield synth.error, synth.provider
+    for rnd in reversed(run_result.rounds):
+        producer = rnd.producer_result
+        if producer is not None:
+            yield producer.error, producer.provider
+
+
+def _usage_limit_stop_line(run_result: RunResult) -> str:
+    """The provider-quota abort notice (PR-h-field-02), shown even under ``--quiet``.
+
+    Three field runs hit this and the operator saw NOTHING — no verdict, no error, no exit code.
+    A terminal condition the operator can act on is worth four lines: what happened, that their
+    completed work survived, the remedy, and the exact command to continue.
+
+    Names the PROVIDER because a mixed panel makes "which one ran out" the first question, and
+    names the run id because the resume command is useless without it.
+    """
+    provider = next(
+        (p for err, p in _quota_candidates(run_result) if p and is_usage_limit_error(err)),
+        "the provider",
+    )
+    run_id = run_result.artifacts.run_dir.name
+    return (
+        f"[syncade] stopped early: {provider}'s usage limit reached — not your configured "
+        f"budget, "
+        f"and not a fault in the code under review.\n"
+        f"          Completed rounds and their findings are preserved; nothing was interrupted "
+        f"mid-call.\n"
+        f"          Remedy: consume a reset (run `codex`, then /usage) or wait for the window — "
+        f"retrying now fails the same way.\n"
+        f"          Resume with: syncade --resume {run_id}"
+    )
+
+
+def _is_usage_limit_stop(run_result: RunResult) -> bool:
+    return getattr(run_result, "termination_reason", None) == "provider_usage_limit"
 
 
 class Logger:
@@ -97,6 +152,8 @@ class Logger:
         )
 
         budget_note = _budget_stop_line(run_result) if _is_budget_stop(run_result) else None
+        if budget_note is None and _is_usage_limit_stop(run_result):
+            budget_note = _usage_limit_stop_line(run_result)
 
         if self.level == "quiet":
             print(

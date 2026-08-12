@@ -120,6 +120,10 @@ def run_review(
       ``decision-needed.md``.
     - **Budget exceeded** (token or dollar ceiling hit mid-loop) →
       exit 25 with ``termination_reason="budget_exceeded"``.
+    - **Provider usage limit** (the account's quota window is empty, so
+      no actor can be dispatched) → also exit 25, but with
+      ``termination_reason="provider_usage_limit"``: same resumable
+      stop, a cause the operator did not configure and cannot raise.
     - **Subprocess / parse / worktree / config error** → exit
       40/50/60/70 with the appropriate categorical reason.
 

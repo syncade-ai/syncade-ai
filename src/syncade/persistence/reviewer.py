@@ -7,6 +7,9 @@ fan-out (multiple per round).
 
 from __future__ import annotations
 
+import json
+import os
+import time
 import traceback
 from pathlib import Path
 
@@ -123,3 +126,38 @@ def _reviewer_manifest_entry(run_result: ReviewerRunResult) -> dict[str, object]
         "outcome": "failure",
         "error_type": error_type,
     }
+
+
+def persist_dispatch_record(
+    round_dir: Path,
+    *,
+    round_index: int,
+    reviewers: list,
+    timeout_seconds: float,
+) -> None:
+    """Record that reviewers were DISPATCHED, before any of them returns (PR-h-field-02).
+
+    Every other artifact in a round is written after the panel completes, so a run that dies
+    mid-dispatch leaves the round directory EMPTY. Three field runs did exactly that — killed in
+    ``round-2: reviewing`` with nothing on disk — and the post-mortem had only a log line in a
+    terminal and a ``status.json`` phase to work from. The provider error, the child pids, even
+    the fact that dispatch had begun, were all unrecoverable.
+
+    This is the cheapest possible fix for that: one small file, written before the panel starts,
+    saying what was in flight and since when. It never changes a verdict and is never read by the
+    loop — it exists purely so the NEXT unexplained death is diagnosable.
+
+    Deliberately records the parent pid: cross-referenced with ``status.json``'s pid it tells a
+    reader whether the parent survived its children, which is the difference between "the
+    provider rejected us" and "something killed the process".
+    """
+    payload = {
+        "round": round_index,
+        "dispatched_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "parent_pid": os.getpid(),
+        "timeout_seconds": timeout_seconds,
+        "reviewers": [
+            {"name": r.name, "provider": r.provider, "model": r.model} for r in reviewers
+        ],
+    }
+    atomic_write_text(round_dir / "dispatch.json", json.dumps(payload, indent=2) + "\n")

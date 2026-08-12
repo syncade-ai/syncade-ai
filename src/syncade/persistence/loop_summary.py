@@ -34,6 +34,7 @@ _TERMINATION_REASON_LABELS: dict[str, str] = {
     "findings_present": "findings present",
     "max_rounds_reached": "max rounds reached",
     "budget_exceeded": "budget exceeded",
+    "provider_usage_limit": "provider usage limit reached",
     "producer_stalled": "producer stalled",
     "producer_subprocess_error": "producer subprocess error",
     "reviewer_failure": "reviewer failure",

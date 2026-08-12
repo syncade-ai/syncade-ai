@@ -147,7 +147,7 @@ round dir under `<run-dir>/`. Common exit codes:
 | Exit | Meaning | Where to look |
 |---|---|---|
 | 20 | max rounds reached, no SHIP | every round's `findings.md` |
-| 25 | budget ceiling hit; loop stopped at a phase boundary (before a review bundle or a producer) | resume with `syncade --resume` or start a fresh run with a higher limit |
+| 25 | stopped at a phase boundary — YOUR budget ceiling, or the PROVIDER's usage limit (the summary says which) | resume with `syncade --resume`; raise the limit if it was yours, wait for the window if it was the provider's |
 | 30 | non-dismissed blocker, or producer stalled, or tests failed | last round's `findings.md` or `test-run.stdout` |
 | 40 | reviewer/synthesizer/producer subprocess error | last round's `<provider>.stderr` or `producer.error.txt` |
 | 50 | config error | the message says exactly which TOML field |

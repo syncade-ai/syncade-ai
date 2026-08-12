@@ -47,6 +47,7 @@ _HANDOFF_UNREACHABLE: dict[str, str] = {
     "blockers_all_deactivated": "exit 10 (CLARIFICATION_NEEDED)",
     "decision_needed": "exit 10 (CLARIFICATION_NEEDED)",
     "budget_exceeded": "exit 25 (BUDGET_EXCEEDED)",
+    "provider_usage_limit": "exit 25 (BUDGET_EXCEEDED — provider quota, not the operator's)",
     "check_subprocess_error": "exit 40 (subprocess-failure family)",
 }
 

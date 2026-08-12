@@ -59,13 +59,23 @@ def _extract_failure_message(
     5. A generic "exited with code N" if nothing useful is
        available.
     """
-    # Try turn.failed.error.message first
+    # Try turn.failed.error.message first, PREFIXED with error.type when present.
+    #
+    # codex carries its failure kind as a TYPED variant (`UsageLimitReached`, `QuotaExceeded`,
+    # …) beside a message that may be generic. Reducing the event to its message alone discards
+    # the only unambiguous signal in it, and downstream classification then has to guess from
+    # prose. Keeping the type in the text is the smallest change that preserves it: the message
+    # stays human-readable and `retry.is_usage_limit_error` gets an exact term to match instead
+    # of a substring of English (PR-h-field-02 dogfood, blocker 3).
     for event in reversed(failure_events):
         if event.get("type") == "turn.failed":
             error = event.get("error")
             if isinstance(error, dict):
                 msg = error.get("message")
                 if isinstance(msg, str) and msg:
+                    kind = error.get("type")
+                    if isinstance(kind, str) and kind and kind not in msg:
+                        return f"{kind}: {msg}"
                     return msg
     # Then bare error event messages
     for event in reversed(failure_events):

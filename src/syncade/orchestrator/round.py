@@ -23,6 +23,7 @@ from syncade.persistence import (
     SynthesizerArtifactPaths,
     TestRunArtifactPaths,
     persist_current_findings_md,
+    persist_dispatch_record,
     persist_findings_md,
     persist_reviewer_result,
     persist_round_manifest,
@@ -274,6 +275,14 @@ def _run_one_round(
             for reviewer in config.reviewers:
                 logger.event(f"  -> {reviewer.name} ({reviewer.provider}) started")
 
+            # Written BEFORE the panel runs: every other artifact lands after it returns, so a
+            # death mid-dispatch left an empty round dir and nothing to diagnose from.
+            persist_dispatch_record(
+                round_dir,
+                round_index=round_idx,
+                reviewers=config.reviewers,
+                timeout_seconds=resolved_timeout,
+            )
             dispatch_result = dispatch_reviewers(
                 config.reviewers,
                 worktree_paths=worktree_paths,

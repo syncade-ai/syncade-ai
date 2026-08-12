@@ -39,6 +39,14 @@ BUDGET_EXCEEDED = 25
     is never relabeled 25, so this code means "stopped early to save spend," not
     "a finished run happened to cost a lot."
 
+    The code is SHARED with a second cause the operator did not configure: a
+    provider refusing to serve because the account's usage window is exhausted
+    (``termination_reason="provider_usage_limit"``). Both stop cleanly at a phase
+    boundary and both resume, which is why they share a code — but they are told
+    apart by ``termination_reason``, and they want opposite responses: raise the
+    ceiling versus wait for the window to reset. Anything reporting this code to a
+    person should read the reason rather than assume the budget.
+
 FINDINGS_PRESENT = 30
     Findings present. A synthesizer blocker remains, the configured test command
     failed, or producer/branch promotion could not complete safely.

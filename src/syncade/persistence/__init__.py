@@ -116,6 +116,9 @@ from .producer import (
     persist_producer_result as persist_producer_result,
 )
 from .reviewer import (
+    persist_dispatch_record as persist_dispatch_record,
+)
+from .reviewer import (
     persist_reviewer_result as persist_reviewer_result,
 )
 from .round_manifest import (
@@ -172,6 +175,7 @@ __all__ = [
     "persist_loop_manifest",
     "persist_loop_summary",
     "persist_producer_result",
+    "persist_dispatch_record",
     "persist_reviewer_result",
     "persist_round_manifest",
     "persist_run_init",

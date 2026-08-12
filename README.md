@@ -159,7 +159,7 @@ The verdict is mechanical — the LLMs never decide the exit code directly.
 | `0`  | SHIP — or nothing to review (`termination_reason: no_changes_to_review` in `loop-manifest.json`) |
 | `10` | Clarification or operator decision needed (see `decision-needed.md`) |
 | `20` | Max rounds reached, still NO-SHIP |
-| `25` | Budget (token/dollar) ceiling hit |
+| `25` | Stopped early, resumable — your budget ceiling, or the provider's usage limit |
 | `30` | Findings present, test failed, or producer stalled |
 | `40` | A subprocess failed |
 | `50` | Config error |
@@ -245,6 +245,12 @@ Early access. These are measured, not suspected.
   machine before a cleanup. Point `worktree_base` somewhere you do not mind, delete old run
   directories once you are done with them, and run `git worktree prune` afterwards: removing the
   directory does not remove git's registration of it.
+- **A hard-killed run loses whatever its reviewers had already said.** Child output is collected
+  in syncade's own memory and written to the round directory once the panel returns, so a run
+  ended by `SIGKILL` (or a machine going away) leaves that round empty — not truncated, absent.
+  Measured directly: zero files survive. Completed rounds are unaffected and `--resume` picks up
+  from the last one, which now also reports that the previous run was hard-killed and in which
+  phase. Streaming output straight to disk is briefed and not yet built.
 - **The producer commits to your current branch.** That is the design — it fast-forwards only,
   refuses the default branch without `--allow-default-branch`, and prints every commit it made.
   Your working tree is *not* updated to match, so `git status` afterwards shows what looks like a

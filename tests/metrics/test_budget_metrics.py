@@ -13,7 +13,7 @@ from syncade.metrics.aggregate import backfill
 from syncade.metrics.schema import open_db
 
 
-def _write_budget_run(runs_root, run_id):
+def _write_budget_run(runs_root, run_id, reason="budget_exceeded"):
     """A budget-abort run: exit 25, two SUBSCRIPTION reviewers priced at $0.30 each, an
     UNPRICED judge (cost null) contributing 5000 lower-bound tokens."""
     d = runs_root / run_id
@@ -33,7 +33,7 @@ def _write_budget_run(runs_root, run_id):
             {
                 "run_id": run_id,
                 "final_exit_code": 25,
-                "termination_reason": "budget_exceeded",
+                "termination_reason": reason,
                 "rounds": [
                     {
                         "round": 0,
@@ -81,3 +81,22 @@ def test_metrics_records_budget_abort_and_agrees_on_api_equiv(tmp_path):
     assert b.api_equiv == pytest.approx(0.60)
     assert b.billed == pytest.approx(0.0)  # subscription: no real money left the account
     assert b.total_unpriced_tokens == 5000
+
+
+def test_a_provider_quota_stop_is_not_reported_as_the_operators_budget(tmp_path):
+    """Both exit 25, and `--metrics` used to call both "BUDGET".
+
+    They want opposite responses — raise the cap, versus wait for the window to reset — so a
+    corpus that conflates them tells the operator to change a setting that was never the cause.
+    """
+    runs = tmp_path / "runs"
+    _write_budget_run(runs, "R-quota", reason="provider_usage_limit")
+    _write_budget_run(runs, "R-budget")
+    conn = open_db(tmp_path / "m.db")
+    backfill(conn, runs)
+
+    verdicts = dict(conn.execute("SELECT run_id, verdict FROM runs").fetchall())
+    assert verdicts["R-quota"] == "QUOTA", (
+        "a provider refusing to serve was reported as the operator's own ceiling"
+    )
+    assert verdicts["R-budget"] == "BUDGET", "the real budget abort must still say BUDGET"

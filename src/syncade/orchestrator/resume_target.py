@@ -54,7 +54,7 @@ def find_resumable_runs(runs_root: Path) -> list[str]:
       the run.
     - ``run-init.json`` present AND ``loop-manifest.json::final_exit_code``
       in ``{10, 25, 40, 60, 70}`` → ELIGIBLE (decision-needed checkpoint, a
-      budget stop (25), or environment failure mid-loop).
+      budget-or-quota stop (25), or environment failure mid-loop).
     - Any other state → NOT eligible.
 
     Args:
@@ -206,7 +206,7 @@ def resolve_resume_target(
                 f"run-id {target!r} completed normally "
                 f"(final_exit_code={exit_code}); resume only applies "
                 f"to runs paused for a decision (exit 10), stopped at a budget "
-                f"ceiling (exit 25), aborted by "
+                f"ceiling or a provider usage limit (exit 25), aborted by "
                 f"environment failure (exit 40 / 60 / 70), or interrupted "
                 f"before the loop terminator wrote {LOOP_MANIFEST_FILENAME}. "
                 f"Start a fresh run."

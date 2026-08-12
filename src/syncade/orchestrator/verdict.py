@@ -20,11 +20,39 @@ from syncade.process import (
     SubprocessNotFoundError,
     SubprocessTimeoutError,
 )
+from syncade.retry import is_usage_limit_error
 from syncade.synthesis import SynthesizerOutput, SynthesizerOutputError, has_active_blocker
 from syncade.synthesizer import SynthesizerResult
 from syncade.test_runner import TestRunResult, is_blocking_check_subprocess_error
 
 from .results import RoundResult, TerminationReason
+
+
+def error_is_provider_usage_limit(error: BaseException | None) -> bool:
+    """One actor's error, one question — so every actor asks it the same way."""
+    return error is not None and is_usage_limit_error(error)
+
+
+def round_hit_provider_usage_limit(round_result: RoundResult) -> bool:
+    """Did this round fail because the PROVIDER refused on exhausted quota? (PR-h-field-02)
+
+    Distinct from ``budget_exceeded``, which is the operator's own configured ceiling. Both
+    exit 25 — stop cleanly, resume later — but conflating them would tell someone to raise a
+    budget they never hit.
+
+    Not retried and not permanent: the classifier keeps quota out of ``_TRANSIENT_MARKERS`` on
+    purpose, so no attempts are burned against a window that has not moved, and the run stays
+    resumable instead of dying at exit 40.
+
+    Covers the REVIEWERS and the JUDGE. The first version checked only reviewers and the blind
+    panel caught it unanimously — the same refusal reaching the judge still died at exit 40. The
+    PRODUCER is checked at its own branch in the loop, because it is decided after this one, and
+    it is the likeliest of the three to exhaust a limit: 6.6M tokens in a single field round.
+    """
+    if any(error_is_provider_usage_limit(r.error) for r in round_result.dispatch_result.results):
+        return True
+    synth = round_result.synth_result
+    return synth is not None and error_is_provider_usage_limit(synth.error)
 
 
 def _classify_phase_failure(round_result: RoundResult) -> TerminationReason:

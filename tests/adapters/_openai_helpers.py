@@ -29,6 +29,7 @@ def _jsonl_envelope(
     *,
     error_messages: list[str] | None = None,
     turn_failed_message: str | None = None,
+    turn_failed_type: str | None = None,
 ) -> str:
     """Construct a JSONL stream matching codex exec --json output
     (per the CLI output format). Only the fields the adapter
@@ -53,14 +54,10 @@ def _jsonl_envelope(
             )
         )
     if turn_failed_message is not None:
-        lines.append(
-            json.dumps(
-                {
-                    "type": "turn.failed",
-                    "error": {"message": turn_failed_message},
-                }
-            )
-        )
+        error: dict[str, str] = {"message": turn_failed_message}
+        if turn_failed_type is not None:
+            error["type"] = turn_failed_type
+        lines.append(json.dumps({"type": "turn.failed", "error": error}))
     else:
         lines.append(
             json.dumps(

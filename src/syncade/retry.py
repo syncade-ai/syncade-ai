@@ -84,11 +84,57 @@ _TRANSIENT_MARKERS = (
 )
 
 
+# Provider QUOTA EXHAUSTION — deliberately NOT in _TRANSIENT_MARKERS (PR-h-field-02).
+#
+# The two need opposite handling and merging them would be worse than the bug. Retrying a
+# usage limit is pointless — the window has not moved — so folding these into the transient
+# list would fire MAX_RETRIES more doomed reviewer pairs against an exhausted quota before
+# dying anyway. Classifying it permanent (today's behaviour, by omission) is also wrong: the
+# run is resumable and the operator only has to wait.
+#
+# Read out of the shipped codex binary (codex-cli 0.145.0): its error enum carries
+# `UsageLimitReached` and `QuotaExceeded`, and the user-facing text is
+# "You've hit your usage limit for ".
+#
+# Markers are SPECIFIC on purpose. A bare "quota" or "usage limit" would match a reviewer
+# discussing rate limiting in the code under review — which is exactly the string that turned
+# up in the field runs' stdout and briefly looked like evidence. A false positive here tells an
+# operator to wait out a limit they have not hit, so the cost of looseness is a wrong diagnosis.
+_USAGE_LIMIT_MARKERS = (
+    "usagelimitreached",
+    "quotaexceeded",
+    # snake_case, and the MOST common form in the binary (35 occurrences, more than any other).
+    # Also the safest: prose says "usage limit" with a space, so the underscore cannot collide
+    # with a reviewer discussing rate limiting. The first version of this tuple measured that
+    # number, wrote it into the brief, and then left the marker out.
+    "usage_limit",
+    "usage limit reached",
+    "hit your usage limit",
+    "exceeded your quota",
+    "quota exceeded",
+)
+
+
+def is_usage_limit_error(exc: BaseException) -> bool:
+    """Return ``True`` iff ``exc`` is the provider refusing on exhausted quota.
+
+    Neither transient nor permanent: the correct response is to stop cleanly and let the
+    operator resume once the window resets, which is exit 25's existing contract.
+    """
+    if not isinstance(exc, ReviewerInvocationError):
+        return False
+    text = f"{exc} {exc.stderr}".lower()
+    return any(marker in text for marker in _USAGE_LIMIT_MARKERS)
+
+
 def is_transient_api_error(exc: BaseException) -> bool:
     """Return ``True`` iff ``exc`` is a transient provider/network failure
     worth one more subprocess attempt. See the module docstring for the
     (whitelist) taxonomy."""
     if not isinstance(exc, ReviewerInvocationError):
+        return False
+    if is_usage_limit_error(exc):
+        # Quota is its own outcome; retrying it just burns the remaining attempts.
         return False
     status = exc.api_error_status
     if status == 429 or (status is not None and 500 <= status <= 599):

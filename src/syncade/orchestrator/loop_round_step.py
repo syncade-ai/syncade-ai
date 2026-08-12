@@ -44,7 +44,12 @@ from .escalation_coverage import escalation_covers_active_blockers
 from .producer_phase import _run_producer_phase
 from .results import RoundArtifacts, RoundResult
 from .round import _run_one_round
-from .verdict import _classify_phase_failure, deactivated_blocker_details
+from .verdict import (
+    _classify_phase_failure,
+    deactivated_blocker_details,
+    error_is_provider_usage_limit,
+    round_hit_provider_usage_limit,
+)
 
 
 @dataclass(frozen=True)
@@ -176,6 +181,20 @@ def _run_round_step(
     # exit codes 40 / 50 / 60 / 70 indicating subprocess /
     # config / worktree / parse failures. Looping wouldn't
     # help, so terminate immediately.
+    # A provider quota refusal reaches here as a reviewer failure (exit 40), which is the
+    # wrong verdict: the run is not unreviewable, the operator just has to wait. Route it to
+    # exit 25's existing "stopped cleanly, resume later" contract BEFORE the generic branch.
+    if round_result.round_exit_code == REVIEWER_FAILURE and round_hit_provider_usage_limit(
+        round_result
+    ):
+        return _RoundStep(
+            action="break",
+            current_snapshot=current_snapshot,
+            branch_advanced=branch_advanced,
+            final_exit_code=BUDGET_EXCEEDED,
+            termination_reason="provider_usage_limit",
+        )
+
     if round_result.round_exit_code in (
         REVIEWER_FAILURE,
         CONFIG_ERROR,
@@ -432,6 +451,18 @@ def _run_round_step(
             termination_reason="producer_stalled",
         )
     if producer_result.outcome == "subprocess_error":
+        # Same reasoning as the reviewer/judge branch above: a quota refusal is resumable, not
+        # a permanent failure. The producer is the likeliest actor to hit one — it burned 6.6M
+        # tokens in a single field round — and routing it to exit 40 would throw away every
+        # committed round behind it.
+        if error_is_provider_usage_limit(producer_result.error):
+            return _RoundStep(
+                action="break",
+                current_snapshot=current_snapshot,
+                branch_advanced=branch_advanced,
+                final_exit_code=BUDGET_EXCEEDED,
+                termination_reason="provider_usage_limit",
+            )
         return _RoundStep(
             action="break",
             current_snapshot=current_snapshot,

@@ -41,6 +41,7 @@ TerminationReason = Literal[
     "findings_present",
     "max_rounds_reached",
     "budget_exceeded",
+    "provider_usage_limit",
     "producer_stalled",
     "producer_subprocess_error",
     "reviewer_failure",

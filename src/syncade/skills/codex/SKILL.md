@@ -13,7 +13,8 @@ and cross-lab, both available today by config),
 synthesizes their structured outputs cold, optionally re-runs tests,
 and (when `max_rounds > 1`) hands NO-SHIP findings to a producer
 subprocess that attempts to commit a fix. The loop runs until SHIP,
-max-rounds reached, or a budget ceiling (exit 25) is hit.
+max-rounds reached, or a stop at exit 25 (your budget ceiling, or the
+provider's usage limit).
 
 This skill is a Bash orchestration layer: it runs a safety check (the
 operator's auth + producer-commit path), confirms with the operator
@@ -395,7 +396,8 @@ Common exit codes the operator may see:
   `decision-needed.md` at the run root. Read it and branch by the
   heading — see Step 6 for the two shapes and how each continues.
 - `20` — max rounds reached without SHIP.
-- `25` — budget ceiling hit; loop stopped gracefully at a phase
+- `25` — stopped gracefully at a phase boundary: either YOUR budget ceiling or the
+  PROVIDER's usage limit (the run summary names which). Loop stopped at a phase
   boundary (before a review bundle or a producer). Resume with
   `syncade --resume` to continue on a fresh budget tally.
 - `30` — findings present (NO-SHIP), or producer stalled, or tests

@@ -7,6 +7,42 @@ include breaking changes.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-12
+
+### Added
+
+- **Running out of provider quota no longer throws the run away.** When your account's usage
+  window empties mid-review, the provider refuses to answer. syncade used to read that as a
+  subprocess crash, exit 40, and discard everything — in one case after both reviewers had
+  already finished. It now stops the way a budget ceiling does: exit 25, every completed round
+  kept on disk, and `syncade --resume <run-id>` continues once the window resets. Recognised
+  wherever it happens — a reviewer, the judge, or the fixer.
+- **You are told about it, even under `--quiet`.** The notice names which provider ran out (the
+  first question on a mixed panel), says your completed work survived, warns that retrying now
+  fails the same way rather than letting you burn another attempt, and prints the exact resume
+  command. A terminal condition you can act on is not progress chatter, and `--quiet` is exactly
+  when nobody is watching the scrollback.
+- **Every round now records what it dispatched, before it dispatches it.** A small
+  `dispatch.json` lands in the round directory naming the reviewers in flight, the timeout they
+  were given, the parent process id and the UTC time. Round artifacts are otherwise written after
+  the whole panel returns, so a run killed mid-review left an empty directory and nothing to
+  diagnose.
+- **`syncade --resume` says so when the previous run was hard-killed.** A run stopped by
+  `SIGKILL` (or a machine that went away) cannot finalize its own status file, so it leaves one
+  claiming the run is still in progress. Resume now recognises that signature and reports the
+  phase it died in, instead of resuming in silence.
+
+### Changed
+
+- **Exit 25 now has two causes, and every surface that mentions it says which.** It has always
+  meant "stopped early at a phase boundary, resumable"; it now covers both your configured
+  token/dollar ceiling (`budget_exceeded`) and a provider refusing on an exhausted usage limit
+  (`provider_usage_limit`). They want opposite responses — raise the cap, versus wait for a
+  window you do not control — so `termination_reason` distinguishes them and the exit-code
+  tables, `--resume` help and refusal text no longer describe the budget alone.
+- **`syncade --metrics` reports a quota stop as `QUOTA`, not `BUDGET`.** Labelling it by exit
+  code alone blamed your configuration for someone else's rate limit.
+
 ## [0.5.1] — 2026-08-11
 
 ### Fixed
@@ -367,7 +403,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.0
 [0.5.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.5.1
 [0.5.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.5.0
 [0.4.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.4.0

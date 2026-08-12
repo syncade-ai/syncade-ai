@@ -180,6 +180,41 @@ class TestExtractResponseText:
         with pytest.raises(ReviewerInvocationError):
             adapter.extract_response_text(stdout)
 
+    def test_the_typed_failure_kind_survives_into_the_message(self):
+        """codex's typed variant is the only unambiguous quota signal in the event.
+
+        The message beside it can be generic ("Your request could not be completed"), so
+        dropping the type leaves downstream classification guessing from English prose. This
+        asserts the end of that chain, not just the prefix: the real classifier must recognise
+        the real adapter's real output.
+        """
+        from syncade.retry import is_usage_limit_error
+
+        adapter = CodexAdapter()
+        stdout = _jsonl_envelope(
+            agent_messages=[],
+            turn_failed_message="Your request could not be completed",
+            turn_failed_type="UsageLimitReached",
+        )
+        with pytest.raises(ReviewerInvocationError) as excinfo:
+            adapter.extract_response_text(stdout)
+
+        assert "UsageLimitReached" in str(excinfo.value)
+        assert is_usage_limit_error(excinfo.value) is True, (
+            "the adapter preserved the type but the classifier did not act on it — the two "
+            "halves of this fix must stay connected"
+        )
+
+    def test_an_untyped_failure_is_not_mistaken_for_a_quota(self):
+        adapter = CodexAdapter()
+        stdout = _jsonl_envelope(agent_messages=[], turn_failed_message="codex blew up")
+        with pytest.raises(ReviewerInvocationError) as excinfo:
+            adapter.extract_response_text(stdout)
+
+        from syncade.retry import is_usage_limit_error
+
+        assert is_usage_limit_error(excinfo.value) is False
+
 
 # ---------------------------------------------------------------------------
 # extract_final_text — QA fix #14 (P1.9)

@@ -56,6 +56,15 @@ _LOOP_NEXT_STEPS: dict[str, str] = {
         "want to roll them back, use `git reset --hard "
         "<round-0-starting-sha>` (see the commit series above)."
     ),
+    "provider_usage_limit": (
+        "- The loop stopped because the PROVIDER refused on an exhausted usage limit — not "
+        "your configured budget, and not a fault in the code under review. It stopped at a "
+        "phase boundary, so completed rounds and their artifacts are intact. Retrying "
+        "immediately would fail the same way: the window has not moved. Next: consume a reset "
+        "(`codex` → `/usage`) or wait for the window, then `syncade --resume <run-id>` to "
+        "continue from the completed rounds rather than paying for them twice. Any producer "
+        "commits so far ARE on your branch."
+    ),
     "budget_exceeded": (
         "- The loop stopped because the running token or cost tally crossed your "
         "configured ``[loop]`` budget (``--budget-tokens`` / ``--budget-usd``). "
@@ -255,6 +264,10 @@ _EMPTY_SERIES_REASON_NOTES: dict[str, str] = {
     ),
     "budget_exceeded": (
         "- (no producer commits — the budget was crossed before a producer round committed)"
+    ),
+    "provider_usage_limit": (
+        "- (no producer commits — the provider's usage limit was hit before a producer round "
+        "committed)"
     ),
     "producer_stalled": (
         "- (no producer commits — the producer subprocess stalled without committing on this round)"

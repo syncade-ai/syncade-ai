@@ -28,6 +28,21 @@ from syncade.synthesizer.constants import (
     SYNTHESIZER_PROVIDER,
 )
 
+# Reasons a coarse exit code cannot distinguish, so the reason wins where one is recorded.
+#
+# no_changes_to_review / producer_emptied_diff exit 0 but are NOT SHIPs — the final round
+# dispatched no reviewers. producer_emptied_diff additionally had prior rounds spend model
+# work, but the final verdict is still no-review.
+#
+# provider_usage_limit shares exit 25 with the operator's OWN budget ceiling. Reporting it as
+# "BUDGET" blames their config for someone else's quota window — and the two want opposite
+# responses: raise the cap, versus wait for the window to reset.
+_VERDICT_BY_REASON = {
+    "no_changes_to_review": "NO-CHANGE",
+    "producer_emptied_diff": "NO-CHANGE",
+    "provider_usage_limit": "QUOTA",
+}
+
 # syncade exit code -> coarse verdict label (see CLAUDE.md "Exit Codes").
 _VERDICT_BY_EXIT = {
     0: "SHIP",
@@ -200,13 +215,8 @@ def read_run(run_dir: Path | str) -> tuple[RunRow, list[ReviewerStatRow]] | None
 
     _tok, _cost = _sum_usage()
     _termination_reason = _text_or_none(manifest.get("termination_reason"))
-    # no_changes_to_review / producer_emptied_diff exit 0 but are NOT SHIPs — the
-    # final round dispatched no reviewers. producer_emptied_diff additionally had
-    # prior rounds spend model work, but the final verdict is still no-review.
-    _verdict = (
-        "NO-CHANGE"
-        if _termination_reason in ("no_changes_to_review", "producer_emptied_diff")
-        else _VERDICT_BY_EXIT.get(exit_code, "UNKNOWN")
+    _verdict = _VERDICT_BY_REASON.get(
+        _termination_reason or "", _VERDICT_BY_EXIT.get(exit_code, "UNKNOWN")
     )
 
     row = RunRow(
