@@ -9,6 +9,9 @@ no-ship decision as a mechanical exit code. On no-ship it fixes the code and rev
 until your change either ships or runs out of budget. It runs without leaving your Claude Code or
 Codex session.
 
+> **New here? Start with [How to use syncade](docs/how-to-use.md)** — what to hand it, why your PR
+> should be 3–6 items, how to prompt your agent *before* you invoke it, and which settings to change.
+
 ## Why syncade
 
 The model that writes your code is the worst reviewer of it. It reviews with the same context that
@@ -116,6 +119,10 @@ From inside Codex (draft-from-session is a follow-up; supply a brief or OpenSpec
 syncade finds the repo root itself, writes all artifacts under `.syncade/runs/`
 (gitignored), and **refuses to run on your default branch** unless you pass
 `--allow-default-branch` — because the producer commits to the current branch.
+
+For the full walkthrough — writing a brief the blind panel can use, keeping the change small enough
+to converge, and the pre-review prompt that raises the floor — see
+**[How to use syncade](docs/how-to-use.md)**.
 
 ## How it works
 
