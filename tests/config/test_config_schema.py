@@ -400,6 +400,17 @@ def test_reviewer_adversarial_lens_defaults_false_and_accepts_true():
     assert rc_on.adversarial_lens is True
 
 
+def test_reviewer_bug_class_sweep_defaults_true_and_accepts_false():
+    """Per-reviewer directed bug-class sweep. Unlike ``adversarial_lens`` this
+    defaults ``True`` — the sweep is standard reviewer discipline, so every
+    reviewer (including existing configs that never set it) gets it — and can be
+    switched off per reviewer to keep one as a lighter-weight control."""
+    rc = ReviewerConfig(name="r", provider="anthropic", model="m")
+    assert rc.bug_class_sweep is True
+    rc_off = ReviewerConfig(name="r", provider="anthropic", model="m", bug_class_sweep=False)
+    assert rc_off.bug_class_sweep is False
+
+
 def test_reviewer_unknown_permission_value_rejected():
     """A typo'd / unknown permission value (here a near-miss of
     ``trusted-execute``) is rejected at config-load by the

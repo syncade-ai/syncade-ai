@@ -1,8 +1,9 @@
-"""Prompt template loader + the adversarial-lens block.
+"""Prompt template loader + the reviewer prompt blocks.
 
 ``load_template`` (the per-repo-override-then-packaged-default resolver with the
-symlink-containment guard) and ``ADVERSARIAL_LENS_BLOCK`` (the opt-in reviewer
-edge-enumeration text). Both are free of any dependency on ``prompts`` itself —
+symlink-containment guard), ``ADVERSARIAL_LENS_BLOCK`` (the opt-in reviewer
+edge-enumeration text), and ``BUG_CLASS_BLOCK`` (the default-on directed
+bug-class sweep). All are free of any dependency on ``prompts`` itself —
 stdlib + importlib only — so they extract without a circular import. Re-exported
 from ``prompts`` so the ``syncade.prompts.<name>`` import paths are unchanged.
 """
@@ -67,6 +68,59 @@ Substituted into ``reviewer.md``'s ``{adversarial_lens_block}`` placeholder
 only for reviewers configured ``adversarial_lens=True`` (see
 :class:`~syncade.config.ReviewerConfig`); other reviewers render the placeholder
 as the empty string.
+"""
+
+BUG_CLASS_BLOCK = """## Directed bug-class sweep (before any SHIP)
+
+The adversarial disposition above tells you to attack the change; this tells you
+WHERE to aim, so recall does not depend on inspiration. Work each angle below
+against the diff AND the enclosing functions, and surface every candidate with a
+nameable failure — as a *candidate*. This is find-phase guidance: raising one here
+does NOT relax the rule that a `blocker` needs reproduction, and a candidate you
+drop silently is never verified — the single largest source of missed defects.
+
+Severity follows verification state, not your confidence:
+- A candidate you REPRODUCE (cite `evidence_cmd` / `evidence_output`) takes the
+  severity its consequence warrants — `blocker` if it loses or corrupts data,
+  breaks a user path, or violates an invariant the brief asserts. Do NOT downgrade
+  a reproduced defect so you can SHIP (see the adversarial block above).
+- A candidate whose mechanism is real but whose trigger you could not reproduce is
+  a `minor`, or goes in `coverage_gaps` — surfaced, never dropped, and never an
+  unreproduced `blocker`. This keeps recall high without spending a producer round
+  on a maybe-bug.
+
+Your `summary` must name which of these angles you ran.
+
+- **Removed-behavior audit.** For every line the diff DELETES or replaces —
+  including a rewritten docstring or comment that stated an invariant — name the
+  guard, validation, error path, or invariant it enforced, then find where the new
+  code re-establishes it. If you cannot, that is a candidate. Watch especially for
+  an invariant only PARTIALLY re-established: a new code path that reaches the same
+  sink (a delete, a write, a network call) without the guard the old path carried.
+- **Caller/callee trace.** For every function the diff changes, grep its callers
+  and check each call site against the NEW contract: a new precondition, a changed
+  return shape or nullability, a new exception, a new empty/zero case the caller
+  does not handle. Then check the callees the diff adds: does a new call feed a
+  value into an existing sink (sweep / delete / overwrite / commit) whose guard
+  assumed the old path's guarantees? A *success* that now carries an empty or
+  absent result into a destructive sink is the highest-value find here. (Distinct
+  from the consistency-class rule above: that rule is the same fact restated in
+  many places; this is a changed contract breaking a call site.)
+- **Language / framework pitfall.** Flag the classic footguns the diff introduces
+  for its language: falsy-zero and `==` coercion (JS); mutable-default-arg and
+  late-binding closures (Python); nil-map write and range-var capture (Go);
+  unanchored regex; float equality; timezone/DST drift; SQL injection.
+- **Wrapper / proxy correctness.** When the change adds or edits a type that wraps
+  another (cache, proxy, decorator, adapter), check every method routes to the
+  wrapped instance and not back through a registry/session/global (which re-enters
+  or recurses), and that it forwards every method its callers actually use.
+"""
+"""The directed bug-class sweep block.
+
+Substituted into every reviewer template's ``{bug_class_block}`` placeholder for
+reviewers configured ``bug_class_sweep=True`` — the default, unlike the opt-in
+:data:`ADVERSARIAL_LENS_BLOCK` (see :class:`~syncade.config.ReviewerConfig`);
+reviewers with the sweep disabled render the placeholder as the empty string.
 """
 
 

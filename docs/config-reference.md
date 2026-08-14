@@ -139,6 +139,7 @@ rest default. Overridable per-run by name: `--reviewer-model NAME=…`, `--revie
 | `thinking` | `low`/`medium`/`high`/`xhigh`/`max` | `high` | Reasoning-effort tier. Drives audit rigor — do not lower it for cost. |
 | `permissions` | `trusted-execute`/`yolo` | `trusted-execute` | Tool-permission tier. `trusted-execute` runs unattended but keeps the OS sandbox scoped to the worktree. `safe` is rejected — it prompts and would hang a headless reviewer. |
 | `adversarial_lens` | bool | `false` | When true, the reviewer's prompt carries the enumerate-then-attack edge-case block. |
+| `bug_class_sweep` | bool | `true` | When true (the default), the reviewer's prompt carries a directed bug-class sweep — a short set of recurring correctness angles (removed-behavior audit, cross-file/caller-callee trace, language pitfalls, wrapper/proxy fidelity) the reviewer must run and name before any SHIP. Set `false` to run a reviewer as a lighter-weight control. Severity keys off verification state, so it does not manufacture blockers: a reproduced defect stays a blocker, an unreproduced candidate is `minor`/`coverage_gaps`. A per-repo `reviewer*.md` override that drops the `{bug_class_block}` placeholder disables it regardless of this flag. |
 | `template` | basename or unset | unset | Optional prompt template basename overriding provider-based selection. |
 | `auth` | `auto`/`subscription`/`api` | `auto` | Which account pays. See [auth](#authentication-fields). |
 | `api_key_env` | env var name or unset | unset | For `auth = "api"`: the env var holding the key. |

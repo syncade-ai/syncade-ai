@@ -94,6 +94,36 @@ class TestProviderReviewerTemplates:
             )
             assert "Adversarial edge enumeration" not in rendered_off
 
+    def test_bug_class_block_in_all_reviewer_templates(self, tmp_path: Path):
+        """Every reviewer template — the two provider-specific ones AND the
+        generic fallback — must carry {bug_class_block}, so a reviewer with
+        bug_class_sweep=True (the default) receives the directed sweep. Guards
+        against the placeholder being dropped from one template on a future edit,
+        which would silently disable the feature for that provider."""
+        templates = {
+            "anthropic": load_reviewer_template_for_provider(tmp_path, "anthropic"),
+            "openai": load_reviewer_template_for_provider(tmp_path, "openai"),
+            "generic": load_reviewer_template(tmp_path),
+        }
+        for label, template in templates.items():
+            assert "{bug_class_block}" in template, (
+                f"reviewer template {label!r} missing {{bug_class_block}} — "
+                "bug_class_sweep reviewers silently lose the directed sweep"
+            )
+
+    def test_bug_class_sweep_default_on_and_toggleable(self, tmp_path: Path):
+        """bug_class_sweep defaults on: an omitted flag renders the sweep; passing
+        False omits it. Pins the default-ON behavior (unlike the opt-in lens)."""
+        template = load_reviewer_template(tmp_path)
+        rendered_default = render_reviewer_prompt(
+            template, pr_doc_path="x", diff="d", json_schema="s"
+        )
+        assert "Directed bug-class sweep" in rendered_default
+        rendered_off = render_reviewer_prompt(
+            template, pr_doc_path="x", diff="d", json_schema="s", bug_class_sweep=False
+        )
+        assert "Directed bug-class sweep" not in rendered_off
+
     def test_unknown_provider_uses_generic_fallback(self, tmp_path: Path):
         assert load_reviewer_template_for_provider(tmp_path, "fake1") == load_reviewer_template(
             tmp_path

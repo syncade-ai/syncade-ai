@@ -32,6 +32,7 @@ _ACTOR_FIELD_ORDER = [
     "timeout_seconds",
     "name",
     "adversarial_lens",
+    "bug_class_sweep",
     "template",
 ]
 _SKIP_FIELDS = {"provider", "api_key_env"}
@@ -44,6 +45,7 @@ _LABELS = {
     "timeout_seconds": "Timeout (s)",
     "name": "Name",
     "adversarial_lens": "Adversarial lens",
+    "bug_class_sweep": "Bug-class sweep",
     "template": "Template",
     "max_retries": "Max retries",
     "keep": "Keep (runs)",

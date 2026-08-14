@@ -134,6 +134,7 @@ def _build_reviewer_prompt(
             "master_plan_path": None,
             "json_schema": get_findings_schema_string(),
             "adversarial_lens": reviewer.adversarial_lens,
+            "bug_class_sweep": reviewer.bug_class_sweep,
         }
         if prior_round_dir is not None:
             render_kwargs["prior_round_output"] = load_prior_reviewer_response_text(

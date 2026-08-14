@@ -158,6 +158,18 @@ class ReviewerConfig(AuthedActor):
             "adversarial lens."
         ),
     )
+    bug_class_sweep: bool = Field(
+        default=True,
+        description=(
+            "When true, this reviewer's prompt carries the directed bug-class "
+            "sweep (removed-behavior audit, caller/callee trace, language "
+            "pitfall, wrapper/proxy) that raises recall on specific defect "
+            "classes. Default-ON for every reviewer — unlike the opt-in "
+            "adversarial lens — because it helps the plain standard reviewer "
+            "most; set false to drop it (e.g. to shrink a prompt near the size "
+            "cap, or to A/B its effect)."
+        ),
+    )
     template: str | None = Field(
         default=None,
         description=(

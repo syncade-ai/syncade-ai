@@ -132,6 +132,7 @@ confirm belong in `coverage_gaps`, not in the finding. This is
 finding-SCOPING guidance, not a new severity: a consistency-class finding
 takes whatever severity its impact warrants.
 {adversarial_lens_block}
+{bug_class_block}
 Test as a user would as well, using playwright (if a UI exists) to ensure
 that functionality works and surfaces as advertised — and most importantly,
 that the data in the UI is correct, actually surfaces in the UI, and matches

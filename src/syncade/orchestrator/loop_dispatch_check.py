@@ -103,6 +103,7 @@ def _diff_will_dispatch(
                     master_plan_path=None,
                     json_schema=_json_schema,
                     adversarial_lens=reviewer.adversarial_lens,
+                    bug_class_sweep=reviewer.bug_class_sweep,
                 )
             except Exception:  # noqa: BLE001 — fail open; exact check runs inside round
                 continue

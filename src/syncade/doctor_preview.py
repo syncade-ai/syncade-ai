@@ -147,6 +147,7 @@ def based_diff_classify(
                 master_plan_path=None,
                 json_schema=_json_schema,
                 adversarial_lens=_reviewer.adversarial_lens,
+                bug_class_sweep=_reviewer.bug_class_sweep,
             )
         except Exception:  # noqa: BLE001 — fail open; check_plan catches template errors
             continue
@@ -290,6 +291,7 @@ def check_plan(
                         master_plan_path=None,
                         json_schema=_json_schema,
                         adversarial_lens=_reviewer.adversarial_lens,
+                        bug_class_sweep=_reviewer.bug_class_sweep,
                     )
                 except Exception:  # noqa: BLE001 — template errors are checked live
                     continue

@@ -7,6 +7,22 @@ include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Reviewers now run a directed bug-class sweep before they can SHIP.** Every reviewer's prompt
+  carries a short set of recurring correctness angles — removed-behavior audit (did this delete a
+  guard/branch/case that carried real weight?), cross-file caller/callee trace, language-level
+  pitfalls, and wrapper/proxy fidelity — that it must actually run and name in its summary before
+  a SHIP. This turns the reviewer's open-ended "look for bugs" into a checklist of the classes that
+  most often slip past a plausible-looking diff. Controlled by a new per-reviewer `bug_class_sweep`
+  field (default `true`); severity keys off verification state, so a reproduced defect is a blocker
+  while an unreproduced candidate lands as `minor`/`coverage_gaps` rather than a manufactured block.
+  Set `bug_class_sweep = false` to keep a reviewer as a lighter-weight control. Validated on a
+  natural experiment in another project of ours, where the removed-behavior angle predicts a real
+  regression that shipped and was hot-fixed minutes later — and again on this change's own review,
+  whose only finding was a rewritten docstring that no longer matched the invariant it asserted:
+  exactly the removed-behavior/changed-invariant class this sweep is built to catch.
+
 ## [0.6.0] — 2026-08-12
 
 ### Added
