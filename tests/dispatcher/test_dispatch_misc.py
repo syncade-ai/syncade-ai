@@ -351,3 +351,50 @@ class TestNoneInputs:
         assert isinstance(result, DispatchResult)
         assert result.results == []
         assert not result.all_succeeded  # vacuously: no successes
+
+
+class TestInvalidCapturePrefix:
+    """Reviewer names that would write outside the capture directory must be caught
+    before run_subprocess opens any files. Persistence enforces the same rule, but
+    only after the child has already run and streamed content."""
+
+    def _run_with_name(self, name: str, tmp_path: Path) -> ReviewerRunResult:
+        """Dispatch a single reviewer with the given name and a real capture_dir."""
+        adapter = FakeAdapter()
+        wt = tmp_path / "worktree"
+        wt.mkdir(exist_ok=True)
+        capture_dir = tmp_path / "capture"
+        capture_dir.mkdir(exist_ok=True)
+        result = dispatch_reviewers(
+            [_config(name=name)],
+            worktree_paths={name: wt},
+            prompt="test",
+            capture_dir=capture_dir,
+            skip_auth_check=True,
+            adapter_factory=_factory_returning(adapter),
+        )
+        assert len(result.results) == 1
+        return result.results[0]
+
+    def test_dot_name_rejected_before_stream_files_created(self, tmp_path: Path):
+        """A reviewer named '.' would stream to capture_dir itself."""
+        run = self._run_with_name(".", tmp_path)
+        assert run.error is not None
+        assert isinstance(run.error, ValueError)
+        assert "." in str(run.error)
+        # No stream files created before validation fired.
+        assert not any((tmp_path / "capture").iterdir())
+
+    def test_slash_in_name_rejected_before_stream_files_created(self, tmp_path: Path):
+        """A reviewer named 'a/b' would create a subdirectory under capture_dir."""
+        run = self._run_with_name("a/b", tmp_path)
+        assert run.error is not None
+        assert isinstance(run.error, ValueError)
+        assert not any((tmp_path / "capture").iterdir())
+
+    def test_absolute_name_rejected_before_stream_files_created(self, tmp_path: Path):
+        """A reviewer named '/tmp/evil' would write completely outside the capture_dir."""
+        run = self._run_with_name("/tmp/evil-syncade-test", tmp_path)
+        assert run.error is not None
+        assert isinstance(run.error, ValueError)
+        assert not any((tmp_path / "capture").iterdir())

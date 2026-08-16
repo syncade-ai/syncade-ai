@@ -64,3 +64,11 @@ uv run python -m pytest -q -m smoke
 
 Keep PRs focused and describe the change and how you verified it. By contributing you
 agree your contributions are licensed under the project's [Apache License 2.0](LICENSE).
+
+**How an accepted PR actually lands, so a closed PR is not a surprise.** Development happens
+in a private repository and this one receives scrubbed snapshots, so a contribution is applied
+upstream and re-emerges in a later release commit rather than being merged here. In practice
+that means an accepted PR is **closed rather than merged**, with a comment linking the commit
+that carries the work, and the contributor credited by name in the `CHANGELOG` entry — release
+commits use a fixed release identity, so the changelog is where credit is durable. A closed PR
+is not a rejection; if a change is declined, we say so in words.

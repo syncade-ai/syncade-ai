@@ -15,7 +15,7 @@ def _write_config(tmp_path, body: str):
 
 def test_missing_file_returns_defaults(tmp_path):
     cfg = load_config(tmp_path)
-    assert cfg.loop.max_rounds == 3
+    assert cfg.loop.max_rounds == 5
     assert cfg.reviewers[0].name == "codex-reviewer"
     assert cfg.reviewers[1].name == "codex-reviewer-adv"
     assert cfg.reviewers[1].template == "reviewer_adversarial.md"
@@ -25,13 +25,13 @@ def test_missing_file_returns_defaults(tmp_path):
 def test_missing_directory_also_returns_defaults(tmp_path):
     # no .syncade/ subdir at all
     cfg = load_config(tmp_path)
-    assert cfg.loop.max_rounds == 3
+    assert cfg.loop.max_rounds == 5
 
 
 def test_empty_file_returns_all_defaults(tmp_path):
     _write_config(tmp_path, "")
     cfg = load_config(tmp_path)
-    assert cfg.loop.max_rounds == 3
+    assert cfg.loop.max_rounds == 5
     # ProducerConfig default follows the invoking harness; the conftest
     # neutral-harness fixture clears both markers → Codex shape.
     assert cfg.producer.model == "gpt-5.6-terra"

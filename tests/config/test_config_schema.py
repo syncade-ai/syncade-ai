@@ -20,7 +20,7 @@ def test_default_config_matches_prd():
     assert cfg.producer.thinking == "medium"
     assert cfg.producer.permissions == "yolo"
     assert cfg.producer.timeout_seconds is None
-    assert cfg.loop.max_rounds == 3
+    assert cfg.loop.max_rounds == 5
     assert cfg.loop.timeout_seconds == 1800
     assert cfg.review.strip_repo_context_files == ["CLAUDE.md", "AGENTS.md"]
 

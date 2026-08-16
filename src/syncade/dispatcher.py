@@ -157,6 +157,8 @@ def dispatch_reviewers(
     adapter_factory: Callable[[str], ReviewerAdapter] | None = None,
     pricing: PricingConfig | None = None,
     max_retries: int = retry.MAX_RETRIES,
+    capture_dir: Path | None = None,
+    on_child_spawn: Callable[[str, int], None] | None = None,
 ) -> DispatchResult:
     """Dispatch each ``ReviewerConfig`` to its provider's adapter in parallel.
 
@@ -369,6 +371,8 @@ def dispatch_reviewers(
                 config.timeout_seconds if config.timeout_seconds is not None else timeout_seconds,
                 pricing,
                 max_retries,
+                capture_dir,
+                on_child_spawn,
             )
             for config, adapter in pairs
         ]
@@ -397,6 +401,8 @@ def _run_single_reviewer(
     timeout_seconds: float,
     pricing: PricingConfig | None = None,
     max_retries: int = retry.MAX_RETRIES,
+    capture_dir: Path | None = None,
+    on_child_spawn: Callable[[str, int], None] | None = None,
 ) -> ReviewerRunResult:
     """Run one reviewer end-to-end: build_invocation, run_subprocess,
     parse_output. Capture either the parsed output or the exception
@@ -430,6 +436,30 @@ def _run_single_reviewer(
             duration_seconds=time.monotonic() - run_start,
             model=config.model,
         )
+    # Validate the reviewer name before constructing capture_prefix. Persistence
+    # enforces the same rule, but only AFTER the child has already run and streamed
+    # files. Catching an invalid name here prevents files from landing outside the
+    # round directory before the rejection fires.
+    # Deferred import: persistence.__init__ imports from dispatcher (for DispatchResult),
+    # so a top-level import here creates a circular dependency at module-load time. By
+    # the time this function is called, dispatcher is fully initialized, so the deferred
+    # import resolves cleanly.
+    if capture_dir is not None:
+        from syncade.persistence._validation import (  # noqa: PLC0415
+            _validate_reviewer_filename_basename,
+        )
+
+        try:
+            _validate_reviewer_filename_basename(config.name)
+        except ValueError as exc:
+            return ReviewerRunResult(
+                reviewer_name=config.name,
+                provider=config.provider,
+                output=None,
+                error=exc,
+                duration_seconds=time.monotonic() - run_start,
+                model=config.model,
+            )
     # Track the subprocess result separately so we can attach it to
     # the ReviewerRunResult on both success AND parse-failure paths.
     # On launch-failure (binary missing, OS error) it stays None and
@@ -449,6 +479,18 @@ def _run_single_reviewer(
                 env=invocation.env,
                 timeout=timeout_seconds,
                 input_text=invocation.stdin_text,
+                # Tee'd to <round>/<name>.{stdout,stderr} — the same two files persistence
+                # writes afterwards — so a run killed mid-review still leaves what the
+                # reviewer had already said, minus at most the chunk in flight
+                # (PR-h-field-03).
+                capture_prefix=capture_dir / config.name if capture_dir is not None else None,
+                # The pid is knowable only here, and only now. Named per reviewer because a
+                # post-mortem needs to know WHICH child a surviving process was.
+                on_spawn=(
+                    (lambda pid, name=config.name: on_child_spawn(name, pid))
+                    if on_child_spawn is not None
+                    else None
+                ),
             )
             attempt_usage = usage_for(
                 subprocess_result, config.provider, config.model, pricing, _auth_mode(config)

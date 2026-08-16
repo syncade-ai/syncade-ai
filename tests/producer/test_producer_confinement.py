@@ -171,7 +171,7 @@ def test_stage_producer_input_out_of_repo_does_not_shadow_tracked_file(tmp_path)
     basename and skipped the copy when the dest already existed, handing the
     producer the wrong spec.
     """
-    from syncade.producer import _stage_producer_input
+    from syncade.producer_git import _stage_producer_input
 
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -200,7 +200,7 @@ def test_stage_producer_input_refreshes_a_mutated_staged_copy_on_retry(tmp_path)
     """PR-v2-22 F8: a run-artifact input staged into a SEPARATE worktree, then MUTATED by a crashed
     attempt (the mutation survives the gitignored reset), is re-copied from the pristine source on
     the next stage call — so a retry never reads corrupted input (C2)."""
-    from syncade.producer import _stage_producer_input
+    from syncade.producer_git import _stage_producer_input
 
     repo_root = tmp_path / "repo"
     (repo_root / ".syncade" / "runs" / "r").mkdir(parents=True)
@@ -225,7 +225,7 @@ def test_stage_producer_input_refreshes_a_mutated_staged_copy_on_retry(tmp_path)
 def test_stage_producer_input_same_root_is_a_noop_not_an_error(tmp_path):
     """PR-v2-22 F8: when worktree_path == repo_root the staged dest IS the source, so a re-copy
     would raise SameFileError. The content compare must skip it (return the ref) — not error."""
-    from syncade.producer import _stage_producer_input
+    from syncade.producer_git import _stage_producer_input
 
     repo_root = tmp_path / "repo"
     (repo_root / ".syncade" / "runs" / "r").mkdir(parents=True)

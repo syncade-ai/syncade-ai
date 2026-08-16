@@ -263,7 +263,7 @@ def test_list_get_outside_git_repo_ignore_cwd_config(tmp_path, monkeypatch, caps
     # `get` resolves the effective value: the default 3, NOT the phantom file's 1; note on stderr.
     assert main(["--repo-root", str(workdir), "--config", "get", "loop.max_rounds"]) == 0
     cap = capsys.readouterr()
-    assert cap.out.strip() == "3"  # stdout stays the clean scriptable value
+    assert cap.out.strip() == "5"  # stdout stays the clean scriptable value
     assert "not a git repo" in cap.err  # get warns too (finding named get + list)
 
 

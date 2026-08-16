@@ -259,9 +259,12 @@ class TestAdversarialLens:
 
     def test_no_lens_render_is_byte_identical_to_pre_lens_template(self, tmp_path: Path):
         """Rendering with adversarial_lens=False must produce byte-identical
-        output to what the template yields without the placeholder line (the
-        control-path acceptance criterion: no-lens reviewers and every
-        pre-existing config must not see drifted prompt bytes)."""
+        output to what the template yields without the {adversarial_lens_block}
+        placeholder line (the adversarial-lens control-path acceptance criterion:
+        turning the lens off drifts no prompt bytes). This pins the lens control
+        path only — it is NOT an overall prompt-byte-stability guarantee, since
+        another opt-in block (bug_class_sweep) legitimately adds bytes to the
+        prompt of any reviewer that enables it."""
         template = load_reviewer_template(tmp_path)
         off = render_reviewer_prompt(
             template,

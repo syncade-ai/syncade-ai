@@ -260,7 +260,7 @@ class TestForceDirtyFlag:
         # Dirty the tree
         (tmp_path / "README.md").write_text("modified\n")
         (tmp_path / ".syncade").mkdir()
-        # Default max_rounds = 3 (loop mode); bogus provider would
+        # Default max_rounds > 1 (loop mode); bogus provider would
         # be a CONFIG_ERROR if dispatch ran, but the dirty-tree
         # refusal fires first.
         (tmp_path / ".syncade" / "config.toml").write_text(

@@ -106,7 +106,7 @@ def test_run_review_round_trips_against_real_claude_and_codex(tmp_path):
     # check (the PR-7.5 shape this test was originally written for):
     # the assertions below only inspect round-0 artifacts and accept
     # ``exit_code in (SUCCESS, FINDINGS_PRESENT)``. With the
-    # post-PR-8 default ``max_rounds=3``, a NO-SHIP from either real
+    # post-PR-8 default ``max_rounds`` (5 since early access), a NO-SHIP from either real
     # reviewer would advance the loop into the producer phase, which
     # invokes a real codex subprocess in a worktree without a
     # configured ``[producer]`` block — that subprocess returns a

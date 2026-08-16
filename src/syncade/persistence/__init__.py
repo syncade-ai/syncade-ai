@@ -121,6 +121,9 @@ from .reviewer import (
 from .reviewer import (
     persist_reviewer_result as persist_reviewer_result,
 )
+from .reviewer import (
+    record_child_pid as record_child_pid,
+)
 from .round_manifest import (
     persist_round_manifest as persist_round_manifest,
 )
@@ -176,6 +179,7 @@ __all__ = [
     "persist_loop_summary",
     "persist_producer_result",
     "persist_dispatch_record",
+    "record_child_pid",
     "persist_reviewer_result",
     "persist_round_manifest",
     "persist_run_init",

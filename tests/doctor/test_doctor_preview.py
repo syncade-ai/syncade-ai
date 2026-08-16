@@ -75,7 +75,7 @@ class TestPlanCheck:
         plan = next(
             c for c in doctor.collect_checks(SyncadeConfig(), healthy_env) if c.name == "plan"
         )
-        assert "non-final NO-SHIP" in plan.detail  # default max_rounds=3 -> committing
+        assert "non-final NO-SHIP" in plan.detail  # max_rounds=3 (>1) -> committing
 
     def test_single_pass_omits_producer(self, healthy_env):
         plan = next(

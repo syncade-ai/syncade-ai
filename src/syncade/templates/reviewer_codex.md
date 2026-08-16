@@ -79,6 +79,7 @@ Before SHIP, attempt to falsify the implementation:
 If a relevant check is unreachable, record it in `coverage_gaps` and explain why.
 
 {adversarial_lens_block}
+{bug_class_block}
 # Blocker evidence standard
 
 Every blocker must be evidence-backed.

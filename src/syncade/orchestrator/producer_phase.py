@@ -165,4 +165,5 @@ def _run_producer_phase(
                 else _NO_OPERATOR_DECISION_SENTINEL
             ),
             max_retries=config.retry.max_retries,
+            capture_dir=round_dir,
         )

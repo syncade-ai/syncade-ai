@@ -109,6 +109,7 @@ finding-SCOPING guidance, not a new severity: a consistency-class finding
 takes whatever severity its impact warrants.
 
 {adversarial_lens_block}
+{bug_class_block}
 # Review dimensions
 
 Review functionality first:

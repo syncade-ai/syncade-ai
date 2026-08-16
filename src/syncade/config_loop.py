@@ -19,7 +19,7 @@ class LoopConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_rounds: int = Field(
-        default=3,
+        default=5,
         ge=1,
         le=10,
         description=(

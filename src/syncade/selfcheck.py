@@ -390,6 +390,11 @@ def run_selfcheck(
                     repo_root=repo_root,
                     adapter=adapter,
                     max_retries=config.retry.max_retries,
+                    # Same round dir persist_producer_result writes to below. Selfcheck is a
+                    # DIAGNOSTIC — the run most likely to be interrupted by an operator who is
+                    # already debugging — so losing its producer output is the worst case, not
+                    # an acceptable one (dogfood finding, PR-h-field-03).
+                    capture_dir=round_dir,
                 )
                 # Persist producer artifacts
                 # (producer.stdout / stderr / commit.txt / error.txt)

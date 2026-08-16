@@ -23,14 +23,14 @@ _CODEX_USAGE_JSONL = (
 
 
 def test_timeout_after_partial_commit_surfaces_moved_head(tmp_path, monkeypatch):
-    import syncade.producer as producer_module
+    import syncade.producer_attempt as producer_module
 
     _git_required()
     starting_sha = _seed_repo(tmp_path)
     pr_doc = _make_pr_doc(tmp_path)
     findings = _make_findings_md(tmp_path / ".syncade" / "runs" / "r" / "round-0")
 
-    def fake_run_subprocess(argv, *, cwd=None, env=None, timeout=None, input_text=None):
+    def fake_run_subprocess(argv, *, cwd=None, env=None, timeout=None, input_text=None, **_):
         del env, timeout, input_text
         if argv[:3] == ["git", "rev-parse", "HEAD"]:
             return SubprocessResult(
@@ -85,14 +85,14 @@ def test_timeout_after_partial_commit_surfaces_moved_head(tmp_path, monkeypatch)
 
 
 def test_timeout_partial_stdout_records_usage(tmp_path, monkeypatch):
-    import syncade.producer as producer_module
+    import syncade.producer_attempt as producer_module
 
     _git_required()
     starting_sha = _seed_repo(tmp_path)
     pr_doc = _make_pr_doc(tmp_path)
     findings = _make_findings_md(tmp_path / ".syncade" / "runs" / "r" / "round-0")
 
-    def fake_run_subprocess(argv, *, cwd=None, env=None, timeout=None, input_text=None):
+    def fake_run_subprocess(argv, *, cwd=None, env=None, timeout=None, input_text=None, **_):
         del env, timeout, input_text
         if argv[:3] == ["git", "rev-parse", "HEAD"]:
             return SubprocessResult(
@@ -135,3 +135,92 @@ def test_timeout_partial_stdout_records_usage(tmp_path, monkeypatch):
     assert result.usage.total_tokens == 6500
     assert result.usage.cost_source == "estimated"
     assert result.usage.cost_usd and result.usage.cost_usd > 0
+
+
+def test_producer_streams_to_disk_so_a_timeout_is_not_a_blank_record(tmp_path, monkeypatch):
+    """The producer leg was left on pipes when streaming landed for reviewers, and it cost us.
+
+    A real producer timed out at the full 2400s and left `producer.stdout` at ZERO bytes —
+    forty minutes of model work with no record of what it was doing, which is exactly the loss
+    the streaming work exists to end. It was out of scope then; this closes it.
+
+    Asserted on the CAPTURE PATH rather than by mocking the result: the producer must hand
+    run_subprocess a capture_prefix pointing at the round directory's `producer` basename, which
+    is the same basename persistence writes, so the streamed file IS the durable artifact.
+    """
+    import syncade.producer_attempt as producer_module
+
+    _git_required()
+    starting_sha = _seed_repo(tmp_path)
+    pr_doc = _make_pr_doc(tmp_path)
+    round_dir = tmp_path / ".syncade" / "runs" / "r" / "round-0"
+    findings = _make_findings_md(round_dir)
+    seen: dict[str, object] = {}
+
+    def fake_run_subprocess(argv, *, cwd=None, env=None, timeout=None, input_text=None, **kwargs):
+        del env, timeout, input_text
+        if argv[:3] == ["git", "rev-parse", "HEAD"]:
+            return SubprocessResult(
+                returncode=0, stdout=_read_head(cwd) + "\n", stderr="", duration_seconds=0.01
+            )
+        seen["capture_prefix"] = kwargs.get("capture_prefix")
+        return SubprocessResult(
+            returncode=0, stdout=_CODEX_USAGE_JSONL, stderr="", duration_seconds=0.1
+        )
+
+    monkeypatch.setattr(producer_module, "run_subprocess", fake_run_subprocess)
+    run_producer(
+        worktree_path=tmp_path,
+        starting_sha=starting_sha,
+        pr_doc_path=pr_doc,
+        findings_md_path=findings,
+        test_run_stdout_path=None,
+        producer_config=ProducerConfig(),
+        timeout_seconds=60.0,
+        round_number=0,
+        max_rounds=1,
+        repo_root=tmp_path,
+        adapter=FakeProducerAdapter(),
+        capture_dir=round_dir,
+    )
+
+    assert seen["capture_prefix"] == round_dir / "producer", (
+        f"producer did not stream to the round directory (got {seen['capture_prefix']!r}); a "
+        f"timeout would leave producer.stdout empty again"
+    )
+
+
+def test_producer_without_a_capture_dir_stays_on_pipes(tmp_path, monkeypatch):
+    """Callers with no round directory (tests, library use) must not be forced to stream."""
+    import syncade.producer_attempt as producer_module
+
+    _git_required()
+    starting_sha = _seed_repo(tmp_path)
+    seen: dict[str, object] = {"capture_prefix": "unset"}
+
+    def fake_run_subprocess(argv, *, cwd=None, env=None, timeout=None, input_text=None, **kwargs):
+        del env, timeout, input_text
+        if argv[:3] == ["git", "rev-parse", "HEAD"]:
+            return SubprocessResult(
+                returncode=0, stdout=_read_head(cwd) + "\n", stderr="", duration_seconds=0.01
+            )
+        seen["capture_prefix"] = kwargs.get("capture_prefix")
+        return SubprocessResult(
+            returncode=0, stdout=_CODEX_USAGE_JSONL, stderr="", duration_seconds=0.1
+        )
+
+    monkeypatch.setattr(producer_module, "run_subprocess", fake_run_subprocess)
+    run_producer(
+        worktree_path=tmp_path,
+        starting_sha=starting_sha,
+        pr_doc_path=_make_pr_doc(tmp_path),
+        findings_md_path=_make_findings_md(tmp_path / ".syncade" / "runs" / "r" / "round-0"),
+        test_run_stdout_path=None,
+        producer_config=ProducerConfig(),
+        timeout_seconds=60.0,
+        round_number=0,
+        max_rounds=1,
+        repo_root=tmp_path,
+        adapter=FakeProducerAdapter(),
+    )
+    assert seen["capture_prefix"] is None

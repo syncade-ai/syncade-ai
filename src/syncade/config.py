@@ -158,6 +158,23 @@ class ReviewerConfig(AuthedActor):
             "adversarial lens."
         ),
     )
+    bug_class_sweep: bool = Field(
+        default=False,
+        description=(
+            "When true, this reviewer's prompt carries the directed bug-class "
+            "sweep (removed-behavior audit, caller/callee trace, language "
+            "pitfall, wrapper/proxy) that raises recall on specific defect "
+            "classes. OPT-IN for now, like the adversarial lens. The "
+            "contributed design defaulted it ON, and that argument may well "
+            "win — it helps the plain standard reviewer most. It is held off "
+            "until an ablation measures it, because this repo has reverted a "
+            "panel change before (PR-28 -> PR-29) after a cheaper reasoning "
+            "tier audited far too leniently, and changing every reviewer's "
+            "prompt by default is the same category of change. Per-reviewer, "
+            "so turning it on for one reviewer and off for another IS the "
+            "ablation."
+        ),
+    )
     template: str | None = Field(
         default=None,
         description=(

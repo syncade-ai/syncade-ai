@@ -50,7 +50,7 @@ def test_cheap_is_single_pass(tmp_path):
 
 def test_thorough_doubles_the_timeout_keeps_full_rounds(tmp_path):
     cfg = load_config(tmp_path, preset="thorough")
-    assert cfg.loop.max_rounds == 3
+    assert cfg.loop.max_rounds == 5
     assert cfg.loop.timeout_seconds == 3600.0
 
 

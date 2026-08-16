@@ -94,6 +94,40 @@ class TestProviderReviewerTemplates:
             )
             assert "Adversarial edge enumeration" not in rendered_off
 
+    def test_bug_class_block_in_all_reviewer_templates(self, tmp_path: Path):
+        """Every reviewer template — the two provider-specific ones AND the
+        generic fallback — must carry {bug_class_block}, so a reviewer with
+        bug_class_sweep=True receives the directed sweep. Guards
+        against the placeholder being dropped from one template on a future edit,
+        which would silently disable the feature for that provider."""
+        templates = {
+            "anthropic": load_reviewer_template_for_provider(tmp_path, "anthropic"),
+            "openai": load_reviewer_template_for_provider(tmp_path, "openai"),
+            "generic": load_reviewer_template(tmp_path),
+        }
+        for label, template in templates.items():
+            assert "{bug_class_block}" in template, (
+                f"reviewer template {label!r} missing {{bug_class_block}} — "
+                "bug_class_sweep reviewers silently lose the directed sweep"
+            )
+
+    def test_bug_class_sweep_is_opt_in_and_toggleable(self, tmp_path: Path):
+        """Opt-in: an omitted flag renders NO sweep; passing True renders it.
+
+        Both directions are pinned because the ablation depends on them — one
+        reviewer with the sweep and one without, in the same round, is the whole
+        experiment. A default that silently flipped would invalidate it.
+        """
+        template = load_reviewer_template(tmp_path)
+        rendered_default = render_reviewer_prompt(
+            template, pr_doc_path="x", diff="d", json_schema="s"
+        )
+        assert "Directed bug-class sweep" not in rendered_default
+        rendered_on = render_reviewer_prompt(
+            template, pr_doc_path="x", diff="d", json_schema="s", bug_class_sweep=True
+        )
+        assert "Directed bug-class sweep" in rendered_on
+
     def test_unknown_provider_uses_generic_fallback(self, tmp_path: Path):
         assert load_reviewer_template_for_provider(tmp_path, "fake1") == load_reviewer_template(
             tmp_path

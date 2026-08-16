@@ -29,7 +29,7 @@ from pathlib import Path
 
 # the template loader + the adversarial-lens block moved to
 # prompts_loader; re-exported here so syncade.prompts.<name> is unchanged.
-from syncade.prompts_loader import ADVERSARIAL_LENS_BLOCK, load_template
+from syncade.prompts_loader import ADVERSARIAL_LENS_BLOCK, BUG_CLASS_BLOCK, load_template
 
 DEFAULT_TEMPLATE_PATH = "templates/reviewer.md"
 """Package-relative path of the bundled reviewer template. Kept as a
@@ -160,6 +160,7 @@ def render_reviewer_prompt(
     json_schema: str,
     prior_round_output: str = _NO_PRIOR_ROUND_SENTINEL,
     adversarial_lens: bool = False,
+    bug_class_sweep: bool = False,
 ) -> str:
     """Substitute placeholders into the reviewer template.
 
@@ -185,10 +186,14 @@ def render_reviewer_prompt(
       block (:data:`ADVERSARIAL_LENS_BLOCK`) when ``adversarial_lens``
       is True, else the empty string. A reviewer not flagged renders this as
       ``""``.
+    - ``{bug_class_block}``: the directed bug-class sweep
+      (:data:`BUG_CLASS_BLOCK`) when ``bug_class_sweep`` is True, else the
+      empty string. OPT-IN, like the adversarial lens — a reviewer that does
+      not set it renders this as ``""``.
 
     The template is rendered with :meth:`str.format_map` against a
     strict mapping — any placeholder in the template that isn't one of
-    the six above raises :class:`KeyError`, so a typo in a custom
+    the seven above raises :class:`KeyError`, so a typo in a custom
     override surfaces loudly instead of silently producing an
     unsubstituted prompt.
     """
@@ -199,6 +204,7 @@ def render_reviewer_prompt(
         "json_schema": json_schema,
         "prior_round_output": prior_round_output,
         "adversarial_lens_block": ADVERSARIAL_LENS_BLOCK if adversarial_lens else "",
+        "bug_class_block": BUG_CLASS_BLOCK if bug_class_sweep else "",
     }
     return template.format_map(mapping)
 

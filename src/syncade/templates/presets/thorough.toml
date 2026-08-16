@@ -1,9 +1,9 @@
 # Preset: thorough (PR-v2-9) — full rounds plus extra per-subprocess wall-clock for large diffs.
 #
-# Trades TIME for depth: the full producer loop (max_rounds = 3, the default) and double
+# Trades TIME for depth: the full producer loop (max_rounds = 5, the default) and double
 # the per-subprocess timeout, so a heavy reviewer working a large diff is not SIGKILLed mid-review. It
 # holds the reviewer model + effort tier at the SAME proven level as balanced — "thorough" buys more
 # rounds and more time, never a different (or more expensive) panel.
 [loop]
-max_rounds = 3          # the full producer loop (3 is the default; ceiling is 10)
+max_rounds = 5          # the full producer loop (5 is the default; ceiling is 10)
 timeout_seconds = 3600  # 60 min per subprocess — double the default, for big diffs

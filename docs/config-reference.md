@@ -40,7 +40,7 @@ cheaper, lenient panel is the panel-leniency hazard, and a preset must not reint
 |---|---|---|
 | `cheap` | `max_rounds = 1` — single pass, no producer loop | unchanged (proven panel) |
 | `balanced` | the shipped defaults (byte-identical to zero-config) | unchanged (proven panel) |
-| `thorough` | `max_rounds = 3` + `timeout_seconds = 3600` (double) | unchanged (proven panel) |
+| `thorough` | `max_rounds = 5` + `timeout_seconds = 3600` (double) | unchanged (proven panel) |
 
 ## Editing config with `syncade --config`
 
@@ -109,7 +109,7 @@ below; `worktree_base` is the one top-level scalar.
 <!-- config-fields: LoopConfig -->
 | Field | Type | Default | What it does |
 |---|---|---|---|
-| `max_rounds` | int, 1–10 | `3` | Max rounds of (reviewers → synth → optional test → producer-if-NO-SHIP). SHIP ends the loop early. `1` = single-pass, no producer. `--max-rounds` overrides. Ceiling raised 3→10; budget/timeout are the real runaway guards. |
+| `max_rounds` | int, 1–10 | `5` | Max rounds of (reviewers → synth → optional test → producer-if-NO-SHIP). SHIP ends the loop early. `1` = single-pass, no producer. `--max-rounds` overrides. Ceiling raised 3→10; budget/timeout are the real runaway guards. |
 | `timeout_seconds` | float > 0 | `1800` | Per-subprocess wall-clock cap — fallback for every leg (reviewers, judge, test, checks, producer). SIGKILL past it. `--timeout` overrides. Must be finite. |
 | `max_diff_bytes` | int > 0 | `1000000` | Ceiling on the REVIEWER-FACING diff in UTF-8 bytes — after repo-context stripping and binary elision, i.e. what actually reaches the model. Over it, the run is refused before any dispatch (exit 60, `diff_too_large`) rather than truncated: a verdict on a partial diff is a verdict on the wrong code. Default sits just under `codex exec`'s hard 1,048,576-CHARACTER limit so syncade's actionable message fires before the provider's opaque one, and ~7x above the largest diff observed in this repo's run corpus (147,171 B). Not a token cap — `claude -p` limits by tokens. |
 | `budget_tokens` | int > 0 or unset | unset | Optional token ceiling; aborts the loop at a dispatch boundary (exit 25). A hard cap. `--budget-tokens` overrides. |
@@ -139,6 +139,7 @@ rest default. Overridable per-run by name: `--reviewer-model NAME=…`, `--revie
 | `thinking` | `low`/`medium`/`high`/`xhigh`/`max` | `high` | Reasoning-effort tier. Drives audit rigor — do not lower it for cost. |
 | `permissions` | `trusted-execute`/`yolo` | `trusted-execute` | Tool-permission tier. `trusted-execute` runs unattended but keeps the OS sandbox scoped to the worktree. `safe` is rejected — it prompts and would hang a headless reviewer. |
 | `adversarial_lens` | bool | `false` | When true, the reviewer's prompt carries the enumerate-then-attack edge-case block. |
+| `bug_class_sweep` | bool | `false` | When true, the reviewer's prompt carries a directed bug-class sweep — a short set of recurring correctness angles (removed-behavior audit, cross-file/caller-callee trace, language pitfalls, wrapper/proxy fidelity) the reviewer must run and name before any SHIP. Opt-in while an ablation measures its effect; set it on one reviewer and off on another to run that comparison yourself. Severity keys off verification state, so it does not manufacture blockers: a reproduced defect stays a blocker, an unreproduced candidate is `minor`/`coverage_gaps`. A per-repo `reviewer*.md` override that drops the `{bug_class_block}` placeholder disables it regardless of this flag. |
 | `template` | basename or unset | unset | Optional prompt template basename overriding provider-based selection. |
 | `auth` | `auto`/`subscription`/`api` | `auto` | Which account pays. See [auth](#authentication-fields). |
 | `api_key_env` | env var name or unset | unset | For `auth = "api"`: the env var holding the key. |

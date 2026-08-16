@@ -60,7 +60,7 @@ tierA_exclude=(
   ':!scripts/reviewer_usefulness.py' ':!scripts/check-no-internal-refs.sh' ':!scripts/oss-release.sh'
 )
 tierA="$( { git grep -niE -e "$tierA_pattern" -- . "${tierA_exclude[@]}"; \
-            git grep -niE -e "$tierA_pattern" -- docs/config-reference.md; } | sort -u || true )"
+            git grep -niE -e "$tierA_pattern" -- docs/config-reference.md docs/how-to-use.md; } | sort -u || true )"
 report "DANGLING reference to an EXCLUDED (unshipped) file in a shipped file:" "$tierA"
 
 
@@ -68,7 +68,7 @@ report "DANGLING reference to an EXCLUDED (unshipped) file in a shipped file:" "
 tierB_pattern='PR-v2-[0-9]|pr-v2-[0-9]|PR-[0-9]|pr-[0-9]|PR #[0-9]'
 tierB_paths=(
   README.md SECURITY.md CONTRIBUTING.md CHANGELOG.md CODE_OF_CONDUCT.md
-  docs/config-reference.md
+  docs/config-reference.md docs/how-to-use.md
   .claude/skills .codex/skills src/syncade/skills
 )
 tierB="$(git grep -niE -e "$tierB_pattern" -- "${tierB_paths[@]}" | sort -u || true)"

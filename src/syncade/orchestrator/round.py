@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 from syncade import run_status
@@ -30,6 +31,7 @@ from syncade.persistence import (
     persist_run_summary,
     persist_synthesizer_result,
     persist_test_run_result,
+    record_child_pid,
 )
 from syncade.prompts import load_reviewer_template_for, render_reviewer_prompt
 from syncade.snapshot import Snapshot
@@ -134,6 +136,7 @@ def _build_reviewer_prompt(
             "master_plan_path": None,
             "json_schema": get_findings_schema_string(),
             "adversarial_lens": reviewer.adversarial_lens,
+            "bug_class_sweep": reviewer.bug_class_sweep,
         }
         if prior_round_dir is not None:
             render_kwargs["prior_round_output"] = load_prior_reviewer_response_text(
@@ -291,6 +294,12 @@ def _run_one_round(
                 adapter_factory=adapter_factory,
                 pricing=config.pricing,
                 max_retries=config.retry.max_retries,
+                # Reviewers write their output here as they produce it, so a run that dies
+                # mid-panel leaves it behind (PR-h-field-03). Same directory dispatch.json
+                # was just written to, and the same filenames persistence uses.
+                capture_dir=round_dir,
+                # Fills each reviewer's pid into the dispatch record as its child appears.
+                on_child_spawn=partial(record_child_pid, round_dir),
             )
 
             for run_result in dispatch_result.results:

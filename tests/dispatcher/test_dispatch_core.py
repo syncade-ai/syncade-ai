@@ -423,7 +423,15 @@ class TestDispatchTimeout:
         captured: dict = {}
 
         def _capture(
-            config, adapter, worktree_paths, prompt, timeout_seconds, pricing=None, max_retries=2
+            config,
+            adapter,
+            worktree_paths,
+            prompt,
+            timeout_seconds,
+            pricing=None,
+            max_retries=2,
+            capture_dir=None,
+            on_child_spawn=None,
         ):
             captured[config.name] = timeout_seconds
             return ReviewerRunResult(

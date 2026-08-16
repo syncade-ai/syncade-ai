@@ -133,7 +133,12 @@ class TestPersistRunInit:
             base_oid=None,
             starting_sha="b" * 40,
             operator_branch="main",
-            max_rounds=3,
+            # Deliberately read off the config rather than hardcoded: the assertion below is
+            # that the top-level field and the nested block AGREE, and production always
+            # passes the value it resolved FROM that config. Hardcoding a literal made the two
+            # agree only while it happened to equal the default — when the default moved 3->5
+            # this test correctly failed on a fixture that no longer modelled a real run.
+            max_rounds=self._config().loop.max_rounds,
             config=self._config(),
         )
         record = json.loads(path.read_text())
@@ -155,7 +160,7 @@ class TestPersistRunInit:
         from syncade.config import SyncadeConfig
 
         rehydrated = SyncadeConfig(**cfg)
-        assert rehydrated.loop.max_rounds == 3
+        assert rehydrated.loop.max_rounds == 5
 
     def test_persist_run_init_omits_empty_checks(self, tmp_path: Path):
         """PR-22 blocker 2: with no [[checks]] configured, config_snapshot must

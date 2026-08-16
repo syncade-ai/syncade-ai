@@ -50,7 +50,7 @@ The result is a review that finds what the tool that wrote your code structurall
 Point syncade at a short spec and it reviews your changes the way a careful team would: it
 spawns fresh, isolated CLI subprocesses — **blind reviewers**, a **cold synthesizer** that
 consolidates their findings into one mechanical verdict, and, on NO-SHIP, a **producer** that
-attempts a fix and commits it — looping up to three rounds by default until it ships or runs out of
+attempts a fix and commits it — looping up to five rounds by default until it ships or runs out of
 budget. The verdict comes back in the same Claude Code or Codex session; you never open another
 terminal or copy-paste between tools.
 
@@ -134,7 +134,7 @@ Each round of `syncade <brief>`:
 4. Optional **test / check legs** run in a clean worktree and fold into the verdict.
 5. On **NO-SHIP**, a **producer** attempts a fix and commits; the branch fast-forwards and the next round begins.
 
-It ships the moment a round is clean, or stops at `max_rounds` (default 3), a budget
+It ships the moment a round is clean, or stops at `max_rounds` (default 5), a budget
 ceiling, or a producer stall.
 
 **Cross-prompt and cross-model.** Reviewer diversity is the point — a blind spot shared by every
@@ -179,7 +179,7 @@ Zero-config works out of the box. To customize, add `.syncade/config.toml`:
 
 ```toml
 [loop]
-max_rounds = 3                  # recommended default; hard ceiling is 10
+max_rounds = 5                  # recommended default; hard ceiling is 10
 timeout_seconds = 1800          # per SUBPROCESS, not per round; see below
 test_command = "pytest -q"      # optional third convergence leg
 max_diff_bytes = 1_000_000      # refuse rather than review a diff this large (exit 60)
@@ -191,7 +191,7 @@ model = "gpt-5.5"
 thinking = "xhigh"
 ```
 
-**Rounds & time budget.** We recommend **3 rounds**, and `timeout_seconds` around **~30 minutes**.
+**Rounds & time budget.** We recommend **5 rounds**, and `timeout_seconds` around **~30 minutes**.
 
 `timeout_seconds` is a cap on **each subprocess**, not on a round. It is the fallback wall clock for
 every leg — each reviewer, the judge, the test run, each mechanical check, and the producer — so a
@@ -252,12 +252,13 @@ Early access. These are measured, not suspected.
   machine before a cleanup. Point `worktree_base` somewhere you do not mind, delete old run
   directories once you are done with them, and run `git worktree prune` afterwards: removing the
   directory does not remove git's registration of it.
-- **A hard-killed run loses whatever its reviewers had already said.** Child output is collected
-  in syncade's own memory and written to the round directory once the panel returns, so a run
-  ended by `SIGKILL` (or a machine going away) leaves that round empty — not truncated, absent.
-  Measured directly: zero files survive. Completed rounds are unaffected and `--resume` picks up
-  from the last one, which now also reports that the previous run was hard-killed and in which
-  phase. Streaming output straight to disk is briefed and not yet built.
+- **A hard-killed run keeps almost all of what its reviewers had written.** Reviewer stdout and
+  stderr are copied to `<round>/<name>.stdout` / `<round>/<name>.stderr` as the child produces
+  them, rather than held in memory until it exits, so a run ended by `SIGKILL` (or a machine
+  going away) leaves those files behind instead of an empty directory. The honest limit: the
+  guarantee is everything written *so far*, not every byte produced — a chunk still in flight
+  when the parent dies is lost. Completed rounds are unaffected, and `--resume` picks up from
+  the last one and reports that the previous run was hard-killed and in which phase.
 - **The producer commits to your current branch.** That is the design — it fast-forwards only,
   refuses the default branch without `--allow-default-branch`, and prints every commit it made.
   Your working tree is *not* updated to match, so `git status` afterwards shows what looks like a

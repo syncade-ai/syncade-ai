@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -64,16 +65,18 @@ def persist_reviewer_result(
     if not round_dir.is_dir():
         raise FileNotFoundError(f"round_dir does not exist: {round_dir}")
 
-    base = round_dir / run_result.reviewer_name
+    # Use name-append, not with_suffix: a reviewer named "team.a" must produce
+    # "team.a.stdout", not "team.stdout" (which would collide with "team.b").
+    base_name = run_result.reviewer_name
 
     stdout_text = raw_subprocess_result.stdout if raw_subprocess_result is not None else ""
     stderr_text = raw_subprocess_result.stderr if raw_subprocess_result is not None else ""
-    atomic_write_text(base.with_suffix(".stdout"), stdout_text)
-    atomic_write_text(base.with_suffix(".stderr"), stderr_text)
+    atomic_write_text(round_dir / (base_name + ".stdout"), stdout_text)
+    atomic_write_text(round_dir / (base_name + ".stderr"), stderr_text)
 
     if run_result.output is not None:
         atomic_write_text(
-            base.with_suffix(".parsed.json"),
+            round_dir / (base_name + ".parsed.json"),
             run_result.output.model_dump_json(indent=2),
         )
 
@@ -94,7 +97,7 @@ def persist_reviewer_result(
             lines.extend(traceback.format_exception(type(exc), exc, tb))
         else:
             lines.append("(no traceback available — exception was constructed, not raised)")
-        atomic_write_text(base.with_suffix(".error.txt"), "\n".join(lines))
+        atomic_write_text(round_dir / (base_name + ".error.txt"), "\n".join(lines))
 
 
 def _reviewer_manifest_entry(run_result: ReviewerRunResult) -> dict[str, object]:
@@ -161,3 +164,35 @@ def persist_dispatch_record(
         ],
     }
     atomic_write_text(round_dir / "dispatch.json", json.dumps(payload, indent=2) + "\n")
+
+
+# Reviewers spawn in parallel threads, so two children can reach record_child_pid at once and
+# a plain read-modify-write would drop one of the pids. One process writes this file, so a
+# threading lock is the whole requirement — no file locking needed.
+_dispatch_record_lock = threading.Lock()
+
+
+def record_child_pid(round_dir: Path, reviewer_name: str, pid: int) -> None:
+    """Add a reviewer's child pid to ``dispatch.json``, once that child EXISTS.
+
+    The record is written before the panel starts, when no pid is knowable yet; this fills them
+    in as each ``Popen`` returns. That answers the question the PR-h-field-02 post-mortem could
+    not: whether the children outlived the parent — "something killed syncade and orphaned
+    them" — or died first and it followed. A reader can ``ps`` these, or observe their absence.
+
+    A RETRY overwrites: the previous attempt's child is already dead by construction (retry only
+    follows a failure), and the diagnostic question is about what was alive at the time of death.
+
+    Never raises. Every failure mode here — the file missing, half-written, unparseable, a name
+    that is not in it — costs a breadcrumb, and a breadcrumb is never worth failing a review for.
+    """
+    path = round_dir / "dispatch.json"
+    with _dispatch_record_lock:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            for entry in payload["reviewers"]:
+                if entry.get("name") == reviewer_name:
+                    entry["pid"] = pid
+            atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
+        except (OSError, ValueError, KeyError, TypeError):
+            return

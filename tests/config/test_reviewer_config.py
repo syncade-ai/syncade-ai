@@ -5,7 +5,7 @@ per-reviewer (PR-v2-9). Split out of ``test_config_schema.py`` (which sits at th
 import pytest
 from pydantic import ValidationError
 
-from syncade.config import SyncadeConfig
+from syncade.config import ReviewerConfig, SyncadeConfig
 
 
 def test_reviewer_timeout_seconds_unset_is_none():
@@ -78,3 +78,16 @@ def test_reviewer_name_without_equals_accepted():
     not over-restrict plain names like 'codex-reviewer' or 'rv.1'."""
     cfg = SyncadeConfig(reviewers=[{"name": "codex-reviewer", "provider": "openai", "model": "m"}])
     assert cfg.reviewers[0].name == "codex-reviewer"
+
+
+def test_reviewer_bug_class_sweep_defaults_false_and_accepts_true():
+    """Per-reviewer directed bug-class sweep, OPT-IN like ``adversarial_lens``.
+
+    Contributed default-ON; held opt-in until an ablation measures whether the
+    checklist raises recall or narrows the search. Per-reviewer is what makes
+    that ablation a config change, so BOTH directions are pinned.
+    """
+    rc = ReviewerConfig(name="r", provider="anthropic", model="m")
+    assert rc.bug_class_sweep is False
+    rc_on = ReviewerConfig(name="r", provider="anthropic", model="m", bug_class_sweep=True)
+    assert rc_on.bug_class_sweep is True

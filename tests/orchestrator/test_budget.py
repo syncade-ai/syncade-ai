@@ -158,7 +158,7 @@ def _budget_config(max_rounds: int, **budget) -> SyncadeConfig:
 def _patch_usage(monkeypatch, *, reviewer: Usage, synth: Usage, producer: Usage) -> None:
     """Force each actor's ``usage_for`` to return a fixed Usage regardless of envelope."""
     import syncade.dispatcher as disp_mod
-    import syncade.producer as prod_mod
+    import syncade.producer_attempt as prod_mod
     import syncade.synthesizer.driver as synth_mod
 
     monkeypatch.setattr(disp_mod, "usage_for", lambda *a, **k: reviewer)

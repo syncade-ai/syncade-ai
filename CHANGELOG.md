@@ -7,6 +7,39 @@ include breaking changes.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-15
+
+### Added
+
+- **A run that is killed no longer loses what its reviewers had already said.** Reviewer output
+  used to sit in syncade's own memory until the subprocess finished, so anything that killed
+  syncade — `SIGKILL`, an OOM, a closed laptop — took the whole round's output with it, leaving
+  an empty directory and nothing to diagnose from. Output is now copied to
+  `<round>/<name>.stdout` / `.stderr` as it is produced. The honest limit: what is guaranteed is
+  everything written so far, not every byte produced — a chunk still in flight when the parent
+  dies is lost. The fixer's output is covered too: a fixer that hit its timeout previously left
+  an empty file after forty minutes of work, which is exactly the record you want when you are
+  trying to find out what it was doing.
+- **`dispatch.json` records each reviewer's child process id.** Written as the child appears,
+  which is what lets a post-mortem tell "something killed syncade and orphaned its reviewers"
+  from "the reviewers died and it followed" — `ps` those pids, or observe their absence.
+
+- **Reviewers can be given a directed bug-class sweep** (`bug_class_sweep`, per reviewer,
+  off by default). A short set of correctness angles the reviewer must work and name before it
+  can ship: what a deleted line used to guard, whether a changed function still suits its
+  callers, the classic footguns for the diff's language, and whether a new wrapper really
+  forwards to the thing it wraps. Severity keys off whether the reviewer could reproduce the
+  defect, not how confident it feels, so it raises what gets looked at without inventing
+  blockers. Opt-in for now while we measure whether the checklist helps recall or narrows the
+  search — set it on one reviewer and off on another to see for yourself.
+  Contributed by [@one-kash](https://github.com/one-kash).
+
+### Changed
+
+- **Default `max_rounds` is now 5, up from 3.** Rounds still end the moment a round is clean, so
+  this is a ceiling rather than a target — but it does raise the worst case. There is still no
+  default cost ceiling; set `[loop] budget_usd` (or `--budget-usd`) if you want one.
+
 ## [0.6.0] — 2026-08-12
 
 ### Added
@@ -403,7 +436,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.1
 [0.6.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.0
 [0.5.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.5.1
 [0.5.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.5.0
