@@ -127,3 +127,9 @@ def _empty_clears(annotation) -> bool:
     """True for Optional (X | None) and list fields — empty input clears instead of no-op."""
     origin = get_origin(annotation)
     return origin is list or (origin in (Union, UnionType) and type(None) in get_args(annotation))
+
+
+# Keys whose opt-out sentinel is explicit 0, not omission. Clearing these to None would strip the
+# TOML key, causing the default (budget_tokens=50M) or resume inheritance (budget_usd) to
+# silently re-activate. Empty input must be rejected with a "set 0 to disable" message.
+BUDGET_KEYS: frozenset[str] = frozenset({"loop.budget_tokens", "loop.budget_usd"})

@@ -500,3 +500,25 @@ def check_cost(config: SyncadeConfig, repo_root: Path, *, max_rounds: int | None
         f"ROUGH: no local history, coarse range at list price ~{_NOMINAL_INPUT_TOK // 1000}K in/"
         f"{_NOMINAL_OUTPUT_TOK // 1000}K out per actor{producer_note}){note}",
     )
+
+
+def check_budget(config: SyncadeConfig) -> DoctorCheck:
+    """Active token/dollar ceiling preview (PR-h-field-06 item 1).
+
+    Named in ``--doctor`` output so a first-run operator knows the default stop condition is
+    active and how to opt out.  Always green — a ceiling is not an error.  Reports both
+    ceiling types when both are configured."""
+    parts = []
+    if config.loop.budget_tokens:
+        parts.append(
+            f"token ceiling: {config.loop.budget_tokens:,} "
+            "(set `[loop] budget_tokens = 0` to disable)"
+        )
+    if config.loop.budget_usd:
+        parts.append(
+            f"cost ceiling: ${config.loop.budget_usd:.2f} "
+            "(API-equivalent; not billed money on a subscription)"
+        )
+    if parts:
+        return DoctorCheck("budget", _OK, "; ".join(parts))
+    return DoctorCheck("budget", _OK, "no token or cost ceiling configured")

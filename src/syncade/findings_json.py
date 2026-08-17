@@ -54,12 +54,16 @@ both pinned as ``KNOWN_RESIDUAL`` tests rather than papered over:
 
 from __future__ import annotations
 
+import copy
 import json
+import logging
 import re
 from collections.abc import Callable
 from typing import TypeVar
 
 from pydantic import ValidationError
+
+_log = logging.getLogger(__name__)
 
 # Triple-backtick fence: opening ```, an optional language label, optional
 # trailing spaces, newline, the content (non-greedy), then a closing ``` THAT
@@ -385,3 +389,68 @@ def decode_and_validate(
             f"({exc.error_count()} schema error(s)): {exc}; no earlier block is "
             f"considered. The raw response is preserved at {artifact}."
         ) from exc
+
+
+def _drop_key_at(payload: object, loc: tuple[object, ...]) -> bool:
+    """Delete the key/index named by a pydantic error ``loc``. False if it is not there."""
+    for step in loc[:-1]:
+        if isinstance(payload, dict) and step in payload:
+            payload = payload[step]
+        elif isinstance(payload, list) and isinstance(step, int) and step < len(payload):
+            payload = payload[step]
+        else:
+            return False
+    last = loc[-1]
+    if isinstance(payload, dict) and last in payload:
+        del payload[last]
+        return True
+    return False
+
+
+def validate_dropping_forbidden_extras(
+    payload: object, validate: Callable[[object], _T], *, label: str
+) -> _T:
+    """Validate strictly; if the ONLY defect is forbidden extra keys, drop them and retry.
+
+    A model that returns a complete, correct verdict and adds one advisory key should not cost
+    the run. Measured (PR-h-field-05): a single ``recommended_fix`` on one finding rejected a
+    review worth 1,325,087 tokens, and took the other reviewer's 936,113 with it because the
+    judge is skipped when any reviewer fails.
+
+    **Eligibility is the SHAPE OF THE FAILURE, never a list of key names** — the rule
+    :mod:`syncade.synthesis_repair` states for its own repairs, because a name list rots and an
+    enumeration of what a model might invent is unbounded. Every error must be
+    ``extra_forbidden``; one error of any other type and the whole payload still raises.
+
+    That single condition is what keeps this narrow, and it excludes the dangerous case BY
+    CONSTRUCTION rather than by remembering to: a model that RENAMES a required field produces
+    a ``missing`` error beside the extra one, so mixed types never repair. Wrong types,
+    out-of-range values and blank required strings are untouched.
+
+    Dropping is a real loss and is therefore WARNED, naming every key. Unlike the synthesizer's
+    repairs — a duplicated coordinate, a cluster that groups nothing — an extra key may carry
+    content. The verdict cannot depend on it (severity, evidence and description are all
+    required fields that survive), so the trade is right; it is still a trade, and a silent one
+    would be a schema quietly bent.
+    """
+    try:
+        return validate(payload)
+    except ValidationError as exc:
+        errors = exc.errors()
+        if not errors or any(e.get("type") != "extra_forbidden" for e in errors):
+            raise
+        repaired = copy.deepcopy(payload)
+        dropped = [
+            ".".join(str(p) for p in e["loc"])
+            for e in errors
+            if _drop_key_at(repaired, tuple(e["loc"]))
+        ]
+        if not dropped:
+            raise
+        _log.warning(
+            "%s: dropped %d key(s) the schema forbids, so the verdict could be used: %s",
+            label,
+            len(dropped),
+            ", ".join(dropped),
+        )
+        return validate(repaired)

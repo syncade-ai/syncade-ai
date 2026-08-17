@@ -19,7 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from syncade.findings_json import decode_and_validate
+from syncade.findings_json import decode_and_validate, validate_dropping_forbidden_extras
 
 Severity = Literal["blocker", "minor", "nit"]
 """Per-finding severity classification, per PRD Appendix B."""
@@ -230,7 +230,11 @@ def parse_reviewer_output(raw: str) -> ReviewerOutput:
     """
     return decode_and_validate(
         raw,
-        validate=ReviewerOutput.model_validate,
+        # A verdict whose only defect is a forbidden extra key is repaired rather than
+        # discarded (PR-h-field-05). Narrow by construction: see the function's docstring.
+        validate=lambda payload: validate_dropping_forbidden_extras(
+            payload, ReviewerOutput.model_validate, label="reviewer"
+        ),
         error=ReviewerOutputError,
         label="reviewer",
         model_name="ReviewerOutput",

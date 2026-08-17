@@ -48,9 +48,42 @@ def producer_only_usages(round_result: RoundResult) -> list[Usage]:
     return []
 
 
+#: Fraction of a configured ceiling at which the loop warns, so an operator watching a long
+#: run sees the stop coming while a round is still left to react in. Advisory only — it never
+#: changes a verdict or an exit code.
+BUDGET_WARN_FRACTION = 0.8
+
+
+def approaching_budget(usages: list[Usage], loop: LoopConfig) -> str | None:
+    """The ceiling the running tally is APPROACHING, or ``None``.
+
+    Fires in the band ``[fraction x ceiling, ceiling)`` — at or past the warning line but still
+    under the ceiling — so it always precedes :func:`over_budget` rather than racing it. The
+    caller checks this only when ``over_budget`` returned None, so the two can never both speak
+    about the same boundary.
+
+    This matters more since the ceiling gained a DEFAULT (PR-h-field-06): without a warning the
+    first thing most operators would learn about `budget_tokens` is a run stopping.
+
+    An earlier attempt at this (abandoned on a branch, never merged) compared
+    ``tally >= ceiling / FRACTION`` — i.e. 125% of the ceiling, which ``over_budget`` has
+    already aborted at. It could never fire. Pinned below by a test that asserts the warning
+    band lies BELOW the abort, not merely that some tally warns.
+    """
+    if loop.budget_tokens:
+        tokens = sum(u.total_tokens for u in usages)
+        if tokens >= loop.budget_tokens * BUDGET_WARN_FRACTION:
+            return "budget_tokens"
+    if loop.budget_usd:
+        cost = sum(u.cost_usd for u in usages if u.cost_usd is not None)
+        if cost >= loop.budget_usd * BUDGET_WARN_FRACTION:
+            return "budget_usd"
+    return None
+
+
 def over_budget(usages: list[Usage], loop: LoopConfig) -> str | None:
-    """The ceiling the running tally has crossed, or ``None`` (also ``None`` when no budget is
-    configured — both fields default unset, so this is a no-op for the vast majority of runs).
+    """The ceiling the running tally has crossed, or ``None`` (also ``None`` when no ceiling is
+    active — ``budget_tokens = 0`` is the opt-out sentinel, and ``budget_usd`` defaults unset).
 
     Tokens are the TIGHTEST bound: ``usages`` holds only actors whose usage was recorded (the
     norm), so ``total_tokens`` is exact in the normal case and a lower bound only when an actor
@@ -61,10 +94,13 @@ def over_budget(usages: list[Usage], loop: LoopConfig) -> str | None:
     would spend past it, so stop. Tokens are checked first; returns ``"budget_tokens"`` /
     ``"budget_usd"`` naming the crossed ceiling.
     """
-    if loop.budget_tokens is not None:
+    # 0 is the explicit opt-out, not a ceiling of zero (PR-h-field-06): with a DEFAULT
+    # ceiling in place an omitted TOML key can no longer mean "unlimited", so a sentinel is
+    # the only way left to say it.
+    if loop.budget_tokens:
         if sum(u.total_tokens for u in usages) >= loop.budget_tokens:
             return "budget_tokens"
-    if loop.budget_usd is not None:
+    if loop.budget_usd:
         cost = sum(u.cost_usd for u in usages if u.cost_usd is not None)
         if cost >= loop.budget_usd:
             return "budget_usd"

@@ -54,7 +54,7 @@ def apply_worktree_base_override(config: SyncadeConfig, args) -> SyncadeConfig:
 
 def _apply_loop_overrides(config: SyncadeConfig, args) -> SyncadeConfig:
     # --max-rounds / --budget-* patch [loop], only-set-if-given so an unset flag leaves the config
-    # value (which may itself be None = no ceiling). One resolved value reaches the orchestrator.
+    # value intact (including the 50M token default). One resolved value reaches the orchestrator.
     updates = {
         field: value
         for field, value in (

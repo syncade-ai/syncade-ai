@@ -316,7 +316,7 @@ def test_run_review_folds_real_pytest_into_verdict_env_independent(tmp_path):
         # SINGLE-ROUND verdict fold (synth+test → SUCCESS or
         # FINDINGS_PRESENT). The PR-7.5 brief this test was written
         # against had ``max_rounds`` hardcoded to 1; PR-8 introduced
-        # the loop with default 3. Without this override, sub-case 2
+        # the loop (default was 3 then, now 5). Without this override, sub-case 2
         # (test-failed → exit 30) advances to the producer phase in
         # round 1, the producer subprocess errors, and the loop
         # terminator returns exit 40 — masking the single-round

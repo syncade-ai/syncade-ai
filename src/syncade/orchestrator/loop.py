@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +12,7 @@ from syncade.adapters.base import ReviewerAdapter
 from syncade.adapters.producer import ProducerAdapter
 from syncade.config import SyncadeConfig
 from syncade.exit_codes import BUDGET_EXCEEDED, SUCCESS, WORKTREE_ERROR
-from syncade.logging import Logger
+from syncade.logging import Logger, _approaching_budget_line
 from syncade.persistence import persist_run_init
 from syncade.persistence._atomic import atomic_write_text
 from syncade.run_inputs import validate_run_inputs
@@ -21,10 +20,10 @@ from syncade.snapshot import SnapshotError, discover_repo_root, take_snapshot
 from syncade.worktree import WorktreeError, WorktreeManager, generate_run_id
 
 from ._runs_dir import _ensure_runs_gitignore
-from .branch_guard import guard_default_branch
-from .budget import over_budget, producer_only_usages, round_usages
+from .budget import approaching_budget, over_budget, producer_only_usages, round_usages
 from .loop_dispatch_check import _diff_will_dispatch as _diff_will_dispatch
 from .loop_finalize import _finalize_run
+from .loop_preflight import run_preflight
 from .loop_resume import _rehydrate_resume_state
 from .loop_rmtree import _safe_resume_rmtree
 from .loop_round_step import _run_round_step
@@ -225,92 +224,20 @@ def run_review(
     branch = snapshot.branch or "(detached HEAD)"
     logger.event(f"snapshot taken — {snapshot.commit_sha[:12]} on {branch}")
 
-    short_sha = snapshot.commit_sha[:12]
     state = snapshot.dirty_state
 
-    # --- Pre-classify diff before commit-safety guards (PR-h-02d) ---
-    # A known-empty or malformed diff terminates before any subprocess — no producer
-    # runs, so commit-only guards are irrelevant and must not refuse valid no-change runs.
-    _will_dispatch = _diff_will_dispatch(
-        snapshot, config, repo_root=repo_root, pr_doc_path=pr_doc_path
+    run_preflight(
+        config=config,
+        repo_root=repo_root,
+        pr_doc_path=pr_doc_path,
+        snapshot=snapshot,
+        state=state,
+        branch=branch,
+        resume_plan=resume_plan,
+        logger=logger,
+        force_dirty=force_dirty,
+        allow_default_branch=allow_default_branch,
     )
-
-    # --- Pre-flight dirty-tree refusal in loop mode -----------------
-    # max_rounds > 1 → the loop will run a producer that commits to
-    # the operator's branch. A tracked-modified WIP would race
-    # against the producer's writes (the operator's working tree
-    # would interleave with new commits in confusing ways).
-    # Untracked-only is fine — those files don't enter any
-    # worktree, so they're invisible to both reviewers and the
-    # producer. The --force-dirty escape hatch is for operators
-    # who understand the consequences.
-    #
-    # max_rounds == 1 is warning-only because it runs reviewers + synth and
-    # exits; nothing writes to the operator branch.
-    #
-    # Resumed loop-mode runs are refused on the same grounds: a resume
-    # still runs the producer and commits to the branch, so a dirty WIP
-    # races just as it would on a fresh run. --force-dirty is the only
-    # escape (resume does not exempt itself).
-    # The refusal must use the EFFECTIVE cap: a resume rehydrates
-    # max_rounds to max(config, resume_plan.max_rounds) later (see
-    # loop_resume._rehydrate_resume_state), so reading the un-bumped config
-    # here would let `--resume --max-rounds 1` — or a config drifted to
-    # max_rounds=1 — on a multi-round run slip the gate and then race the
-    # producer's commit against the dirty WIP (H3).
-    effective_max_rounds = config.loop.max_rounds
-    if resume_plan is not None:
-        effective_max_rounds = max(effective_max_rounds, resume_plan.max_rounds)
-    _dirty_state = state in ("tracked", "both")
-    if _will_dispatch and effective_max_rounds > 1 and _dirty_state and not force_dirty:
-        raise WorktreeError(
-            f"uncommitted tracked changes (dirty_state={state!r}); "
-            f"loop mode (max_rounds={effective_max_rounds}) "
-            f"commits to your branch and would race against this "
-            f"WIP. Commit, stash, or pass --force-dirty to override. "
-            f"To run single-pass with warning-only tracked changes, set max_rounds=1 in "
-            f"[loop] or pass --max-rounds 1."
-        )
-
-    # --- Default-branch commit guard (PR-v2-26) ---------------------
-    # A committing run (loop mode) fast-forwards the CURRENT branch, so refuse the
-    # default branch unless the operator opted in, and announce the target branch
-    # BEFORE any dispatch. Placed at the run-entry choke so a direct run_review call
-    # and a --resume are covered too, not only the CLI wrapper.
-    # will_commit is False when no dispatch will happen: no producer runs on a no-change
-    # or malformed-diff run, so the default-branch guard and commit announcement are moot.
-    will_commit = _will_dispatch and effective_max_rounds > 1
-    guard_default_branch(
-        repo_root, snapshot.branch, allow=allow_default_branch, will_commit=will_commit
-    )
-    if will_commit:
-        # Printed directly to stderr, NOT via logger.event, so it survives --quiet — the
-        # same reason the auth block bypasses quiet. Which branch receives commits is a
-        # safety disclosure, and it matters MOST under `--quiet --allow-default-branch`.
-        print(
-            f"[syncade] producer commits will land on: {snapshot.branch or '(detached HEAD)'}",
-            file=sys.stderr,
-        )
-
-    # Dirty-tree warnings fire on every round-0 snapshot regardless of
-    # max_rounds; the loop-mode refusal above is additive.
-    if state in ("tracked", "both"):
-        logger.warning(
-            f"working tree has uncommitted modifications to tracked "
-            f"files — reviewers will only see HEAD ({short_sha}); "
-            f"your local changes are invisible to them. Commit "
-            f"before running syncade if you want them reviewed."
-        )
-    if state in ("untracked", "both"):
-        count = snapshot.untracked_count
-        plural = "files" if count != 1 else "file"
-        logger.warning(
-            f"working tree has untracked files (not reviewed): "
-            f"{count} {plural}. These are invisible to reviewers, "
-            f"which is usually intentional. Run 'git status' to see them."
-        )
-
-    # --- Run-directory layout ---------------------------------------
     # CLI passes config.worktree_base explicitly; direct API callers that omit the kwarg
     # still get the configured base (not always DEFAULT_WORKTREE_BASE).
     effective_worktree_base = worktree_base if worktree_base is not None else config.worktree_base
@@ -530,6 +457,7 @@ def run_review(
         # --resume (a fresh tally: the prior process already spent that; this run bounds only
         # what IT spends), so a resumed loop is never aborted for a predecessor's cost.
         run_usages: list[Usage] = []
+        budget_warned = False  # the 80% heads-up fires once per run, not once per round
         # Which ceiling tripped ("budget_tokens" | "budget_usd"), so the Budget section can
         # name it (both set → first-to-trip, tokens checked first). None unless a budget abort.
         budget_ceiling: str | None = None
@@ -556,12 +484,22 @@ def run_review(
         for round_idx in range(resumed_round_start, config.loop.max_rounds):
             # PR-v2-11: refuse to START a round once prior rounds' accumulated spend already
             # crossed a budget (round 0 always runs — the tally is empty). A no-op when no
-            # budget is set, so an unbudgeted run's control flow is unchanged.
+            # ceiling is active (the 0 sentinel), so an opted-out run's control flow is unchanged.
             budget_ceiling = over_budget(run_usages, config.loop)
             if budget_ceiling is not None:
                 final_exit_code = BUDGET_EXCEEDED
                 termination_reason = "budget_exceeded"
                 break
+            # Advisory heads-up at the SAME boundary the ceiling is enforced at, so the
+            # operator sees the stop coming with a round left to react in (PR-h-field-06).
+            # Checked only when over_budget stayed silent, so the two never both speak. Fired
+            # ONCE per run: a warning repeated every round is a warning nobody reads, and it
+            # would be loudest exactly when the operator is already watching a long run.
+            if not budget_warned:
+                approaching = approaching_budget(run_usages, config.loop)
+                if approaching is not None:
+                    budget_warned = True
+                    logger.warning(_approaching_budget_line(approaching, run_usages, config.loop))
             step = _run_round_step(
                 round_idx=round_idx,
                 current_snapshot=current_snapshot,
@@ -588,10 +526,13 @@ def run_review(
                 force_drift=force_drift,
                 prior_usages=run_usages,
                 branch_advanced_during_run=branch_advanced_during_run,
+                budget_warned=budget_warned,
             )
             current_snapshot = step.current_snapshot
             if step.branch_advanced:
                 branch_advanced_during_run = True
+            if step.budget_warned:
+                budget_warned = True
             # Accumulate the round just run (reviewers + judge + any producer) BEFORE the
             # break check, so the final tally the summary/metrics report includes the round
             # that crossed — whether it broke here or the step's pre-producer check broke it.

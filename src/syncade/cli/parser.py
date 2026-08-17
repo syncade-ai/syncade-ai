@@ -165,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Per-run maximum rounds of (reviewers → synthesizer → "
         "optional test → producer-if-NO-SHIP). Must be in [1, 10]. "
         "Overrides `[loop] max_rounds` in .syncade/config.toml. "
-        "Default 3. Set to 1 for single-pass review without producer "
+        "Default 5. Set to 1 for single-pass review without producer "
         "code changes.",
     )
     parser.add_argument(
@@ -177,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
         "crosses it at a phase boundary, the loop aborts gracefully (budget_exceeded). This "
         "is the TIGHTEST bound — exact when all actors report usage, a lower bound only if an "
         "actor reports none. Overrides `[loop] budget_tokens`. "
-        "Default: no token ceiling (only --max-rounds and --timeout bound a run).",
+        "Default: inherits `[loop] budget_tokens` (50,000,000 by default; pass 0 to disable).",
     )
     parser.add_argument(
         "--budget-usd",
@@ -188,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
         "marginal dollar is $0 on a subscription), matching what `syncade --doctor` previews. "
         "A LOWER-BOUND tally: actors with incomplete cost are uncounted, so a dollar-budgeted "
         "run can overshoot — use --budget-tokens for the tighter cap. Overrides `[loop] "
-        "budget_usd`. Default: no cost ceiling.",
+        "budget_usd`. Default: no cost ceiling (pass 0 to disable an inherited ceiling).",
     )
     parser.add_argument(
         "--reviewer-model",

@@ -260,7 +260,7 @@ def test_list_get_outside_git_repo_ignore_cwd_config(tmp_path, monkeypatch, caps
     cap = capsys.readouterr()
     assert "(repo)" not in cap.out  # nothing attributed to a repo layer that --config didn't read
     assert "not a git repo" in cap.err  # the divergence note fires (honest, not silent)
-    # `get` resolves the effective value: the default 3, NOT the phantom file's 1; note on stderr.
+    # `get` resolves the effective value: the default 5, NOT the phantom file's 1; note on stderr.
     assert main(["--repo-root", str(workdir), "--config", "get", "loop.max_rounds"]) == 0
     cap = capsys.readouterr()
     assert cap.out.strip() == "5"  # stdout stays the clean scriptable value
@@ -588,11 +588,12 @@ def test_coerce_bool_rejects_a_non_boolean():
 
 
 def test_set_optional_field_cleared_by_empty(tmp_path, monkeypatch, capsys):
-    g, repo = _make(tmp_path, global_toml="[loop]\nbudget_usd = 5.0\n")
+    # budget_usd now rejects empty (opt-out is explicit 0); test_command still clears via empty.
+    g, repo = _make(tmp_path, global_toml='[loop]\ntest_command = "pytest"\n')
     _use_global(monkeypatch, g)
-    rc = main(["--repo-root", str(repo), "--config", "set", "loop.budget_usd", ""])
+    rc = main(["--repo-root", str(repo), "--config", "set", "loop.test_command", ""])
     assert rc == 0
-    assert "budget_usd" not in tomllib.loads(g.read_text()).get("loop", {})
+    assert "test_command" not in tomllib.loads(g.read_text()).get("loop", {})
 
 
 def test_set_reviewer_permissions_safe_rejected(tmp_path, monkeypatch, capsys):

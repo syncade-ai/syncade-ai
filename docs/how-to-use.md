@@ -146,7 +146,7 @@ Why smallness pays:
   hard 1,048,576-character input limit, so syncade's message fires before the provider's does. For
   calibration: across measured rounds on this codebase the *largest* reviewer-facing diff was
   **147 KB**, median **77 KB**. If you are anywhere near the cap, the PR is far too big.
-- **Cost scales with rounds.** Measured across 90 priced runs: median **$4.42**, p90 **$15.63**,
+- **Cost scales with rounds.** Measured across 102 priced runs: median **$4.07**, p90 **$14.90**,
   worst **$35.50**. The expensive tail is multi-round loops where the producer rewrites code every
   round — which is what a sprawling PR guarantees.
 
@@ -303,10 +303,10 @@ Zero-config works. These are the shipped defaults:
 | **Reviewer 2** | `openai` / `gpt-5.5`, thinking `high` | `codex-reviewer-adv` — adversarial lens |
 | **Judge** | `openai` / `gpt-5.5`, thinking `high` | Cold; sees only structured findings |
 | **Producer** | `anthropic` / `claude-sonnet-4-6` under Claude Code; `openai` / `gpt-5.6-terra` otherwise | Harness-aware. Runs unsandboxed — it must commit |
-| **Rounds** | `3` | Ceiling `10`. A typo-guard, not a spend guard |
+| **Rounds** | `5` | Ceiling `10`. A typo-guard, not a spend guard |
 | **Timeout** | `1800`s | **Per subprocess**, not per round — see below |
 | **Max diff** | `1,000,000` bytes | Refuse rather than review (exit 60) |
-| **Budget** | none | Set one |
+| **Budget** | `50,000,000` tokens | Stops at exit `25` (resumable). 4% of measured runs would have tripped this; raise with `--budget-tokens 0` to opt out |
 | **Test command** | none | Optional third convergence leg |
 | **Reviewer sandbox** | `trusted-execute` | Codex reviewers sandboxed to their worktree |
 | **Worktree base** | `/tmp/syncade` | Grows; see gotchas |
@@ -327,8 +327,12 @@ Zero-config works. These are the shipped defaults:
   both of which reduce *how much* review you buy without degrading its quality. The bundled presets
   are built on exactly this principle: `cheap`, `balanced` and `thorough` vary only rounds and
   timeout, and never touch the reviewer model or effort.
-- **Set a budget.** `--budget-usd 10` or `[loop] budget_usd`. It stops the loop at a phase boundary
-  with exit `25`, resumable — rather than reporting the damage afterward.
+- **Raise or lower the default token budget if needed.** The shipped default is `50,000,000` tokens
+  (about $15–20 API-equivalent; stopped 4% of measured runs). Raise with `--budget-tokens N` or
+  `[loop] budget_tokens = N`; set to `0` to opt out entirely. A dollar ceiling is also available
+  (`--budget-usd` / `[loop] budget_usd`), but note it reflects an API-equivalent valuation — on a
+  subscription the marginal cost is $0, so a dollar ceiling can interrupt a run over money nobody
+  spent. Either ceiling stops at a phase boundary with exit `25`, resumable.
 - **Add your test command and mechanical checks.** They fold into the verdict, and a lint or
   file-length gate that fails for pennies is attention the panel doesn't have to spend.
 

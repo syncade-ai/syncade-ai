@@ -74,7 +74,9 @@ every actor's `provider` / `model` / `thinking` / `permissions` / `auth`; `timeo
 timeout field); `reviewers.<i>.*` and `checks.<i>.*` by index, the `[loop]` / `[review]` /
 `[retry]` / `[gc]` scalars, and top-level `worktree_base`. The value is coerced to the field's type (int / float /
 bool / one-of-a-fixed-set / comma-separated list / string), and an empty value clears an optional
-field. `set` validates the file it writes and refuses an invalid value (**exit 50**) without
+field — **except `loop.budget_tokens` and `loop.budget_usd`**, where clearing omits the TOML key
+and silently reactivates the 50M-token default or resumes-inherits a prior ceiling; set `0`
+explicitly to disable those ceilings. `set` validates the file it writes and refuses an invalid value (**exit 50**) without
 touching disk; setting a paired role's `provider` re-derives its `model` in the same write. Adding
 or removing `[[reviewers]]` / `[[checks]]` *entries* is not a `set` operation — `set` edits existing
 entries by index. The `[pricing]` model table (`pricing.models.<model>.*`) is a dict-keyed roster, not
@@ -112,8 +114,8 @@ below; `worktree_base` is the one top-level scalar.
 | `max_rounds` | int, 1–10 | `5` | Max rounds of (reviewers → synth → optional test → producer-if-NO-SHIP). SHIP ends the loop early. `1` = single-pass, no producer. `--max-rounds` overrides. Ceiling raised 3→10; budget/timeout are the real runaway guards. |
 | `timeout_seconds` | float > 0 | `1800` | Per-subprocess wall-clock cap — fallback for every leg (reviewers, judge, test, checks, producer). SIGKILL past it. `--timeout` overrides. Must be finite. |
 | `max_diff_bytes` | int > 0 | `1000000` | Ceiling on the REVIEWER-FACING diff in UTF-8 bytes — after repo-context stripping and binary elision, i.e. what actually reaches the model. Over it, the run is refused before any dispatch (exit 60, `diff_too_large`) rather than truncated: a verdict on a partial diff is a verdict on the wrong code. Default sits just under `codex exec`'s hard 1,048,576-CHARACTER limit so syncade's actionable message fires before the provider's opaque one, and ~7x above the largest diff observed in this repo's run corpus (147,171 B). Not a token cap — `claude -p` limits by tokens. |
-| `budget_tokens` | int > 0 or unset | unset | Optional token ceiling; aborts the loop at a dispatch boundary (exit 25). A hard cap. `--budget-tokens` overrides. |
-| `budget_usd` | float > 0 or unset | unset | Optional API-equivalent-cost ceiling. Softer than tokens (an unpriced actor is uncounted). `--budget-usd` overrides. |
+| `budget_tokens` | int >= 0 | `50000000` | Per-run token ceiling; aborts the loop at a dispatch boundary (exit 25), preserving completed rounds and resumable. **Set `0` for no ceiling** — TOML has no null, so an omitted key means the default. Sized from this repo's corpus: median run 11.0M tokens, p90 38.8M, so 50M stops 4% of runs. Tokens rather than dollars because `cost_usd` is an API-equivalent valuation, not money. `--budget-tokens` overrides. |
+| `budget_usd` | float >= 0 or unset | unset | Optional API-equivalent-cost ceiling. **Set `0` for no ceiling** (symmetric with `budget_tokens`; needed when `--resume` would re-inherit a ceiling the current config omits). Softer than tokens (an unpriced actor is uncounted). `--budget-usd` overrides. |
 | `test_command` | string or unset | unset | Optional per-round test command; a non-zero exit gates the round. |
 | `test_timeout_seconds` | float > 0 or unset | unset | Timeout for `test_command`; unset reuses `timeout_seconds`. |
 

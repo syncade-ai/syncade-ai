@@ -17,16 +17,19 @@ import argparse
 import math
 
 
-def _positive_finite_float(noun: str, value: str) -> float:
-    """Shared body for the strictly-positive, finite float ``type`` validators. ``float()``
-    parses ``nan`` / ``inf``, neither of which is a usable bound, so non-finite values are
-    rejected too; ``noun`` makes the message fit the flag (seconds vs dollars)."""
+def _positive_finite_float(noun: str, value: str, *, allow_zero: bool = False) -> float:
+    """Shared body for the finite float ``type`` validators. ``float()`` parses ``nan`` /
+    ``inf``, neither of which is a usable bound, so non-finite values are rejected too;
+    ``noun`` makes the message fit the flag (seconds vs dollars). ``allow_zero`` admits 0 for
+    the budget flags, where it is the no-ceiling opt-out rather than an absurd bound."""
     try:
         parsed = float(value)
     except ValueError:
         raise argparse.ArgumentTypeError(f"invalid float value: {value!r}") from None
-    if not math.isfinite(parsed) or parsed <= 0:
-        raise argparse.ArgumentTypeError(f"must be a positive, finite {noun} (got {value!r})")
+    floor_ok = parsed >= 0 if allow_zero else parsed > 0
+    if not math.isfinite(parsed) or not floor_ok:
+        bound = "non-negative" if allow_zero else "positive"
+        raise argparse.ArgumentTypeError(f"must be a {bound}, finite {noun} (got {value!r})")
     return parsed
 
 
@@ -40,9 +43,15 @@ def _positive_float(value: str) -> float:
 
 
 def _positive_usd(value: str) -> float:
-    """argparse ``type`` for ``--budget-usd``: a strictly-positive, finite dollar amount.
-    Mirrors :class:`~syncade.config.LoopConfig`'s ``budget_usd`` ``gt=0`` + isfinite bound."""
-    return _positive_finite_float("dollar amount", value)
+    """argparse ``type`` for ``--budget-usd``: a non-negative, finite dollar amount, 0 = OFF.
+
+    Mirrors ``budget_usd``'s ``ge=0`` + isfinite bound. 0 is the no-ceiling opt-out, symmetric
+    with ``--budget-tokens 0`` (PR-h-field-06) — and necessary rather than tidy: omitting the
+    key does NOT remove a ceiling, because --resume re-inherits one the current config leaves
+    unset. Only an explicit value says "I decided this".
+    """
+    parsed = _positive_finite_float("dollar amount", value, allow_zero=True)
+    return parsed
 
 
 def _non_negative_int(value: str) -> int:
@@ -65,19 +74,24 @@ def _non_negative_int(value: str) -> int:
 
 
 def _positive_int(value: str) -> int:
-    """argparse ``type`` for ``--budget-tokens``: a strictly-positive integer.
+    """argparse ``type`` for ``--budget-tokens``: a non-negative integer, where 0 means OFF.
 
-    Mirrors :class:`~syncade.config.LoopConfig`'s ``gt=0`` bound at the CLI boundary. A
-    zero-token budget would abort before the first phase even dispatched — nonsensical — so
-    ``0`` and negatives are rejected up front (exit 2), the same rejection the config would
-    raise (exit 50) but with the more legible argparse message.
+    Mirrors :class:`~syncade.config.LoopConfig`'s ``ge=0`` bound at the CLI boundary.
+    ``budget_tokens`` has a DEFAULT ceiling since PR-h-field-06, so ``0`` had to stop meaning
+    "invalid" and start meaning "no ceiling" — it is the only way left to express unlimited
+    once an omitted value means the default. A zero ceiling would otherwise abort before the
+    first phase dispatched, which is nonsensical, so the value is free to carry the opposite
+    sense. Negatives are still rejected up front (exit 2) with argparse's legible message
+    rather than the config's exit 50.
     """
     try:
         n = int(value)
     except ValueError:
         raise argparse.ArgumentTypeError(f"must be an integer (got {value!r})") from None
-    if n <= 0:
-        raise argparse.ArgumentTypeError(f"--budget-tokens must be > 0 (got {value!r})")
+    if n < 0:
+        raise argparse.ArgumentTypeError(
+            f"--budget-tokens must be >= 0, 0 = no ceiling (got {value!r})"
+        )
     return n
 
 

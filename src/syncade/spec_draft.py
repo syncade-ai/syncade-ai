@@ -49,7 +49,7 @@ from syncade.config_cold import (
 from syncade.config_cold import (
     DrafterConfig,
 )
-from syncade.findings_json import decode_and_validate
+from syncade.findings_json import decode_and_validate, validate_dropping_forbidden_extras
 from syncade.process import (
     SubprocessError,
     SubprocessNotFoundError,
@@ -225,7 +225,12 @@ def parse_spec_draft_output(raw: str) -> SpecDraftOutput:
     :class:`SpecDraftOutputError` on failure (→ exit 70)."""
     return decode_and_validate(
         raw,
-        validate=SpecDraftOutput.model_validate,
+        # Same repair the reviewer gets (PR-h-field-05 item 2): a verdict whose ONLY
+        # defect is a forbidden extra key is repaired, not discarded. Cheaper leg than
+        # a reviewer, but the failure mode and the eligibility rule are identical.
+        validate=lambda payload: validate_dropping_forbidden_extras(
+            payload, SpecDraftOutput.model_validate, label="spec draft"
+        ),
         error=SpecDraftOutputError,
         label="spec draft",
         model_name="SpecDraftOutput",

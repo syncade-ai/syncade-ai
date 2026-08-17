@@ -92,14 +92,14 @@ def test_apply_model_only_rejects_cross_provider():
     assert not m.dirty  # state unchanged
 
 
-def test_empty_input_clears_budget_usd():
-    # Set a budget cap first, then clear it with empty input.
+def test_empty_input_rejected_for_budget_usd():
+    # loop.budget_usd must not be clearable via empty — that omits the TOML key, causing
+    # --resume to re-inherit a prior ceiling the user expected to suppress. Set 0 explicitly.
     m = _menu("[loop]\nbudget_usd = 5.0\n")
     m.cursor = _row_index(m, "loop.budget_usd")
     result = m.apply_edit("")
-    assert result is None  # state changed → caller shows "updated"
-    assert m.dirty
-    assert "budget_usd" not in m.global_raw.get("loop", {})
+    assert isinstance(result, str) and result  # non-empty error string, not state-change
+    assert not m.dirty  # state unchanged
 
 
 def test_empty_input_for_non_clearable_row_is_noop():
@@ -216,13 +216,13 @@ def test_apply_edit_does_not_leak_repo_fields_to_global():
     )
 
 
-def test_clear_budget_usd_with_malformed_global_loop_does_not_crash():
-    """AC6: the menu degrades, never crashes. A malformed global loop (a list/scalar) masked by a
-    valid repo loop must not raise when clearing loop.budget_usd via empty input — it is a no-op."""
+def test_empty_budget_usd_with_malformed_global_loop_returns_error():
+    """AC6: the menu degrades, never crashes. A malformed global loop masked by a valid repo loop
+    must return an error string on empty budget_usd input — never raise."""
     m = _menu(global_toml='loop = ["budget_usd"]\n', repo_toml="[loop]\nmax_rounds = 2\n")
     m.cursor = _row_index(m, "loop.budget_usd")
-    result = m.apply_edit("")  # empty = clear on this row; must not raise on the malformed loop
-    assert result == "" and not m.dirty  # no-op, no crash, state unchanged
+    result = m.apply_edit("")  # budget key: empty is now rejected, not cleared
+    assert isinstance(result, str) and result and not m.dirty
 
 
 # --- pr-v2-31 Increment 3: edit-target toggle (global <-> repo) + shadowed-row flagging ---

@@ -124,7 +124,7 @@ class TestMaxRoundsFlag:
 
     def test_no_max_rounds_flag_uses_config(self, tmp_path, monkeypatch):
         """Without ``--max-rounds``, the config-file value (or
-        default 3) reaches the orchestrator."""
+        default 5) reaches the orchestrator."""
         if shutil.which("git") is None:
             pytest.skip("git not on PATH")
         _init_git_repo(tmp_path)
@@ -165,13 +165,28 @@ class TestBudgetFlags:
         assert ns.budget_tokens == 5000
         assert ns.budget_usd == 2.50
 
+    def test_budget_usd_zero_is_accepted_as_the_opt_out(self):
+        """Symmetric with --budget-tokens 0. Added after a blind reviewer showed the dollar
+        stop was offering an opt-out that did not exist: omitting the key does NOT remove a
+        ceiling, because --resume re-inherits one the current config leaves unset."""
+        from syncade.cli import build_parser
+
+        ns = build_parser().parse_args(["x.md", "--budget-usd", "0"])
+        assert ns.budget_usd == 0.0
+
+    def test_budget_tokens_zero_is_accepted_as_the_opt_out(self):
+        """0 stopped meaning "invalid" when the ceiling gained a default (PR-h-field-06): it is
+        the only way to express "no ceiling" at the CLI once an omitted value means 50M."""
+        from syncade.cli import build_parser
+
+        ns = build_parser().parse_args(["x.md", "--budget-tokens", "0"])
+        assert ns.budget_tokens == 0
+
     @pytest.mark.parametrize(
         "argv,needle",
         [
-            (["--budget-tokens", "0"], "budget-tokens"),
             (["--budget-tokens", "-5"], "budget-tokens"),
             (["--budget-tokens", "1.5"], "integer"),
-            (["--budget-usd", "0"], "dollar amount"),
             (["--budget-usd", "nan"], "dollar amount"),
             (["--budget-usd", "inf"], "dollar amount"),
         ],
@@ -225,7 +240,10 @@ class TestBudgetFlags:
             [],
         )
         assert cfg.loop.budget_usd == 4.0  # config value untouched
-        assert cfg.loop.budget_tokens is None  # no config value, no flag -> None
+        # No config value and no flag now leaves the DEFAULT ceiling, not None
+        # (PR-h-field-06). The claim under test — a flag must not disturb the OTHER
+        # budget's configured value — is unchanged.
+        assert cfg.loop.budget_tokens == 50_000_000
 
     @pytest.mark.parametrize("budget_argv", [["--budget-tokens", "100"], ["--budget-usd", "1.0"]])
     def test_bare_openspec_with_budget_is_not_rejected(self, budget_argv, capsys):

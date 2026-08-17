@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from syncade.findings import Severity
-from syncade.findings_json import decode_and_validate
+from syncade.findings_json import decode_and_validate, validate_dropping_forbidden_extras
 
 
 class SpecAuditOutputError(Exception):
@@ -177,7 +177,12 @@ def parse_spec_audit_output(raw: str) -> SpecAuditOutput:
     """
     return decode_and_validate(
         raw,
-        validate=SpecAuditOutput.model_validate,
+        # Same repair the reviewer gets (PR-h-field-05 item 2): a verdict whose ONLY
+        # defect is a forbidden extra key is repaired, not discarded. Cheaper leg than
+        # a reviewer, but the failure mode and the eligibility rule are identical.
+        validate=lambda payload: validate_dropping_forbidden_extras(
+            payload, SpecAuditOutput.model_validate, label="spec audit"
+        ),
         error=SpecAuditOutputError,
         label="spec audit",
         model_name="SpecAuditOutput",

@@ -84,8 +84,8 @@ deliberately; it still lists what it destroys.
 
 Check your setup any time with `syncade --doctor`.
 
-**What a run costs.** Measured across 90 priced runs on this repo: **median $4.42**, 90th
-percentile **$15.63**, worst observed **$35.50**. A clean single-round review lands nearer $2;
+**What a run costs.** Measured across 102 priced runs on this repo: **median $4.07**, 90th
+percentile **$14.90**, worst observed **$35.50**. A clean single-round review lands nearer $2;
 the expensive tail is multi-round loops where a producer rewrites code each round. If your
 `claude` / `codex` CLIs are signed in to a subscription the marginal cost is **$0** — that is how
 every run in this project has been paid for, which is precisely why these numbers are easy to
@@ -197,8 +197,10 @@ thinking = "xhigh"
 every leg — each reviewer, the judge, the test run, each mechanical check, and the producer — so a
 round's worst case is a multiple of it. With two reviewers (parallel, so they count once), a test
 command and three checks, one round can run **7×** the configured value before anything times out.
-Size it as "how long may a single model call take", and use the budget ceilings (`budget_usd` /
-`budget_tokens`) as the actual runaway guard. You can raise `max_rounds` up to **10**; the round cap
+Size it as "how long may a single model call take". The actual runaway guard is the token
+ceiling, and it is **on by default** — `budget_tokens = 50000000`, which stops about 4% of runs
+in our own corpus and is `--resume`-able when it does. Set `budget_tokens = 0` to remove it, or
+add a `budget_usd` ceiling alongside. You can raise `max_rounds` up to **10**; the round cap
 is a typo-guard, not a spend guard. Per-invocation: `syncade --max-rounds N`, `--budget-usd N`.
 
 Every reachable knob — reviewers, producer, the cold actors, retry, GC, budgets — is in

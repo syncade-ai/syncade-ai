@@ -262,7 +262,7 @@ def test_crlf_new_table_uses_crlf():
 
 
 def test_clearing_already_absent_optional_is_byte_identical():
-    """Clearing a never-set optional (e.g. --config set loop.budget_usd '') materializes
+    """Clearing a never-set optional materializes
     {'loop': {'budget_usd': None}}. After stripping None AND the resulting empty sub-table,
     the wanted data matches the file exactly and render must return the file byte-for-byte."""
     src = '# hdr\n[producer]\nprovider = "openai"\n'

@@ -539,6 +539,14 @@ def _cmd_set(
                 file=sys.stderr,
             )
             return 2
+    if raw_value == "" and key in config_keys.BUDGET_KEYS:
+        print(
+            f"[syncade] --config set: set {key!r} to 0 to disable the ceiling;"
+            " clearing to empty is not supported (empty would omit the key,"
+            " reactivating the default); file unchanged",
+            file=sys.stderr,
+        )
+        return 50
     try:
         value = config_keys.coerce(annotation, raw_value)
     except config_keys.InvalidValue:

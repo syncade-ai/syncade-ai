@@ -6,6 +6,7 @@ import sys
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
+from syncade.billing import from_usages as _billing_from_usages
 from syncade.findings import ReviewerOutputError
 from syncade.retry import is_usage_limit_error
 from syncade.synthesis import SynthesizerOutputError
@@ -27,14 +28,79 @@ def _is_budget_stop(run_result: RunResult) -> bool:
 
 
 def _budget_stop_line(run_result: RunResult) -> str:
-    """One-line budget-abort notice (PR-v2-11), shown even under ``--quiet``. Points to the
-    loop-summary Budget section rather than reprinting the tally, and says API-EQUIVALENT so
-    the terminal never implies a subscription run spent real money."""
-    loop_summary = run_result.artifacts.run_dir / "loop-summary.md"
+    """The budget-abort notice (PR-v2-11), shown even under ``--quiet``.
+
+    Rewritten in PR-h-field-06 to answer the four questions the operator actually has, the
+    same shape :func:`_usage_limit_stop_line` uses: what was spent against what ceiling, that
+    the completed work survived, and the exact command to continue. It previously pointed at
+    a file for the tally, which is one indirection too many for a terminal condition — and it
+    matters more now that a ceiling exists BY DEFAULT, so the first time most operators meet
+    this message they will not have chosen the number it names.
+
+    Tokens are translated to their API-equivalent dollar figure, flagged as a VALUATION: the
+    numbers come from the enforcement tally carried on the result, so this line, the
+    loop-summary Budget section and ``--metrics`` cannot disagree.
+    """
+    tokens = sum(u.total_tokens for u in run_result.budget_usages)
+    # Use billing.from_usages() — the SAME rule as loop-summary.md and --metrics — so that
+    # the lower-bound warning fires whenever cost_incomplete_tokens > 0 (which includes any
+    # Usage with cost_source="unknown", even when cost_usd is non-None).  Checking
+    # `cost_usd is not None` alone misses that case and contradicts the artifact.
+    b = _billing_from_usages(run_result.budget_usages)
+    run_id = run_result.artifacts.run_dir.name
+
+    if run_result.budget_ceiling == "budget_usd":
+        limit = run_result.budget_usd
+        crossed = f"cost ceiling (budget_usd = ${limit:,.2f})" if limit else "cost ceiling"
+    else:
+        tokens_limit = run_result.budget_tokens
+        crossed = (
+            f"token ceiling (budget_tokens = {tokens_limit:,})" if tokens_limit else "token ceiling"
+        )
+
+    if b.total_unpriced_tokens:
+        valuation = (
+            f"${b.api_equiv:,.2f} (LOWER BOUND — {b.total_unpriced_tokens:,} tokens unpriced)"
+        )
+    elif b.api_equiv > 0:
+        valuation = f"${b.api_equiv:,.2f}"
+    else:
+        valuation = "unpriced"
+    if run_result.budget_ceiling == "budget_usd":
+        remedy = "Raise the ceiling (or set `[loop] budget_usd = 0` for none)"
+    else:
+        remedy = "Raise the ceiling (or set `[loop] budget_tokens = 0` for none)"
     return (
-        f"[syncade] stopped early: budget exceeded — see the Budget section of "
-        f"{loop_summary} for the API-equivalent tally (a valuation, not billed money; "
-        f"a lower bound if any cost was unpriced)."
+        f"[syncade] stopped early: this run crossed your {crossed}.\n"
+        f"          Spent: {tokens:,} tokens (API-equivalent {valuation} — a valuation, not "
+        f"billed money).\n"
+        f"          Completed rounds and their findings are preserved; nothing was interrupted "
+        f"mid-call.\n"
+        f"          {remedy}, then: "
+        f"syncade --resume {run_id}"
+    )
+
+
+def _approaching_budget_line(ceiling: str, usages: list, loop: object) -> str:
+    """The 80%-of-ceiling heads-up. Advisory: it never changes a verdict or an exit code.
+
+    Says what the remaining headroom IS rather than only that a limit is near, because the
+    decision it supports is "let this run finish or stop it myself", and that needs a number.
+    """
+    if ceiling == "budget_usd":
+        spent = sum(u.cost_usd for u in usages if u.cost_usd is not None)
+        limit = loop.budget_usd
+        return (
+            f"[syncade] approaching your cost ceiling: ${spent:,.2f} of ${limit:,.2f} "
+            f"(API-equivalent, a valuation not billed money). The run stops at the ceiling and "
+            f"is resumable."
+        )
+    spent = sum(u.total_tokens for u in usages)
+    limit = loop.budget_tokens
+    return (
+        f"[syncade] approaching your token ceiling: {spent:,} of {limit:,} tokens "
+        f"({limit - spent:,} left). The run stops at the ceiling and is resumable; raise "
+        f"`[loop] budget_tokens` or set it to 0 for none."
     )
 
 

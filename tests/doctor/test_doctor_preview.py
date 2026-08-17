@@ -528,3 +528,30 @@ class TestPlanLabelNamesTheActualBase:
             max_rounds=None,
         ).detail
         assert tip[:7] in detail
+
+
+class TestBudgetCheck:
+    """check_budget names the active token/cost ceiling so --doctor tells the operator about
+    the default stop condition (PR-h-field-06 acceptance criterion)."""
+
+    def test_default_config_shows_50m_ceiling(self):
+        check = doctor_preview.check_budget(SyncadeConfig())
+        assert check.status == "ok"
+        assert "50,000,000" in check.detail
+        assert "budget_tokens = 0" in check.detail, "must name the opt-out"
+
+    def test_opt_out_zero_reports_no_ceiling(self):
+        config = SyncadeConfig(loop={"budget_tokens": 0})
+        check = doctor_preview.check_budget(config)
+        assert check.status == "ok"
+        assert "no token or cost ceiling" in check.detail
+
+    def test_custom_ceiling_is_shown(self):
+        config = SyncadeConfig(loop={"budget_tokens": 10_000_000})
+        assert "10,000,000" in doctor_preview.check_budget(config).detail
+
+    def test_dollar_ceiling_is_shown(self):
+        config = SyncadeConfig(loop={"budget_tokens": 0, "budget_usd": 20.0})
+        detail = doctor_preview.check_budget(config).detail
+        assert "20.00" in detail
+        assert "not billed money" in detail

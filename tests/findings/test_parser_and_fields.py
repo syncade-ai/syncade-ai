@@ -92,12 +92,19 @@ class TestParser:
         assert "schema error" in msg.lower()
         assert "no earlier block is considered" in msg
 
-    def test_unknown_field_at_top_level_raises(self):
-        raw = _verdict_json("SHIP", extras={"extra": "nope"})
-        with pytest.raises(ReviewerOutputError):
-            parse_reviewer_output(raw)
+    def test_unknown_field_at_top_level_is_repaired_not_rejected(self):
+        """Changed contract, PR-h-field-05: an extra key no longer discards the review.
 
-    def test_unknown_field_inside_finding_raises(self):
+        Measured cost of the old behaviour: 1,325,087 tokens on one advisory key, plus the
+        other reviewer's 936,113 because the judge is skipped when any reviewer fails. The
+        verdict cannot depend on a key the schema does not know, so it is dropped (with a
+        warning naming it) rather than taking the round down. Strictness that still holds is
+        pinned in tests/test_parse_repair_extra_keys.py.
+        """
+        raw = _verdict_json("SHIP", extras={"extra": "nope"})
+        assert parse_reviewer_output(raw).verdict == "SHIP"
+
+    def test_unknown_field_inside_finding_is_repaired_not_rejected(self):
         raw = _verdict_json(
             "NO-SHIP",
             findings=[
@@ -110,8 +117,7 @@ class TestParser:
                 }
             ],
         )
-        with pytest.raises(ReviewerOutputError):
-            parse_reviewer_output(raw)
+        assert parse_reviewer_output(raw).verdict == "NO-SHIP"
 
     def test_invalid_severity_in_finding_raises(self):
         raw = _verdict_json(

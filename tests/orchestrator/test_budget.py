@@ -61,10 +61,21 @@ def _u(tokens: int = 0, cost: float | None = None, source: str = "estimated") ->
 
 
 class TestOverBudget:
-    def test_no_budget_configured_is_noop(self):
-        # No ceiling set → never trips, even for an enormous tally. This is what makes the
-        # loop wiring a no-op for the vast majority of (unbudgeted) runs.
-        assert over_budget([_u(tokens=10**9, cost=10.0**9)], LoopConfig()) is None
+    def test_the_opt_out_is_a_noop(self):
+        # `budget_tokens = 0` is the explicit opt-out (PR-h-field-06): with a DEFAULT ceiling
+        # in place, an omitted TOML key can no longer mean "unlimited", so 0 carries that
+        # sense. Nothing trips, however enormous the tally.
+        off = LoopConfig(budget_tokens=0)
+        assert over_budget([_u(tokens=10**9, cost=10.0**9)], off) is None
+
+    def test_the_DEFAULT_ceiling_trips_without_any_configuration(self):
+        # The point of PR-h-field-06: a first run is no longer unbounded. Sized from the
+        # corpus (median run 11.0M tokens, p90 38.8M), so an ordinary run is unaffected and a
+        # runaway is not.
+        default = LoopConfig()
+        assert default.budget_tokens == 50_000_000
+        assert over_budget([_u(tokens=60_000_000, cost=None)], default) == "budget_tokens"
+        assert over_budget([_u(tokens=11_000_000, cost=None)], default) is None
 
     def test_empty_usages_never_trips(self):
         assert over_budget([], LoopConfig(budget_tokens=1, budget_usd=0.01)) is None
@@ -283,7 +294,10 @@ class TestBudgetAbortsLoop:
         assert "$0.6000" in summary  # API-equiv valuation (2 reviewers x 0.30)
 
         combined = "".join(capsys.readouterr())  # (out, err)
-        assert "budget exceeded" in combined
+        # The notice names the ceiling that crossed rather than the bare phrase "budget
+        # exceeded" (PR-h-field-06) — with a DEFAULT ceiling in place, the operator needs to
+        # know WHICH number stopped them and what it was set to.
+        assert "cost ceiling (budget_usd" in combined
         assert "not billed money" in combined  # the terminal never implies real spend
 
         # C2 surface: status.json is finalized to the budget reason (not left "running").
@@ -292,10 +306,15 @@ class TestBudgetAbortsLoop:
         assert status["reason"] == "budget_exceeded"
         assert status["exit_code"] == BUDGET_EXCEEDED
 
-    def test_unbudgeted_run_is_unaffected(self, repo_with_pr_doc, monkeypatch):
-        """C5: same enormous usage, NO budget configured → the loop runs normally (round 0
-        ships, exit 0), AND the only artifact delta is the run-init config-echo. Non-config
-        artifacts (loop-summary, loop-manifest) gain NO budget field on the no-budget path."""
+    def test_an_opted_out_run_is_unaffected(self, repo_with_pr_doc, monkeypatch):
+        """C5: same enormous usage, ceiling OPTED OUT → the loop runs normally (round 0 ships,
+        exit 0), AND the only artifact delta is the run-init config-echo. Non-config artifacts
+        (loop-summary, loop-manifest) gain NO budget field on the no-budget path.
+
+        Opting out is now explicit (`budget_tokens=0`) rather than the absence of config:
+        since PR-h-field-06 an omitted key means the DEFAULT ceiling, so this test has to say
+        what it means. The claim it makes is unchanged.
+        """
         repo, pr_doc = repo_with_pr_doc
         _patch_usage(
             monkeypatch, reviewer=_u(tokens=10**9), synth=_u(tokens=10**9), producer=_u(tokens=9)
@@ -303,7 +322,7 @@ class TestBudgetAbortsLoop:
         result = run_review(
             repo_root=repo,
             pr_doc_path=pr_doc,
-            config=_budget_config(max_rounds=2),  # no budget_tokens / budget_usd
+            config=_budget_config(max_rounds=2, budget_tokens=0),  # 0 = opted out
             adapter_factory=_factory_returning(
                 FakeAdapter(canned_output=_ship()),
                 FakeAdapter(canned_output=_ship()),
@@ -317,8 +336,12 @@ class TestBudgetAbortsLoop:
         # Non-config artifacts stay clean: no Budget section, no budget key in the loop manifest.
         assert "## Budget" not in (run_dir / "loop-summary.md").read_text()
         assert "budget" not in (run_dir / "loop-manifest.json").read_text().lower()
-        # The ONE benign delta (C5): run-init's config_snapshot echoes the unset budget fields
-        # as null — the same full-schema model_dump that already echoed test_timeout_seconds,
-        # and load-bearing for resume budget inheritance (Finding 2).
+        # The ONE benign delta (C5): run-init's config_snapshot echoes the budget fields as
+        # configured — here the explicit 0 opt-out for tokens and null for the unset dollar
+        # ceiling. The same full-schema model_dump that already echoed test_timeout_seconds,
+        # and load-bearing for resume budget inheritance (Finding 2), which reads
+        # model_fields_set to tell an opt-out from an absence.
         snap_loop = json.loads((run_dir / "run-init.json").read_text())["config_snapshot"]["loop"]
-        assert snap_loop["budget_tokens"] is None and snap_loop["budget_usd"] is None
+        # The echo reflects the OPT-OUT (0), not an absent key: the run-init snapshot
+        # records what was configured, and "no ceiling" is now something you configure.
+        assert snap_loop["budget_tokens"] == 0 and snap_loop["budget_usd"] is None

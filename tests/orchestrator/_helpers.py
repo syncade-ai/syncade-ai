@@ -253,7 +253,7 @@ def _two_reviewer_config() -> SyncadeConfig:
     multi-round tests construct their own SyncadeConfig with
     explicit ``max_rounds=2`` or ``3``.
 
-    Without ``max_rounds=1``, the default (3) would make the
+    Without ``max_rounds=1``, the default (5) would make the
     pre-PR-8 tests hit the producer phase on NO-SHIP rounds —
     which (a) the tests don't expect, and (b) would fail to
     spawn ``claude`` / ``codex`` in the test environment unless

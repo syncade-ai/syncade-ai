@@ -87,9 +87,10 @@ def test_before_round_abort_resumes_at_next_round(tmp_path):
 
 
 def test_original_budget_tolerates_malformed_snapshot(tmp_path):
-    """Robustness (dogfood-3 minor): a malformed config_snapshot must not crash budget
-    inheritance — chained ``.get`` on a non-dict would AttributeError; _original_budget
-    swallows it and returns {} (inherit no budget)."""
+    """Robustness: a structurally malformed config_snapshot must not crash budget inheritance.
+
+    Chained ``.get`` on a non-dict would AttributeError; _original_budget swallows it and
+    returns {} (inherit no budget from this snapshot)."""
     from syncade.cli.resume_mode import _original_budget
 
     for i, payload in enumerate(
@@ -98,3 +99,48 @@ def test_original_budget_tolerates_malformed_snapshot(tmp_path):
         p = tmp_path / f"run-init-{i}.json"
         p.write_text(payload, encoding="utf-8")
         assert _original_budget(p) == {}
+
+
+def test_original_budget_rejects_type_malformed_values(tmp_path):
+    """Type-malformed budget values in a well-structured snapshot must be rejected.
+
+    A corrupted value like False (disables ceiling), a string (crashes in over_budget),
+    or a negative int (immediate bogus stop) must not bypass LoopConfig validators via
+    model_copy — _original_budget must drop them rather than pass them through."""
+    from syncade.cli.resume_mode import _original_budget
+
+    def _snap(loop_dict):
+        return f'{{"config_snapshot": {{"loop": {json.dumps(loop_dict)}}}}}'
+
+    import json
+
+    # Non-numeric, bool, negative, and non-finite values are rejected for both keys.
+    import math
+
+    bad_for_tokens = [False, "50000000", -1, [], {}, 0.0, 9.99, float("nan"), float("inf")]
+    for v in bad_for_tokens:
+        p = tmp_path / f"bad-tokens-{id(v)}.json"
+        p.write_text(_snap({"budget_tokens": v}), encoding="utf-8")
+        assert _original_budget(p) == {}, f"expected empty for budget_tokens={v!r}"
+
+    bad_for_usd = [False, "50000000", -1, [], {}, float("nan"), float("inf")]
+    for v in bad_for_usd:
+        p = tmp_path / f"bad-usd-{id(v)}.json"
+        p.write_text(_snap({"budget_usd": v}), encoding="utf-8")
+        assert _original_budget(p) == {}, f"expected empty for budget_usd={v!r}"
+
+    # Valid budget_tokens: plain int, non-negative (including 0, the opt-out sentinel).
+    for v in [0, 1000, 50_000_000]:
+        p = tmp_path / f"good-tokens-{id(v)}.json"
+        p.write_text(_snap({"budget_tokens": v, "budget_usd": 5.0}), encoding="utf-8")
+        result = _original_budget(p)
+        assert result["budget_tokens"] == v
+        assert result["budget_usd"] == 5.0
+
+    # budget_usd allows finite floats; those same values must NOT pass as budget_tokens.
+    for v in [0.0, 9.99]:
+        p = tmp_path / f"float-{id(v)}.json"
+        p.write_text(_snap({"budget_tokens": v, "budget_usd": v}), encoding="utf-8")
+        result = _original_budget(p)
+        assert "budget_tokens" not in result, f"float {v!r} must not be inherited as budget_tokens"
+        assert math.isclose(result["budget_usd"], v), f"float {v!r} must pass through as budget_usd"

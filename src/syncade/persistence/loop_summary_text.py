@@ -410,12 +410,12 @@ def _budget_section(
     ]
     tok_mark = "  ← CROSSED" if budget_ceiling == "budget_tokens" else ""
     usd_mark = "  ← CROSSED" if budget_ceiling == "budget_usd" else ""
-    if budget_tokens is not None:
+    if budget_tokens:  # 0 is the opt-out sentinel (PR-h-field-06), not a real ceiling
         lines.append(
             f"- total tokens ≤ {budget_tokens:,} (`budget_tokens` — tightest bound; exact "
             f"unless an actor reported no usage){tok_mark}"
         )
-    if budget_usd is not None:
+    if budget_usd:  # 0 is the opt-out sentinel (PR-h-field-06), not a real ceiling
         lines.append(
             f"- API-equivalent cost ≤ ${budget_usd:.4f} (`budget_usd`, a LOWER-BOUND "
             f"tally){usd_mark}"

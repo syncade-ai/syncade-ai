@@ -78,8 +78,8 @@ class LoopConfig(BaseModel):
         ),
     )
     budget_tokens: int | None = Field(
-        default=None,
-        gt=0,
+        default=50_000_000,
+        ge=0,
         description=(
             "Optional per-RUN total-token ceiling (PR-v2-11). When the running tally of every "
             "actor's usage crosses it at a phase boundary, the loop aborts gracefully with "
@@ -88,24 +88,41 @@ class LoopConfig(BaseModel):
             "fails to parse), so this is the TIGHTEST cap available: exact when all actors "
             "report usage, and a lower bound only if an actor reports none (a provider envelope "
             "with no usage block). Always at least as tight as budget_usd, which ALSO drops "
-            "actors whose COST could not be priced. None (default) = no token ceiling; "
-            "max_rounds + timeout_seconds stay the only bounds. The CLI's --budget-tokens "
-            "flag overrides this per-invocation. An int, so NaN/inf cannot arise and gt=0 "
-            "already rejects 0 / negatives."
+            "actors whose COST could not be priced. 0 = no token ceiling (opt-out sentinel; "
+            "TOML has no null, so 0 is the only way to express 'unlimited' once a default "
+            "exists). The CLI's --budget-tokens flag overrides this per-invocation. An int, "
+            "so NaN/inf cannot arise and ge=0 already rejects negatives.\n\n"
+            "DEFAULT 50,000,000 (PR-h-field-06). Previously unset, which left a first run "
+            "bounded only by max_rounds x the per-subprocess timeout — and the round default "
+            "moved 3 -> 5 in v0.6.1, widening that ~66%. Chosen against this repo's corpus "
+            "rather than picked round: across 102 priced runs the median run spent 11.0M "
+            "tokens and p90 spent 38.8M, so 50M would have stopped 4 of 102 (4%). Tokens "
+            "rather than dollars because cost_usd is an API-EQUIVALENT VALUATION and most "
+            "traffic is subscription, where a dollar ceiling would interrupt a run over money "
+            "nobody spent.\n\n"
+            "SET TO 0 FOR NO CEILING. TOML has no null, so once a default exists an omitted "
+            "key can no longer mean 'unlimited' — 0 is the opt-out. It reads as a ceiling of "
+            "zero only if you ignore that a zero ceiling would stop every run before it "
+            "started, which is why it is free to mean the opposite."
         ),
     )
     budget_usd: float | None = Field(
         default=None,
-        gt=0,
+        ge=0,
         description=(
             "Optional per-RUN cost ceiling (PR-v2-11) on the API-EQUIVALENT VALUATION "
             "(PR-v2-24), NOT billed money — on a subscription the marginal dollar is $0, so "
             "this bounds the WORK, matching what `syncade --doctor` previews and `--metrics` "
             "reports. A LOWER-BOUND tally: actors with incomplete cost contribute uncounted, "
             "so a dollar-budgeted run can overshoot silently (use budget_tokens for a hard "
-            "cap). None (default) = no cost ceiling. Must be > 0 and finite (NaN/inf rejected "
+            "cap). None (default) = no cost ceiling. Must be >= 0 and finite (NaN/inf rejected "
             "via a field_validator; pydantic's gt=0 admits both). The CLI's --budget-usd flag "
-            "overrides this per-invocation."
+            "overrides this per-invocation.\n\n"
+            "SET TO 0 FOR NO CEILING, symmetric with budget_tokens. Added in PR-h-field-06 "
+            "after a blind reviewer caught the asymmetry: the stop message offered a dollar "
+            "opt-out that did not exist, and 'remove the key' does not work because --resume "
+            "RE-INHERITS a ceiling the current config omits. An explicit 0 is in "
+            "model_fields_set, so resume treats it as a decision rather than an absence."
         ),
     )
     test_command: str | None = Field(
@@ -155,6 +172,21 @@ class LoopConfig(BaseModel):
         ),
     )
 
+    @field_validator("budget_tokens", mode="before")
+    @classmethod
+    def _strict_budget_tokens(cls, value: object) -> object:
+        # Same rule as max_diff_bytes: pydantic's lax mode silently coerces false->0 (the
+        # opt-out sentinel), true->1, 0.0->0, and "0"->0. A TOML typo of
+        # `budget_tokens = false` would silently disable the default safety ceiling rather
+        # than producing a config error — the opposite of a safe failure. Reject all
+        # wrong-type forms (exit 50). None is allowed (the no-default case).
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            raise ValueError(
+                f"budget_tokens must be a plain integer or omitted (got {value!r}); "
+                "quoted numbers, floats, and booleans are rejected"
+            )
+        return value
+
     @field_validator("max_diff_bytes", mode="before")
     @classmethod
     def _strict_max_diff_bytes(cls, value: object) -> object:
@@ -190,6 +222,21 @@ class LoopConfig(BaseModel):
             )
         return value
 
+    @field_validator("budget_usd", mode="before")
+    @classmethod
+    def _strict_budget_usd(cls, value: object) -> object:
+        # Same rule as budget_tokens: pydantic's lax mode coerces false->0.0 (the opt-out
+        # sentinel), true->1.0, and "1.5"->1.5. Because explicit 0 is now the no-ceiling
+        # sentinel and lands in model_fields_set, `budget_usd = false` in a hand-edited repo
+        # config can silently disable an inherited dollar ceiling rather than surfacing a config
+        # error. Reject booleans and non-numeric strings; allow plain int/float and None.
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+            raise ValueError(
+                f"budget_usd must be a plain numeric value >= 0 or omitted (got {value!r}); "
+                "quoted numbers and booleans are rejected"
+            )
+        return value
+
     @field_validator("budget_usd")
     @classmethod
     def _budget_usd_isfinite(cls, value: float | None) -> float | None:
@@ -197,7 +244,9 @@ class LoopConfig(BaseModel):
         and an infinite budget would silently mean 'no ceiling' (it never trips) rather than
         erroring — hiding a config typo. ``budget_tokens`` needs no twin: it is an int."""
         if value is not None and not math.isfinite(value):
-            raise ValueError(f"budget_usd must be a finite positive number; got {value!r}")
+            raise ValueError(
+                f"budget_usd must be a finite non-negative number (0 = no ceiling); got {value!r}"
+            )
         return value
 
     @field_validator("test_timeout_seconds")

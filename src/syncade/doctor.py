@@ -50,7 +50,7 @@ from syncade.doctor_env import (  # noqa: F401
     _configured_providers,
     _probe_cli_launch,
 )
-from syncade.doctor_preview import based_diff_classify, check_cost, check_plan
+from syncade.doctor_preview import based_diff_classify, check_budget, check_cost, check_plan
 from syncade.doctor_types import _OK, _RED, _SKIP, _STATUS_GLYPH, DoctorCheck
 from syncade.exit_codes import SUCCESS, WORKTREE_ERROR
 from syncade.orchestrator.branch_guard import current_branch_name, guard_default_branch
@@ -328,6 +328,7 @@ def collect_checks(
             max_rounds=max_rounds,
         ),
         check_cost(config, repo_root, max_rounds=max_rounds),
+        check_budget(config),
     ]
     checks = list(cheap)
     if quick:

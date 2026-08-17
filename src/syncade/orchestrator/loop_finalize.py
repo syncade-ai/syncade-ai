@@ -217,6 +217,12 @@ def _finalize_run(
         rounds=round_results,
         final_round=final_round_idx,
         termination_reason=termination_reason,
+        # Same values persist_loop_summary renders, so the terminal notice and the artifact
+        # cannot disagree about what was spent (PR-h-field-06).
+        budget_usages=list(run_usages or []),
+        budget_ceiling=budget_ceiling,
+        budget_tokens=config.loop.budget_tokens,
+        budget_usd=config.loop.budget_usd,
     )
 
     # When the final round had a test-leg worktree provisioning failure, that

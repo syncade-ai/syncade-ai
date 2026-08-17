@@ -265,3 +265,62 @@ def test_before_producer_budget_resume_runs_only_the_producer(repo_with_pr_doc, 
     assert phase2.exit_code == 0  # round-0 producer fixed it → round 1 SHIP (reviewers not re-run)
     assert producer.invocations  # the round-0 producer DID run on resume
     assert len(phase2.rounds) == 2  # round 0 (rehydrated) + round 1 (fresh review)
+
+
+def test_resume_inherits_a_tighter_original_ceiling_over_the_DEFAULT(
+    repo_with_pr_doc, monkeypatch, capsys
+):
+    """PR-h-field-06 regression: a default ceiling must not quietly loosen a resumed run.
+
+    Inheritance used to key on `config.loop.budget_tokens is None`, which was equivalent to
+    "the operator did not configure one" — until budget_tokens gained a default. Then it was
+    never None, inheritance stopped firing, and a run launched at 3,500 tokens resumed at
+    50,000,000. Not unguarded, but 14,000x looser, which is the same surprise the inheritance
+    rule exists to prevent.
+
+    Asserted against the DEFAULT explicitly rather than just `== 3500`, so the test states
+    which failure it is guarding against.
+    """
+    from syncade.cli import resume_mode
+
+    repo_root, pr_doc = repo_with_pr_doc
+    subprocess.run(["git", "branch", "-m", "main"], cwd=repo_root, check=False)
+    _prepare_aborted_run(
+        repo_root,
+        pr_doc,
+        completed_round_count=1,
+        max_rounds=2,
+        aborted_exit_code=25,
+        budget_tokens=3500,
+    )
+    captured = _capture_resume_config(monkeypatch)
+    assert resume_mode._run_resume(_resume_args(repo_root)) == 0
+    assert captured["budget_tokens"] == 3500
+    assert captured["budget_tokens"] != 50_000_000, "the default silently replaced the original"
+
+
+def test_fresh_budget_notice_suppressed_when_all_ceilings_are_zero(
+    repo_with_pr_doc, monkeypatch, capsys
+):
+    """No fresh-budget notice when both ceilings are explicitly 0 (the opt-out sentinel).
+
+    budget_tokens=0 and budget_usd=0 both mean 'no ceiling'; printing the notice in that case
+    contradicts the contract and confuses operators who set the sentinel to disable ceilings.
+    """
+    from syncade.cli import resume_mode
+
+    repo_root, pr_doc = repo_with_pr_doc
+    subprocess.run(["git", "branch", "-m", "main"], cwd=repo_root, check=False)
+    _prepare_aborted_run(
+        repo_root, pr_doc, completed_round_count=1, max_rounds=2, aborted_exit_code=25
+    )
+
+    monkeypatch.setattr(resume_mode, "auth_gate", lambda *a, **k: None)
+    monkeypatch.setattr("syncade.orchestrator.run_review", lambda **_: SimpleNamespace(exit_code=0))
+
+    resume_mode._run_resume(_resume_args(repo_root, budget_tokens=0, budget_usd=0.0))
+
+    notice = "".join(capsys.readouterr())
+    assert "FRESH budget" not in notice, (
+        "fresh-budget notice must not fire when both ceilings are the opt-out sentinel (0)"
+    )

@@ -7,6 +7,55 @@ include breaking changes.
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-08-17
+
+### Changed
+
+- **A run now has a spending ceiling by default.** `budget_tokens` defaults to 50,000,000 —
+  previously there was none, so a first run was bounded only by the round count and the
+  per-call timeout. Crossing it stops the loop at a phase boundary, keeps every completed
+  round, and `syncade --resume` continues. Sized against our own history rather than picked
+  round: the median run uses 11M tokens and 9 in 10 stay under 39M, so this stops about 4% of
+  runs. **Set `budget_tokens = 0` — or `budget_usd = 0` — for no ceiling.**
+
+  It counts tokens rather than dollars because the dollar figure is an API-equivalent
+  valuation: on a subscription it is not money you spent, and a ceiling should not interrupt
+  you over a number that is not real.
+
+  A ceiling only bounds what has *not* started. A round already under way runs to completion,
+  so a run can finish slightly over — and a run that reaches a verdict keeps it. Stopping is
+  for work not yet done, not a re-judgement of work already finished.
+
+### Added
+
+- **You are warned at 80% of the ceiling**, once, with the headroom left — so a long run's stop
+  is visible while there is still a round to react in, rather than arriving as a surprise.
+- **The stop tells you what to do.** Which ceiling you crossed and what it was set to, what was
+  actually spent, that your completed rounds are preserved, and the exact `syncade --resume`
+  command.
+
+### Fixed
+
+- **One forbidden key no longer discards an entire review.** A reviewer that returned a
+  complete, correct verdict and added one advisory field had the whole thing rejected — a real
+  case cost 1.3M tokens of review, and took the other reviewer's work with it. Such a key is
+  now dropped, with a warning naming it, and the review is used. A genuinely malformed
+  response is still rejected: this only applies when the *sole* problem is an unrecognised
+  field. Applies to reviewers, the spec drafter and the spec auditor.
+
+
+### Changed
+
+- **A run now has a spending ceiling by default.** `budget_tokens` defaults to 50,000,000 —
+  previously there was none, so a first run was bounded only by the round count and the
+  per-call timeout. Crossing it stops the loop at a phase boundary, keeps every completed
+  round, and `syncade --resume` continues. Sized against our own history rather than picked
+  round: the median run uses 11M tokens and 9 in 10 stay under 39M, so this stops about 4% of
+  runs. It counts tokens rather than dollars because the dollar figure is an
+  API-equivalent valuation — on a subscription it is not money you spent, and a ceiling should
+  not interrupt you over a number that is not real. **Set `budget_tokens = 0` for no ceiling.**
+
+
 ## [0.6.1] — 2026-08-15
 
 ### Added
@@ -436,7 +485,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.2
 [0.6.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.1
 [0.6.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.0
 [0.5.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.5.1

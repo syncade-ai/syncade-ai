@@ -184,25 +184,12 @@ class ConfigMenu:
         if row.kind != "edit":  # Enter on a drill/info row is navigation, handled by the caller
             return ""
         key = row.key
-        # Empty input: loop.budget_usd supports clearing (removes the TOML key); optional and
-        # list fields clear via the normal coerce/apply path; all other rows are a no-op.
+        # Empty input: optional and list fields clear via the normal coerce/apply path; budget
+        # keys require explicit 0 (clearing would omit the TOML key, reactivating the default);
+        # all other rows are a no-op.
         if not text:
-            if key == "loop.budget_usd":
-                candidate = copy.deepcopy(self.target_raw)
-                loop = candidate.get("loop")
-                # Guard isinstance: this clear runs BEFORE the caught edit path, so a malformed
-                # target loop (a list/scalar masked by a higher layer) would crash on `.pop`.
-                if isinstance(loop, dict) and "budget_usd" in loop:
-                    loop.pop("budget_usd")
-                    if loop:
-                        candidate["loop"] = loop
-                    else:
-                        candidate.pop("loop", None)
-                    self.target_raw = candidate
-                    self._target_dirty = True
-                    self._recompute()
-                    return None  # state changed → caller shows "updated"
-                return ""
+            if key in config_keys.BUDGET_KEYS:
+                return f"invalid: set {key!r} to 0 to disable the ceiling; empty is not accepted"
             # Optional and list fields: empty input clears (parity with --config set).
             try:
                 ann = config_keys.resolve_annotation(key)

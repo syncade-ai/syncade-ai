@@ -538,36 +538,6 @@ def test_producer_timeout_seconds_inf_rejected():
 # --- PR-v2-11: [loop] budget_tokens / budget_usd ---------------------------------
 
 
-def test_budget_unset_is_none():
-    """No budget by default — max_rounds + timeout stay the only bounds (byte-identical to
-    pre-PR-v2-11)."""
-    cfg = SyncadeConfig()
-    assert cfg.loop.budget_tokens is None
-    assert cfg.loop.budget_usd is None
-
-
-def test_budget_explicit_round_trips():
-    cfg = SyncadeConfig(loop={"budget_tokens": 500_000, "budget_usd": 2.5})
-    assert cfg.loop.budget_tokens == 500_000
-    assert cfg.loop.budget_usd == 2.5
-
-
-@pytest.mark.parametrize("value", [0, -1])
-def test_budget_tokens_non_positive_rejected(value):
-    with pytest.raises(ValidationError) as exc_info:
-        SyncadeConfig(loop={"budget_tokens": value})
-    assert "budget_tokens" in str(exc_info.value)
-
-
-@pytest.mark.parametrize("value", [0, -1.0, float("nan"), float("inf")])
-def test_budget_usd_invalid_rejected(value):
-    # gt=0 rejects 0/negatives; the field_validator rejects NaN/inf (which gt=0 admits and
-    # would silently mean "no ceiling").
-    with pytest.raises(ValidationError) as exc_info:
-        SyncadeConfig(loop={"budget_usd": value})
-    assert "budget_usd" in str(exc_info.value)
-
-
 def test_producer_section_absent_yields_defaults(tmp_path):
     """An empty / absent ``[producer]`` section in the TOML file
     instantiates :class:`ProducerConfig` with all defaults. PR-8

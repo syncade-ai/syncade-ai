@@ -11,6 +11,7 @@ unchanged.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -29,17 +30,34 @@ def _original_budget(config_snapshot_path) -> dict:
 
     Returns ``{'budget_tokens': ..., 'budget_usd': ...}`` with ONLY the dimensions the original
     run actually set (a CLI ``--budget-*`` was folded into that snapshot at launch). ``{}`` on a
-    missing path or any read/parse failure — budget inheritance is best-effort and must never
-    block a resume."""
+    missing path, any read/parse failure, or a malformed value — budget inheritance is best-effort
+    and must never block a resume or bypass LoopConfig validators."""
     if config_snapshot_path is None:
         return {}
     try:
         data = json.loads(Path(config_snapshot_path).read_text(encoding="utf-8"))
         loop = data.get("config_snapshot", {}).get("loop", {}) or {}
-        return {k: loop[k] for k in ("budget_tokens", "budget_usd") if loop.get(k) is not None}
+        result = {}
+        for k in ("budget_tokens", "budget_usd"):
+            v = loop.get(k)
+            if v is None:
+                continue
+            if isinstance(v, bool):
+                continue
+            # budget_tokens requires a plain int (LoopConfig._strict_budget_tokens rejects
+            # floats — including 0.0, NaN, and Infinity — so inheriting them via model_copy
+            # would bypass the schema validator). budget_usd allows int/float but must be
+            # finite and non-negative (LoopConfig._budget_usd_isfinite rejects NaN/Inf).
+            if k == "budget_tokens":
+                if not isinstance(v, int) or v < 0:
+                    continue
+            else:
+                if not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+                    continue
+            result[k] = v
+        return result
     except (OSError, ValueError, TypeError, AttributeError):
-        # AttributeError covers a malformed config_snapshot/loop that isn't a dict (chained
-        # .get on a str/list) — inheritance is best-effort and must never crash a resume.
+        # AttributeError covers a malformed config_snapshot/loop that isn't a dict.
         return {}
 
 
@@ -63,16 +81,23 @@ def _resolve_resume_budget(config, args, plan):
     if cli:
         config = config.model_copy(update={"loop": config.loop.model_copy(update=cli)})
 
+    # Inherit when the reloaded config did not EXPLICITLY set this dimension. Testing for
+    # None was equivalent until budget_tokens gained a default (PR-h-field-06) — after which
+    # it is never None, so inheritance silently stopped firing and a run launched at 3,500
+    # tokens resumed at the 50,000,000 default. Not unguarded, but guarded 14,000x looser,
+    # which is the same surprise Finding 2 exists to prevent. `model_fields_set` is the
+    # distinction the layered loader preserves: an omitted key is absent from it, an
+    # explicitly-configured one is present, whatever its value.
     original = _original_budget(plan.config_snapshot_path)
     inherited = {
         dim: original[dim]
         for dim in ("budget_tokens", "budget_usd")
-        if getattr(config.loop, dim) is None and original.get(dim) is not None
+        if dim not in config.loop.model_fields_set and original.get(dim) is not None
     }
     if inherited:
         config = config.model_copy(update={"loop": config.loop.model_copy(update=inherited)})
 
-    if config.loop.budget_tokens is not None or config.loop.budget_usd is not None:
+    if config.loop.budget_tokens or config.loop.budget_usd:  # 0 sentinels = no active ceiling
         msg = (
             "[syncade] note: --resume applies a FRESH budget to this run's spend; the original "
             "run's tokens/cost are NOT carried over, so original + resume can exceed a single "

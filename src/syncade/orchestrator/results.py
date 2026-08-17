@@ -20,6 +20,7 @@ from syncade.producer import ProducerResult
 from syncade.snapshot import Snapshot
 from syncade.synthesizer import SynthesizerResult
 from syncade.test_runner import TestRunResult
+from syncade.usage import Usage
 from syncade.worktree import WorktreeError
 
 TestSkipReason = Literal[
@@ -293,3 +294,13 @@ class RunResult:
     rounds: list[RoundResult] = field(default_factory=list)
     final_round: int = 0
     termination_reason: TerminationReason | None = None
+    # The budget ENFORCEMENT tally and the ceiling that crossed, carried so the terminal
+    # notice can state the numbers that actually tripped (PR-h-field-06). Deliberately not
+    # recomputed from `rounds`: on a --resume the enforcement tally is the FRESH resumed
+    # spend, not the rehydrated originals, so a recomputation would print a different number
+    # from loop-summary.md and --metrics — the "one number, three surfaces" rule.
+    budget_usages: list[Usage] = field(default_factory=list)
+    budget_ceiling: str | None = None
+    # The CONFIGURED ceilings, so the notice can name the number the operator would change.
+    budget_tokens: int | None = None
+    budget_usd: float | None = None

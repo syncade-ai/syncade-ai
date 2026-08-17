@@ -60,12 +60,29 @@ class TestNoFallbackToAnEarlierBlock:
             "The shape I'll emit:\n\n"
             + _fence(_out("SHIP", "example only"))
             + "\n\nMy real verdict:\n\n"
-            # extra key → schema-invalid, but syntactically valid JSON
-            + _fence(_out("NO-SHIP", "sql injection", [dict(_BLOCKER, bogus_key=1)]))
+            # Schema-invalid but syntactically valid JSON. Uses a WRONG TYPE rather than an
+            # extra key: since PR-h-field-05 an extra key is repaired, so it would no longer
+            # make this block invalid and the test would pass for the wrong reason.
+            + _fence(_out("NO-SHIP", "sql injection", [dict(_BLOCKER, line="not-an-int")]))
         )
         with pytest.raises(ReviewerOutputError) as exc:
             parse_reviewer_output(raw)
         assert "no earlier block is considered" in str(exc.value)
+
+    def test_a_REPAIRED_final_fence_still_beats_an_earlier_ship(self) -> None:
+        """The interaction PR-h-field-05 introduces, pinned deliberately.
+
+        Repair makes a previously-rejected final block usable — so it must yield THAT block's
+        verdict, never resurrect the earlier example SHIP. Getting this wrong would turn a
+        recall improvement into the exact false-SHIP the no-fallback rule exists to prevent.
+        """
+        raw = (
+            "The shape I'll emit:\n\n"
+            + _fence(_out("SHIP", "example only"))
+            + "\n\nMy real verdict:\n\n"
+            + _fence(_out("NO-SHIP", "sql injection", [dict(_BLOCKER, bogus_key=1)]))
+        )
+        assert parse_reviewer_output(raw).verdict == "NO-SHIP"
 
     def test_malformed_final_fence_does_not_fall_back_to_earlier_ship(self) -> None:
         """Harder case than the above: the final fence is not even valid JSON,

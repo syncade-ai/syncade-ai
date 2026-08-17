@@ -39,7 +39,7 @@ from syncade.persistence import (
 from syncade.snapshot import take_snapshot
 
 from .branch_advance import _advance_branch_ref
-from .budget import over_budget, review_usages
+from .budget import approaching_budget, over_budget, review_usages
 from .escalation_coverage import escalation_covers_active_blockers
 from .producer_phase import _run_producer_phase
 from .results import RoundArtifacts, RoundResult
@@ -64,6 +64,7 @@ class _RoundStep:
     final_exit_code: int | None = None
     termination_reason: str | None = None
     budget_ceiling: str | None = None  # "budget_tokens" | "budget_usd" on a budget abort
+    budget_warned: bool = False  # True when the 80%-of-ceiling advisory fired this step
 
 
 def _run_round_step(
@@ -93,6 +94,7 @@ def _run_round_step(
     force_drift,
     prior_usages,
     branch_advanced_during_run,
+    budget_warned,
 ) -> _RoundStep:
     """Run one round of the loop and return a continue/break signal.
 
@@ -305,7 +307,8 @@ def _run_round_step(
     # Skip this check for a budget-abort-before-producer resume: the review costs were
     # incurred in the prior process and must not count against the fresh budget tally.
     if not _budget_abort_resume:
-        budget_ceiling = over_budget(prior_usages + review_usages(round_result), config.loop)
+        _pre_producer_usages = prior_usages + review_usages(round_result)
+        budget_ceiling = over_budget(_pre_producer_usages, config.loop)
         if budget_ceiling is not None:
             return _RoundStep(
                 action="break",
@@ -315,6 +318,19 @@ def _run_round_step(
                 termination_reason="budget_exceeded",
                 budget_ceiling=budget_ceiling,
             )
+        # PR-h-field-06 item 3: the 80% advisory fires at BOTH dispatch boundaries.
+        # The start-of-round check in loop.py covers the case where prior rounds already
+        # entered the band; this catches the case where this round's reviews push the total
+        # into the band so the operator is warned before the producer spends more.
+        if not budget_warned:
+            _approaching = approaching_budget(_pre_producer_usages, config.loop)
+            if _approaching is not None:
+                from syncade.logging import _approaching_budget_line
+
+                logger.warning(
+                    _approaching_budget_line(_approaching, _pre_producer_usages, config.loop)
+                )
+                budget_warned = True
 
     # NO-SHIP and rounds remaining → run the producer. on the
     # round being RESUMED after an escalation, feed the operator's
@@ -579,4 +595,5 @@ def _run_round_step(
         action="continue",
         current_snapshot=current_snapshot,
         branch_advanced=branch_advanced,
+        budget_warned=budget_warned,
     )

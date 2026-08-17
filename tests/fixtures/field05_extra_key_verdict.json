@@ -1,0 +1,28 @@
+{
+  "verdict": "NO-SHIP",
+  "findings": [
+    {
+      "severity": "blocker",
+      "file": "src/syncade/process.py",
+      "line": 503,
+      "spec_clause": "Item 1 acceptance: streamed capture must preserve the run_subprocess/SubprocessResult contract while adding disk durability.",
+      "finding": "The streamed path treats pipe EOF as near-completion and then waits only the fixed 0.25s drain window for the direct child to exit. A valid child can close stdout/stderr early and continue running within its configured timeout; the old pipe path waits for process exit, but the new capture_prefix path falsely raises SubprocessTimeoutError and kills it. Reviewer dispatch now always passes capture_dir, so this can turn a reviewer that would complete within timeout into a synthetic timeout failure.",
+      "evidence_cmd": "PYTHONPATH=src python - <<'PY'\nimport sys, tempfile, time\nfrom pathlib import Path\nfrom syncade.process import run_subprocess, SubprocessTimeoutError\nargv = [sys.executable, '-c', 'import os,sys,time; os.close(1); os.close(2); time.sleep(1); sys.exit(7)']\nt0 = time.monotonic(); pipe = run_subprocess(argv, timeout=5); print('pipe', pipe.returncode, round(time.monotonic()-t0, 2))\nwith tempfile.TemporaryDirectory() as d:\n    t0 = time.monotonic()\n    try:\n        streamed = run_subprocess(argv, timeout=5, capture_prefix=Path(d)/'rv')\n        print('stream', streamed.returncode, round(time.monotonic()-t0, 2))\n    except SubprocessTimeoutError as exc:\n        print('stream timeout', exc.timeout, round(time.monotonic()-t0, 2), repr(exc.stdout), repr(exc.stderr))\nPY",
+      "evidence_output": "pipe 7 1.06\nstream timeout 5 0.3 '' ''",
+      "recommended_fix": "After pump threads reach EOF, wait for proc using the remaining caller timeout budget, or indefinitely when timeout is None. Keep the 0.25s drain window only for cleanup after an actual timeout/interrupt."
+    }
+  ],
+  "summary": "Reviewed the PR brief and traced the changed path through src/syncade/process.py, src/syncade/dispatcher.py, src/syncade/orchestrator/round.py, and src/syncade/persistence/reviewer.py. Targeted tests passed: `pytest -q tests/test_streamed_capture.py tests/orchestrator/test_dispatch_record.py tests/dispatcher/test_dispatch_misc.py::TestInvalidCapturePrefix -q` produced 26 passing tests, and `pytest -q tests/test_process.py tests/test_process_teardown.py -q` produced 30 passing tests. The full non-smoke suite also passed: `pytest -q` produced 3307 passed, 1 skipped, 28 deselected. Custom falsification found one blocker: the streamed capture path no longer matches the pipe path when a child closes stdout/stderr before exiting. I also ran a parent-SIGKILL burst probe with 20 MB stdout after child write completion; five attempts produced full-size files, so I did not raise that as a finding.",
+  "priority_order": [
+    0
+  ],
+  "coverage_gaps": [
+    "Did not run smoke tests or real provider CLI calls; the full configured non-smoke suite passed.",
+    "No browser or UI probes were applicable to this backend subprocess/persistence change.",
+    "AGENTS.md and CLAUDE.md appear deleted in git status, but the review instructions state they are intentionally stripped, so this was not treated as a finding."
+  ],
+  "dismissed_concerns": [
+    "Relevant implementation files are below the roughly 600 LOC architecture threshold: process.py 573, dispatcher.py 570, orchestrator/round.py 572, persistence/reviewer.py 198.",
+    "The dispatch.json pid plumbing is wired from run_subprocess on_spawn through dispatcher and orchestrator, and targeted tests verify real child pids plus concurrent pid writes."
+  ]
+}

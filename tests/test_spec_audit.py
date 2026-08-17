@@ -263,14 +263,31 @@ class TestParseSpecAuditOutput:
             parse_spec_audit_output("not json at all")
 
     def test_raises_on_wrong_schema(self):
-        # Valid JSON but wrong shape — uses "file" instead of "section"
+        """A genuinely wrong shape — a finding using "file" where the schema says "section".
+
+        The payload now matches what this test has always CLAIMED to check. It previously used
+        a bare `extra_field`, which since PR-h-field-05 is repaired rather than rejected (an
+        advisory key must not discard a whole audit). A RENAMED field is the case that must
+        still raise, and it does so by construction: it emits `missing` for `section` beside
+        `extra_forbidden` for `file`, and mixed error types are never repaired.
+        """
         bad = (
-            '{"verdict": "READY", "findings": [], "summary": "x", '
+            '{"verdict": "READY", "summary": "x", '
             '"priority_order": [], "coverage_gaps": [], "dismissed_concerns": [], '
-            '"extra_field": "forbidden"}'
+            '"findings": [{"severity": "blocker", "file": "S1", '
+            '"issue_class": "ambiguity", "finding": "y"}]}'
         )
         with pytest.raises(SpecAuditOutputError):
             parse_spec_audit_output(bad)
+
+    def test_an_advisory_extra_key_no_longer_discards_the_audit(self):
+        """The other half of the contract change, pinned beside its counterpart."""
+        ok = (
+            '{"verdict": "READY", "findings": [], "summary": "x", '
+            '"priority_order": [], "coverage_gaps": [], "dismissed_concerns": [], '
+            '"extra_field": "advisory"}'
+        )
+        assert parse_spec_audit_output(ok).verdict == "READY"
 
     def test_raises_on_empty_string(self):
         with pytest.raises(SpecAuditOutputError):
