@@ -57,9 +57,15 @@ terminal or copy-paste between tools.
 ## Install
 
 ```bash
-uv tool install git+https://github.com/syncade-ai/syncade-ai.git   # recommended
+uv tool install syncade   # recommended
 # or with pip:
-pip install git+https://github.com/syncade-ai/syncade-ai.git
+pip install syncade
+```
+
+To track unreleased `main` instead of the latest release:
+
+```bash
+uv tool install git+https://github.com/syncade-ai/syncade-ai.git
 ```
 
 Then install the harness integration so you can invoke it as `/syncade`:
@@ -73,6 +79,24 @@ syncade wrote — a skill you hand-edited, an unrelated file you keep there — 
 touching the directory and names every file at risk. Ordinary upgrades need no flag: syncade
 recognises its own past output by content, not by filename. Use `--force-install` to overwrite
 deliberately; it still lists what it destroys.
+
+### Staying up to date
+
+The first time you run syncade in a new terminal or harness window, it checks once whether a
+newer release exists and prints a line if so. It only ever prints — it never blocks a run,
+changes an exit code, or fails one, and every error (offline, bad response) is silent. Nothing
+about your repo, diff, or run is sent. Turn it off with `syncade --config set update.check false`,
+or set `CI` in automation.
+
+```bash
+syncade --update        # upgrade, then re-run your command
+```
+
+`--update` works out how syncade was installed by looking for a marker inside its own install
+tree, and **refuses rather than guessing** if it cannot tell — printing the manual `pip` command
+instead. It also refuses while a review is still running, and declines to touch a source
+checkout. A running process cannot switch to the version it just installed, so it exits and asks
+you to re-run.
 
 **Requirements**
 - **Python 3.11+**, on **macOS or Linux** (on Windows, use WSL).

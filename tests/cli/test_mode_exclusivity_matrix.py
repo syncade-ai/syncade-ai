@@ -37,6 +37,7 @@ _MODES: dict[str, list[str]] = {
     "--config": ["--config", "list"],
     "--install-skill": ["--install-skill", "claude"],
     "--doctor": ["--doctor"],
+    "--update": ["--update"],
 }
 
 

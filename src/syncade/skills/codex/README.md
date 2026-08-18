@@ -108,8 +108,9 @@ syncade --install-skill codex       # copies it to $CODEX_HOME/skills/syncade/
 ```
 
 This works from any installed copy of syncade (the skill ships inside the
-package) — `pip install .` from a checkout, or `pip install git+<repo-url>`.
-syncade is not published on PyPI. Restart Codex to pick up new skills. The `syncade` CLI it shells out to
+package) — `uv tool install syncade`, or `pip install git+<repo-url>` to track
+unreleased `main`.
+Restart Codex to pick up new skills. The `syncade` CLI it shells out to
 must be on your `PATH`. `~/.codex/skills` (i.e. `$CODEX_HOME/skills`) is the
 verified-discovered location; format details in the CLI-format notes.
 Developers who want the installed skill to track a checkout can

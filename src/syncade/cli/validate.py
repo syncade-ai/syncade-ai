@@ -335,6 +335,7 @@ def validate_command_shape(args, parser) -> int | None:
             ("--gc", args.gc),
             ("--metrics", args.metrics),
             ("--install-skill", args.install_skill is not None),
+            ("--update", args.update),
             ("--config", args.config is not None),
         ):
             if _used:
@@ -349,6 +350,37 @@ def validate_command_shape(args, parser) -> int | None:
             file=sys.stderr,
         )
         return 2
+    # --update replaces the running package and exits; like --gc/--metrics it renders no
+    # reviewer diff, so --base / --scope / --two-dot are meaningless here too.
+    if args.update:
+        rejection = _reject_diff_base_flags(args, "--update")
+        if rejection is not None:
+            return rejection
+        for _flag, _used in (
+            ("--gc", args.gc),
+            ("--metrics", args.metrics),
+            ("--selfcheck", args.selfcheck),
+            ("--auth-check", args.auth_check),
+            ("--spec-audit", bool(args.spec_audit)),
+            ("--draft-spec", args.draft_spec),
+            ("--openspec", args.openspec is not None),
+            ("--resume", args.resume is not None),
+            ("--config", args.config is not None),
+            ("--install-skill", args.install_skill is not None),
+            ("PR_DOC", bool(args.pr_doc)),
+            # Review-loop-only flags: accepted by the parser but meaningless for --update,
+            # consistent with the same guard already present for --install-skill.
+            ("--force-dirty", getattr(args, "force_dirty", False)),
+            ("--allow-default-branch", getattr(args, "allow_default_branch", False)),
+            ("--timeout", args.timeout is not None),
+            ("--preset", args.preset is not None),
+            ("--max-rounds", args.max_rounds is not None),
+            ("--worktree-base", args.worktree_base is not None),
+        ):
+            if _used:
+                print(f"[syncade] error: --update cannot be combined with {_flag}", file=sys.stderr)
+                return 2
+
     # --install-skill is a file-copy one-shot mode; it renders no reviewer diff,
     # so --base / --scope / --two-dot are meaningless and would be silently ignored.
     if args.install_skill is not None:
@@ -415,6 +447,7 @@ def validate_command_shape(args, parser) -> int | None:
         and not args.doctor
         and args.install_skill is None
         and args.config is None
+        and not args.update
     ):
         parser.print_help(sys.stderr)
         return 2

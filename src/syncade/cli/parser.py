@@ -307,6 +307,16 @@ def build_parser() -> argparse.ArgumentParser:
         "skipped legs are reported as 'skipped', never as passed.",
     )
     parser.add_argument(
+        "--update",
+        action="store_true",
+        help="Upgrade syncade to the latest published release, then exit. Detects how syncade "
+        "was installed by finding a marker inside its own install tree (uv tool / pipx) and "
+        "REFUSES rather than guessing when it cannot tell, printing the manual pip command "
+        "instead. Refuses while a run is still going. Re-installs any skill you already have, "
+        "using the upgraded code. A running process cannot switch to the new version, so this "
+        "exits and asks you to re-run your command.",
+    )
+    parser.add_argument(
         "--install-skill",
         nargs="?",
         const="all",

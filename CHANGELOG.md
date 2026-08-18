@@ -7,6 +7,33 @@ include breaking changes.
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-08-18
+
+### Changed
+
+- **syncade is on PyPI.** `uv tool install syncade` (or `pip install syncade`) replaces the
+  `git+https://…` URL as the documented install. That URL had no ref, so what you installed was
+  not a release — it was whatever `main` happened to be that day, while still reporting the last
+  release's version number. Releases are published by the tag-triggered workflow using PyPI
+  trusted publishing (OIDC; no token, no stored secret). The git URL still works and is now
+  documented as the way to track unreleased `main`.
+
+### Added
+
+- **syncade tells you when it is out of date.** The first syncade command in a new terminal or
+  harness window checks once whether a newer release exists, and says so — including whether your
+  installed `/syncade` skill has fallen behind the package, which happens whenever you upgrade
+  one and not the other. It only ever prints: it cannot block a run, change an exit code, or fail
+  one, and every error is silent. Nothing about your repo, diff, or run is sent. A release can
+  also be flagged **critical** (a security issue, or a version known to be broken), which is
+  louder and survives `--quiet` — but still never stops you. Disable with
+  `syncade --config set update.check false`, or set `CI`.
+- **`syncade --update`** upgrades syncade and re-installs any skill you already have. It works
+  out how syncade was installed rather than guessing, and refuses — naming the manual command —
+  when it cannot tell, when a review is still running, or when syncade is a source checkout.
+  A running process cannot switch to the version it just installed, so it exits and asks you to
+  re-run your command.
+
 ## [0.6.2] — 2026-08-17
 
 ### Changed
@@ -42,18 +69,6 @@ include breaking changes.
   now dropped, with a warning naming it, and the review is used. A genuinely malformed
   response is still rejected: this only applies when the *sole* problem is an unrecognised
   field. Applies to reviewers, the spec drafter and the spec auditor.
-
-
-### Changed
-
-- **A run now has a spending ceiling by default.** `budget_tokens` defaults to 50,000,000 —
-  previously there was none, so a first run was bounded only by the round count and the
-  per-call timeout. Crossing it stops the loop at a phase boundary, keeps every completed
-  round, and `syncade --resume` continues. Sized against our own history rather than picked
-  round: the median run uses 11M tokens and 9 in 10 stay under 39M, so this stops about 4% of
-  runs. It counts tokens rather than dollars because the dollar figure is an
-  API-equivalent valuation — on a subscription it is not money you spent, and a ceiling should
-  not interrupt you over a number that is not real. **Set `budget_tokens = 0` for no ceiling.**
 
 
 ## [0.6.1] — 2026-08-15

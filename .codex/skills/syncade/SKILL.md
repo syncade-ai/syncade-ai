@@ -359,9 +359,28 @@ Show the EXACT `RESOLVED_COMMAND` from Step 0 (e.g.
 `syncade --base main --max-rounds 2 path/to/pr.md`), not a generic
 `syncade <pr-doc>` — the operator confirms the precise command that will fire.
 
+**If Step 2's output carried an update notice** (a `[syncade] update available:`,
+`[syncade] CRITICAL`, or `[syncade] your installed <harness> skill` line), surface it
+here as a THIRD option, quoting syncade's own wording rather than paraphrasing it —
+especially the reason and advisory URL on a CRITICAL notice. syncade prints that
+notice at most once per window, so this confirmation is where the operator can act
+on it. An update NEVER blocks a run: 'go' is always available, and choosing not to
+update is a legitimate answer.
+
+```
+An update is available: <the notice syncade printed>
+Reply 'go' to run as-is, 'update' to install it first, or 'cancel'.
+```
+
 Wait for the operator's reply.
 
 - **'go' (or 'y' / 'yes' / 'proceed') → proceed to step 5.**
+- **'update' → run `syncade --update`, report what it printed, then RE-RUN the
+  `RESOLVED_COMMAND` from Step 0.** A running syncade cannot switch to the version
+  it just installed, so `--update` exits and asks to be re-run; doing that re-run
+  for the operator is what makes the update seamless from the chat side. If
+  `--update` refuses (a run still going, a source checkout, an install method it
+  cannot prove), relay its message verbatim and ask whether to 'go' anyway.
 - **'cancel' (or 'n' / 'no' / 'abort') → stop with `[syncade] cancelled
   at operator confirmation`.**
 - **Anything else → treat as cancel.** Don't try to interpret

@@ -162,6 +162,22 @@ def _is_plain_name(key: str) -> bool:
     return bool(key) and key not in (".", "..") and "/" not in key and not Path(key).is_absolute()
 
 
+def resolve_homes(home: Path | None, codex_home: Path | None) -> tuple[Path, Path]:
+    """The ONE place harness home directories are resolved.
+
+    Extracted in PR-h-field-07 because it was not one place: the installer honoured
+    ``CODEX_HOME`` while the new runtime skill-status path re-derived ``~/.codex`` by hand. A
+    Codex skill installed under a custom home then read as ABSENT, so no stale notice fired and
+    ``--update`` skipped re-installing it — the exact drift this PR exists to close, hidden by
+    the copy. Both reviewers flagged it independently.
+    """
+    home = home or Path.home()
+    if codex_home is None:
+        env_cx = os.environ.get("CODEX_HOME")
+        codex_home = Path(env_cx) if env_cx else home / ".codex"
+    return home, codex_home
+
+
 def _dest(harness: str, home: Path, codex_home: Path) -> Path:
     if harness == "claude":
         return home / ".claude" / "skills" / "syncade"
@@ -336,10 +352,7 @@ def install_skill(
         )
         return CLI_USAGE_ERROR
 
-    home = home or Path.home()
-    if codex_home is None:
-        env_cx = os.environ.get("CODEX_HOME")
-        codex_home = Path(env_cx) if env_cx else home / ".codex"
+    home, codex_home = resolve_homes(home, codex_home)
 
     harnesses = ["claude", "codex"] if target == "all" else [target]
     plan = [

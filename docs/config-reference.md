@@ -99,6 +99,7 @@ below; `worktree_base` is the one top-level scalar.
 | `review` | `[review]` table | — | What reviewers see. See [`[review]`](#review--reviewconfig). |
 | `retry` | `[retry]` table | — | Transient-error retry bound. See [`[retry]`](#retry--retryconfig). |
 | `gc` | `[gc]` table | — | Run-artifact retention. See [`[gc]`](#gc--gcconfig). |
+| `update` | `[update]` table | — | The once-per-session update check. See [`[update]`](#update--updateconfig). |
 | `worktree_base` | path | `/tmp/syncade` | Base dir for per-run git worktrees. Overridable with `--worktree-base`; point it at a fast local disk if `/tmp` is small or slow. |
 | `checks` | `[[checks]]` list | none | Mechanical exit-code gates. See [`[[checks]]`](#checks--checkconfig). |
 | `pricing` | `[pricing]` table | packaged price table | Per-model token pricing for cost estimation. See [`[pricing]`](#pricing--pricingconfig). |
@@ -228,6 +229,21 @@ deleted — only bulky subprocess transcripts. CLI `--gc-keep` / `--gc-max-age-d
 |---|---|---|---|
 | `keep` | int ≥ 0 | `20` | Newest N runs whose transcripts are always kept. |
 | `max_age_days` | int ≥ 0 | `0` | Additional age floor: a beyond-`keep` run is pruned only if also older than this. `0` disables the age floor. |
+
+## `[update]` — `UpdateConfig`
+
+Whether syncade checks for a newer release. The check only ever **prints**: it cannot block a run,
+change an exit code, or fail one — every error (offline, timeout, bad JSON) is silent. It fires at
+most once per window, at the first syncade invocation, and is skipped entirely whenever `CI` is
+set. Nothing about your repo, diff, run, or identity is sent.
+
+The advisory source is deliberately not configurable — a repo-local file that could repoint or
+silence a security notice would be a hole, not a feature.
+
+<!-- config-fields: UpdateConfig -->
+| Field | Type | Default | What it does |
+|---|---|---|---|
+| `check` | bool | `true` | Check once per session whether a newer syncade is published. Set `false` to never make the request. |
 
 ## `[[checks]]` — `CheckConfig`
 

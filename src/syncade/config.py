@@ -33,6 +33,7 @@ from syncade.config_producer import (
 )
 from syncade.config_retry import RetryConfig
 from syncade.config_types import Permissions, ReviewerPermissions, Thinking
+from syncade.config_update import UpdateConfig
 from syncade.diff_filter import REVIEWER_STRIP_FILES
 from syncade.pricing_config import PricingConfig
 from syncade.worktree import DEFAULT_WORKTREE_BASE, TEST_WORKTREE_NAME
@@ -354,6 +355,9 @@ class SyncadeConfig(BaseModel):
     # Run-artifact retention (PR-v2-9). Defaults reproduce gc.DEFAULT_KEEP / DEFAULT_MAX_AGE_DAYS;
     # governs BOTH the per-loop auto-prune and an explicit ``syncade --gc``.
     gc: GcConfig = Field(default_factory=GcConfig)
+    # One-key off switch for the once-per-session update check (PR-h-field-07). The check
+    # only ever prints — it cannot block a run or change an exit code.
+    update: UpdateConfig = Field(default_factory=UpdateConfig)
     # Where per-run git worktrees are provisioned (PR-v2-9). A single top-level value (not a
     # ``[worktree]`` block — Q5); default reproduces worktree.DEFAULT_WORKTREE_BASE.
     # ``--worktree-base`` overrides per-invocation; threaded into the review run and doctor preview.

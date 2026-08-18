@@ -5,9 +5,11 @@ name: release
 # shipped versions were never tagged, and nothing ever install-tested the artifact anyone would
 # actually download.
 #
-# It does NOT publish to PyPI. syncade is not on PyPI, and shipping metadata implying otherwise
-# was the false claim this item removed; adding the upload later is one job, gated on a decision
-# to claim the name.
+# It DOES publish to PyPI, as of PR-h-field-07 item 1 — the decision this workflow's earlier
+# comment was waiting on ("adding the upload later is one job, gated on a decision to claim the
+# name"). Until then the documented install was an unpinned `git+https://...`, so an install was
+# not a release but whatever `main` was that day, while still reporting the last release's
+# __version__. An update path needs a version that means something first.
 on:
   push:
     tags:
@@ -46,13 +48,21 @@ jobs:
       # This repo has SHIPPED THE WRONG VERSION TWICE — two separate public commits are both
       # titled "syncade v0.2.0" because pyproject was not bumped. A tag that disagrees with the
       # package it builds is not a release, so refuse before building anything.
-      - name: Refuse if the tag and pyproject disagree
+      # update-manifest.json joined this check in PR-h-field-07: it is what tells every installed
+      # syncade that a newer one exists, and a forgotten bump there fails SILENTLY — no error
+      # anywhere, just an update nobody is ever told about. Release time is when it must be true.
+      - name: Refuse if the tag, pyproject and update manifest disagree
         run: |
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')"
-          echo "tag=$tag pyproject=$pkg"
+          man="$(python3 -c 'import json;print(json.load(open("update-manifest.json"))["latest"])')"
+          echo "tag=$tag pyproject=$pkg manifest=$man"
           if [ "$tag" != "$pkg" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $pkg" >&2
+            exit 1
+          fi
+          if [ "$tag" != "$man" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match update-manifest.json latest $man" >&2
             exit 1
           fi
 
@@ -210,3 +220,17 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "syncade $GITHUB_REF_NAME" \
             --generate-notes
+
+      # LAST, deliberately: a PyPI version number is burned on upload and can never be reused,
+      # so the one irreversible act in this pipeline runs only after everything that can fail
+      # already has. The reverse order was considered and rejected — a failed GitHub Release can
+      # be deleted and recreated, a spent version number cannot be recovered and would force a
+      # throwaway patch release.
+      #
+      # Trusted publishing (OIDC): no token, no secret. `id-token: write` is already granted
+      # above for sigstore. PyPI must carry a matching publisher — owner `syncade-ai`, repo
+      # `syncade-ai`, workflow `release.yml`, no environment. Same public-visibility guard as
+      # the two steps above, so a tag on the PRIVATE mirror can never publish.
+      - name: Publish to PyPI
+        if: ${{ github.event.repository.visibility == 'public' }}
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

@@ -492,11 +492,35 @@ def main(argv: list[str] | None = None) -> int:
     # re-inject after parsing. Also detect the forbidden prefix form (--repo before --config).
     _config_operands, _argv_parsed, _repo_prefix = _extract_config_operands(_argv)
     parser = build_parser()
+
+    # NOTE `--version` / `--help` never reach the notice below: argparse handles and exits
+    # during parse_args(). That is deliberate, and the brief says so rather than the code
+    # working around it. A pre-parse emit was tried and REVERTED — it could not pass `--quiet`
+    # through, could not honour a prompt answer (argparse exits first), and matched only the
+    # literal spellings, so argparse's own abbreviations (`--ver`, `--he`) still bypassed it.
+    # Matching those means reimplementing argparse's prefix matching: an enumeration, for the
+    # two flags least worth notifying on. `--version` in particular is what scripts call.
     args = parser.parse_args(_argv_parsed)
     if _config_operands is not None:
         # Merge any trailing non-flag operands that argparse still captured (e.g. `--config list
         # extra`) with the dash-prefixed ones we extracted before parsing.
         args.config = _config_operands + (args.config or [])
+
+    # FIRST thing after argv is parsed, deliberately — before the `--repo` shape check and
+    # before `validate_command_shape`, both of which return early. Placing it after them made
+    # every parsed-but-invalid invocation a silent third exception to "every invocation is
+    # eligible": `syncade --update --gc` reached syncade code, emitted nothing, marked nothing,
+    # and the NEXT valid command in that window printed the stale notice instead. This is the
+    # second blocker that one sentence produced, so the position is now structural rather than
+    # remembered: nothing can return ahead of it. It can only print — no exit code, no gate.
+    # Returns True in a terminal TTY when the operator chose to update now.
+    from syncade.cli.update_notice import emit_update_notice
+
+    _notice_root = Path(args.repo_root).expanduser() if args.repo_root else Path.cwd()
+    if emit_update_notice(quiet=args.quiet, repo_root=_notice_root):
+        from syncade.cli.update_mode import run_update
+
+        return run_update(cwd=_notice_root)
     # Reject the prefix form: --repo before --config set violates the suffix-only contract (D1).
     # Only applies to "set" — for other verbs (list/get) or no verb, _reject_config_mode_conflicts
     # will catch the --repo misuse with the appropriate "meaningful only with --config set" message.
@@ -515,6 +539,13 @@ def main(argv: list[str] | None = None) -> int:
     # --install-skill is a standalone local operation — copies bundled skill files into the
     # harness dirs. Dispatched after command-shape validation so --doctor/--quick combinations
     # are rejected before the filesystem mutation.
+    if args.update:
+        from syncade.cli.update_mode import run_update
+
+        # Pass the --repo-root hint so run_update() can resolve the actual git root and check
+        # for a live run there, rather than always defaulting to Path.cwd().
+        _update_cwd = Path(args.repo_root).expanduser() if args.repo_root else Path.cwd()
+        return run_update(cwd=_update_cwd)
     if args.install_skill is not None:
         from syncade.cli.install_skill import install_skill
 
