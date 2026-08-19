@@ -60,6 +60,77 @@ class ReviewerStatRow:
 
 
 @dataclasses.dataclass
+class RoundRow:
+    """THE authority on what happened in one round. PK is (``run_id``, ``round``).
+
+    Replaces ``reached_rounds`` and ``round_panels``, which were two of three tables answering
+    pieces of one question — and that split WAS the defect. Three dogfood rounds each fixed a
+    different derivation of "did this round happen and what did it find", and each fix left the
+    others disagreeing: the headline read a manifest count while the curve read finding rows, so
+    a run could report "2 blockers" and "round 1: 0 blockers" in the same breath.
+
+    One row per round, written once, read by every consumer.
+    """
+
+    run_id: str
+    round: int
+    blockers: int = 0
+    #: Where ``blockers`` came from, never guessed:
+    #: ``artifacts`` — counted from ``synthesizer.parsed.json`` (the only source that also
+    #: supports consensus, since provenance lives there);
+    #: ``manifest`` — the round ran and a manifest recorded a count, but the artifact is gone;
+    #: ``unknown`` — the round ran and nothing credible records what it found.
+    blockers_source: str = "unknown"
+    #: Distinct reviewers in this round. ``0`` means the panel was never recorded — reported as
+    #: unknown, never inferred from the configured roster.
+    panel_size: int = 0
+    #: Whether the reviewer panel was explicitly recorded in any manifest.
+    #: ``recorded`` — a manifest had a ``reviewers`` key (even an empty list, e.g. a
+    #: no-dispatch round like ``no_changes_to_review``);
+    #: ``unknown`` — no manifest had a ``reviewers`` key, so the composition is unknown.
+    #: Panel provenance is independent from blocker-count provenance: a round can have
+    #: ``blockers_source='manifest'`` while ``panel_source='unknown'`` (manifest has a count
+    #: but no reviewer list), or ``panel_source='recorded'`` with ``panel_size=0`` (explicitly
+    #: no reviewers, a deliberate no-dispatch round).
+    panel_source: str = "unknown"
+
+
+@dataclasses.dataclass
+class FindingRow:
+    """One consolidated finding. PK is (``run_id``, ``round``, ``idx``).
+
+    Sourced from ``round-N/synthesizer.parsed.json``, which is tier-1 and never deleted, so these
+    tables rebuild on schema drift exactly like ``runs`` does — this does not weaken the
+    derived-view rule.
+    """
+
+    run_id: str
+    round: int
+    idx: int
+    severity: str = ""
+    dismissed: int = 0  # sqlite has no bool; 0/1
+    file: str = ""
+    description: str = ""
+
+
+@dataclasses.dataclass
+class FindingProvenanceRow:
+    """One reviewer's claim on one finding. PK adds ``reviewer_name``.
+
+    ``original_description`` is deliberately NOT stored: the synthesizer repairs quote text from
+    the reviewer's own output (PR-h-field-01), so the copy here would be the repaired one and
+    reads as a second source of truth for text that already lives in the reviewer artifact.
+    """
+
+    run_id: str
+    round: int
+    idx: int
+    reviewer_name: str = ""
+    original_severity: str = ""
+    original_index: int | None = None
+
+
+@dataclasses.dataclass
 class ActorStatRow:
     """One row per usage-emitting actor. PK is
     (``run_id``, ``role``, ``name``, ``provider``, ``model``, ``auth_mode``) — auth_mode is
@@ -116,6 +187,43 @@ CREATE TABLE IF NOT EXISTS reviewer_stats (
 )
 """
 
+_ROUNDS_DDL = """
+CREATE TABLE IF NOT EXISTS rounds (
+    run_id TEXT NOT NULL,
+    round INTEGER NOT NULL,
+    blockers INTEGER,
+    blockers_source TEXT,
+    panel_size INTEGER,
+    panel_source TEXT,
+    PRIMARY KEY (run_id, round)
+)
+"""
+
+_FINDINGS_DDL = """
+CREATE TABLE IF NOT EXISTS findings (
+    run_id TEXT NOT NULL,
+    round INTEGER NOT NULL,
+    idx INTEGER NOT NULL,
+    severity TEXT,
+    dismissed INTEGER,
+    file TEXT,
+    description TEXT,
+    PRIMARY KEY (run_id, round, idx)
+)
+"""
+
+_FINDING_PROVENANCE_DDL = """
+CREATE TABLE IF NOT EXISTS finding_provenance (
+    run_id TEXT NOT NULL,
+    round INTEGER NOT NULL,
+    idx INTEGER NOT NULL,
+    reviewer_name TEXT NOT NULL,
+    original_severity TEXT,
+    original_index INTEGER,
+    PRIMARY KEY (run_id, round, idx, reviewer_name)
+)
+"""
+
 _ACTOR_STATS_DDL = """
 CREATE TABLE IF NOT EXISTS actor_stats (
     run_id TEXT NOT NULL,
@@ -150,7 +258,7 @@ CREATE TABLE IF NOT EXISTS actor_stats (
 # OLDER on-disk schema is dropped + recreated (backfill repopulates from the
 # corpus) rather than ALTER-migrated. A NEWER on-disk schema is left untouched —
 # it may hold data this binary can't rebuild (e.g. PR-4's live token/cost).
-_SCHEMA_VERSION = 12
+_SCHEMA_VERSION = 15  # PR-h-12: add panel_source to rounds; drop stale tables unconditionally
 
 
 def open_db(path: Path | str) -> sqlite3.Connection:
@@ -171,12 +279,24 @@ def open_db(path: Path | str) -> sqlite3.Connection:
             conn.executescript(
                 "DROP TABLE IF EXISTS runs; "
                 "DROP TABLE IF EXISTS reviewer_stats; "
-                "DROP TABLE IF EXISTS actor_stats;"
+                "DROP TABLE IF EXISTS actor_stats; "
+                "DROP TABLE IF EXISTS rounds; "
+                "DROP TABLE IF EXISTS findings; "
+                "DROP TABLE IF EXISTS finding_provenance; "
             )
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")  # int constant, not user input
+        # Unconditional: these tables are explicitly obsolete for ALL schema versions.
+        # A DB at the current version can still carry them if it was created by an intermediate
+        # binary that added them before the rebuild path ran. DROP TABLE IF EXISTS is a no-op
+        # when the tables are absent, so this is safe for any schema version including newer ones.
+        conn.execute("DROP TABLE IF EXISTS reached_rounds")
+        conn.execute("DROP TABLE IF EXISTS round_panels")
         conn.execute(_RUNS_DDL)
         conn.execute(_REVIEWER_STATS_DDL)
         conn.execute(_ACTOR_STATS_DDL)
+        conn.execute(_ROUNDS_DDL)
+        conn.execute(_FINDINGS_DDL)
+        conn.execute(_FINDING_PROVENANCE_DDL)
         conn.commit()
     except Exception:
         conn.close()
@@ -205,6 +325,18 @@ def upsert_reviewer_stat(conn: sqlite3.Connection, row: ReviewerStatRow) -> None
 
 def upsert_actor_stat(conn: sqlite3.Connection, row: ActorStatRow) -> None:
     _upsert(conn, "actor_stats", row)
+
+
+def upsert_round(conn: sqlite3.Connection, row: RoundRow) -> None:
+    _upsert(conn, "rounds", row)
+
+
+def upsert_finding(conn: sqlite3.Connection, row: FindingRow) -> None:
+    _upsert(conn, "findings", row)
+
+
+def upsert_finding_provenance(conn: sqlite3.Connection, row: FindingProvenanceRow) -> None:
+    _upsert(conn, "finding_provenance", row)
 
 
 def fetch_runs(conn: sqlite3.Connection) -> list[RunRow]:

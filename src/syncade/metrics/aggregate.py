@@ -15,12 +15,19 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from syncade.metrics.findings import (
+    read_findings,
+    read_rounds,
+)
 from syncade.metrics.schema import (
     ActorStatRow,
     ReviewerStatRow,
     RunRow,
     upsert_actor_stat,
+    upsert_finding,
+    upsert_finding_provenance,
     upsert_reviewer_stat,
+    upsert_round,
     upsert_run,
 )
 from syncade.synthesizer.constants import (
@@ -103,17 +110,6 @@ def _usage_pair(tokens_value: object, cost_value: object) -> tuple[int | None, f
 
 def _text_or_none(value: object) -> str | None:
     return value if type(value) is str else None
-
-
-def _reviewer_models(init: dict) -> dict[str, str]:
-    config = init.get("config_snapshot")
-    roster = config.get("reviewers") if isinstance(config, dict) else None
-    models: dict[str, str] = {}
-    if isinstance(roster, list):
-        for r in roster:
-            if isinstance(r, dict) and isinstance(r.get("name"), str):
-                models[r["name"]] = _text_or_none(r.get("model")) or ""
-    return models
 
 
 def _load_init(run_dir: Path) -> dict:
@@ -239,7 +235,7 @@ def read_run(run_dir: Path | str) -> tuple[RunRow, list[ReviewerStatRow]] | None
         tokens=int(_tok) if _tok is not None else None,
         cost_usd=_cost,
     )
-    return row, _reviewer_stats(run_id, rounds, init)
+    return row, _reviewer_stats(run_id, rounds)
 
 
 def read_actor_stats(run_dir: Path | str) -> list[ActorStatRow]:
@@ -261,7 +257,7 @@ def read_actor_stats(run_dir: Path | str) -> list[ActorStatRow]:
     rounds = rounds if isinstance(rounds, list) else []
     run_id = manifest.get("run_id")
     run_id = run_id if isinstance(run_id, str) and run_id else run_dir.name
-    return _actor_stats(run_id, rounds, _load_init(run_dir))
+    return _actor_stats(run_id, rounds)
 
 
 def _merge_cost_source(
@@ -293,9 +289,8 @@ def _merge_sources(current: str, incoming: str) -> str:
     return "estimated"
 
 
-def _actor_stats(run_id: str, rounds: list, init: dict) -> list[ActorStatRow]:
+def _actor_stats(run_id: str, rounds: list) -> list[ActorStatRow]:
     """Aggregate usage across reviewers, synthesizer, and producer."""
-    models = _reviewer_models(init)
     agg: dict[tuple[str, str, str, str], dict[str, object]] = {}
 
     def remember(
@@ -360,7 +355,7 @@ def _actor_stats(run_id: str, rounds: list, init: dict) -> list[ActorStatRow]:
                     role="reviewer",
                     name=name,
                     provider=_text_or_none(rev.get("provider")) or "",
-                    model=_text_or_none(rev.get("model")) or models.get(name, ""),
+                    model=_text_or_none(rev.get("model")) or "",
                     tokens_value=rev.get("tokens"),
                     cost_value=rev.get("cost_usd"),
                     cost_source_value=rev.get("cost_source"),
@@ -415,13 +410,13 @@ def _actor_stats(run_id: str, rounds: list, init: dict) -> list[ActorStatRow]:
     ]
 
 
-def _reviewer_stats(run_id: str, rounds: list, init: dict) -> list[ReviewerStatRow]:
+def _reviewer_stats(run_id: str, rounds: list) -> list[ReviewerStatRow]:
     """Aggregate per-reviewer finding counts across rounds by artifact model.
 
-    New manifests carry ``model`` beside reviewer usage. Legacy manifests fall
-    back to the run-init config snapshot keyed by reviewer name.
+    When a round manifest did not record a model the field stays blank rather
+    than being guessed from the run-init config snapshot — guessing would rewrite
+    historical panel composition every time the config changes.
     """
-    models = _reviewer_models(init)
     agg: dict[tuple[str, str, str], dict] = {}
     for rnd in rounds:
         if not isinstance(rnd, dict):
@@ -436,7 +431,7 @@ def _reviewer_stats(run_id: str, rounds: list, init: dict) -> list[ReviewerStatR
             if not isinstance(name, str) or not name:
                 continue
             provider = _text_or_none(rev.get("provider")) or ""
-            model = _text_or_none(rev.get("model")) or models.get(name, "")
+            model = _text_or_none(rev.get("model")) or ""
             entry = agg.setdefault(
                 (name, provider, model),
                 {
@@ -530,10 +525,33 @@ def backfill(conn: sqlite3.Connection, runs_root: Path | str) -> None:
         upsert_run(conn, row)
         conn.execute("DELETE FROM reviewer_stats WHERE run_id = ?", (row.run_id,))
         conn.execute("DELETE FROM actor_stats WHERE run_id = ?", (row.run_id,))
+        conn.execute("DELETE FROM findings WHERE run_id = ?", (row.run_id,))
+        conn.execute("DELETE FROM finding_provenance WHERE run_id = ?", (row.run_id,))
+        conn.execute("DELETE FROM rounds WHERE run_id = ?", (row.run_id,))
         for stat in stats:
             upsert_reviewer_stat(conn, stat)
         for stat in read_actor_stats(d):
             upsert_actor_stat(conn, stat)
+
+        findings, provenance = read_findings(d, row.run_id)
+        for finding in findings:
+            upsert_finding(conn, finding)
+        for entry in provenance:
+            upsert_finding_provenance(conn, entry)
+
+        # ONE derivation, no branch. `rounds` already resolved artifacts-vs-manifest per round
+        # and recorded which it used, so the run total is a sum rather than a choice between two
+        # counts that could disagree. What stood here was a reached-set supplement plus a
+        # conditional derive-or-preserve — three rounds of patching the same question, which is
+        # what the single authority replaces.
+        round_rows = read_rounds(d, row.run_id)
+        for round_row in round_rows:
+            upsert_round(conn, round_row)
+        conn.execute(
+            "UPDATE runs SET blockers = ? WHERE run_id = ?",
+            (sum(r.blockers for r in round_rows), row.run_id),
+        )
+
         present.append(row.run_id)
     _prune_absent(conn, present)
     conn.commit()
@@ -548,3 +566,6 @@ def _prune_absent(conn: sqlite3.Connection, present_ids: list[str]) -> None:
             conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM reviewer_stats WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM actor_stats WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM findings WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM finding_provenance WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM rounds WHERE run_id = ?", (run_id,))

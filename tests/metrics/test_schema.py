@@ -74,6 +74,76 @@ def test_open_db_rebuilds_when_schema_is_stale(tmp_path):
     assert rows[0].blockers == 3
 
 
+def test_open_db_drops_obsolete_reached_rounds_and_round_panels_on_rebuild(tmp_path):
+    """An intermediate-schema DB may carry reached_rounds and round_panels.
+
+    These tables were replaced by the single `rounds` authority in this PR.  A
+    database that was upgraded to the current user_version while retaining those
+    tables would leave stale rows that contradict the new single-authority model.
+    The rebuild script must drop them so they cannot survive an upgrade.
+    """
+    import sqlite3
+
+    db = tmp_path / "m.db"
+    intermediate = sqlite3.connect(str(db))
+    intermediate.executescript(
+        "CREATE TABLE reached_rounds (run_id TEXT, round INTEGER); "
+        "CREATE TABLE round_panels (run_id TEXT, round INTEGER, panel_size INTEGER); "
+        "INSERT INTO reached_rounds VALUES ('R1', 0); "
+        "INSERT INTO round_panels VALUES ('R1', 0, 2); "
+    )
+    intermediate.commit()
+    intermediate.close()
+
+    open_db(db)
+
+    check = sqlite3.connect(str(db))
+    try:
+        tables = {r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "reached_rounds" not in tables, "stale reached_rounds must be dropped on rebuild"
+        assert "round_panels" not in tables, "stale round_panels must be dropped on rebuild"
+    finally:
+        check.close()
+
+
+def test_open_db_drops_obsolete_tables_even_at_current_schema_version(tmp_path):
+    """A DB already at the current user_version can still carry stale reached_rounds/round_panels.
+
+    The version-check rebuild path only runs for OLDER versions, so a DB that accumulated
+    these tables before the cleanup was introduced would survive the version bump untouched.
+    The unconditional DROP TABLE IF EXISTS outside the version check handles this case.
+    """
+    import sqlite3
+
+    from syncade.metrics.schema import _SCHEMA_VERSION
+
+    db = tmp_path / "m.db"
+    contaminated = sqlite3.connect(str(db))
+    contaminated.executescript(
+        f"PRAGMA user_version = {_SCHEMA_VERSION}; "
+        "CREATE TABLE reached_rounds (run_id TEXT, round INTEGER); "
+        "CREATE TABLE round_panels (run_id TEXT, round INTEGER, panel_size INTEGER); "
+        "INSERT INTO reached_rounds VALUES ('R1', 0); "
+        "INSERT INTO round_panels VALUES ('R1', 0, 2); "
+    )
+    contaminated.commit()
+    contaminated.close()
+
+    open_db(db)
+
+    check = sqlite3.connect(str(db))
+    try:
+        tables = {r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "reached_rounds" not in tables, (
+            "stale reached_rounds must be dropped even when user_version is current"
+        )
+        assert "round_panels" not in tables, (
+            "stale round_panels must be dropped even when user_version is current"
+        )
+    finally:
+        check.close()
+
+
 def test_open_db_does_not_wipe_a_newer_schema_db(tmp_path):
     # A NEWER syncade may hold data not rebuildable from artifacts (e.g. PR-4's
     # live token/cost). An older binary opening that db must NOT drop its tables.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from syncade.adapters.fake import FakeProducerAdapter, FakeSynthesizerAdapter
 from syncade.config import ProducerConfig
@@ -104,3 +106,56 @@ def test_producer_malformed_template_override_returns_phase_error(tmp_path: Path
     assert "producer prompt setup failed" in str(result.error)
     assert "missing_key" in str(result.error)
     assert fake.invocations == []
+
+
+def test_template_failure_dispatch_result_records_reviewer_model(tmp_path: Path) -> None:
+    """A reviewer-template failure must carry the reviewer's model in each RunResult.
+
+    The template-render path builds ReviewerRunResult without dispatching a subprocess, so
+    model must come from the reviewer config — not from a dispatch response that never ran.
+    """
+    from syncade.orchestrator.reviewer_template_failure import _reviewer_template_failure_result
+    from syncade.snapshot import Snapshot
+
+    class _Rev:
+        name = "r1"
+        provider = "openai"
+        model = "gpt-5.5"
+
+    class _Prod:
+        provider = "anthropic"
+        model = "claude-sonnet-4-6"
+
+    class _Cfg:
+        reviewers = [_Rev()]
+        producer = _Prod()
+
+    snap = Snapshot(
+        repo_root=tmp_path,
+        commit_sha="abc123" * 7,
+        branch="main",
+        base_ref=None,
+        diff_text="",
+        dirty_state="clean",
+    )
+    round_dir = tmp_path / "round-0"
+    round_dir.mkdir()
+
+    with (
+        patch("syncade.orchestrator.reviewer_template_failure.persist_round_manifest"),
+        patch("syncade.orchestrator.reviewer_template_failure.persist_run_summary"),
+    ):
+        result = _reviewer_template_failure_result(
+            round_idx=0,
+            snapshot=snap,
+            round_dir=round_dir,
+            config=_Cfg(),
+            started_at=datetime.datetime.now(datetime.UTC),
+            resumed_under_drift=False,
+            error=RuntimeError("template render failed"),
+        )
+
+    assert len(result.dispatch_result.results) == 1
+    r = result.dispatch_result.results[0]
+    assert r.provider == "openai"
+    assert r.model == "gpt-5.5", "model must come from ReviewerConfig, not default empty string"

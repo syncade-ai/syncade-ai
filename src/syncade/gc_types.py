@@ -19,8 +19,13 @@ GC used to ``rmtree`` whole run directories. That is now a data-loss bug, not a
 cleanup: ``.syncade/metrics.db`` is a *derived, rebuildable view* over
 ``.syncade/runs/`` — it drop-and-recreates itself on schema drift — so deleting a run
 directory destroys that run's history permanently the next time the view rebuilds.
-Retention is therefore two-tier: **transcripts are disposable, everything else is
-kept forever.**"""
+Retention is therefore **four-tier**: run history (``runs/``) kept forever; transcripts
+disposable beyond the configured keep window; worktrees removed once a run can no longer
+plausibly be resumed (age-bounded by ``gc.worktree_max_age_days``, default 14 days);
+and ``metrics.db`` is a droppable derived view. The asymmetry between tiers 1 and 3 is
+intentional: a worktree is reconstructible from the run's recorded SHA (costs a
+``git worktree add``, never history), so GC can safely remove it; a run directory is
+not reconstructible, so it is never deleted."""
 
 
 @dataclass(frozen=True)
@@ -33,6 +38,12 @@ class GcPlan:
     every structured artifact in it SURVIVE — see :data:`BULK_ARTIFACT_SUFFIXES`."""
     worktree_trees_to_remove: list[Path]
     orphan_worktree_trees: list[Path]
+    worktree_age_released: list[str] = field(default_factory=list)
+    """Run-ids still resume-eligible whose WORKTREES have aged past
+    ``gc.worktree_max_age_days``. Their transcripts and run directories stay protected — this
+    releases tier 3 only. Carried on the plan so ``execute_gc`` can keep its TOCTOU re-check
+    (a run may have become protected since planning) without that re-check silently undoing
+    the age bound."""
     worktree_tree_identities: dict[Path, tuple[int, int, int]] = field(default_factory=dict)
 
 

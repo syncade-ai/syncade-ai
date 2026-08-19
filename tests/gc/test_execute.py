@@ -42,7 +42,7 @@ def test_execute_slims_runs_and_removes_worktrees(tmp_path: Path, _fake_lsof_emp
     (wt_base / "run-del").mkdir(parents=True)
     (wt_base / "run-del" / "marker").write_text("x", encoding="utf-8")
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
 
     # the run and its history survive
@@ -69,7 +69,7 @@ def test_dry_run_changes_nothing(tmp_path: Path, _fake_lsof_empty: None) -> None
     (wt_base / "run-del" / "marker").write_text("x", encoding="utf-8")
 
     before = snapshot_tree(tmp_path)
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=True, repo_root=repo)
     after = snapshot_tree(tmp_path)
 
@@ -88,7 +88,7 @@ def test_execute_best_effort_skips_missing_worktree(tmp_path: Path, _fake_lsof_e
     write_run(repo, "run-del", final_exit_code=0, with_round=True)
     wt_base = tmp_path / "wt"
     # No worktree tree on disk for run-del — execute must not raise.
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
 
     assert (repo / ".syncade" / "runs" / "run-del").exists()
@@ -109,7 +109,7 @@ def test_execute_calls_git_worktree_prune(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     execute_gc(plan, dry_run=False, repo_root=repo)
 
     assert any(c[:3] == ["git", "worktree", "prune"] for c in calls), calls
@@ -141,7 +141,7 @@ def test_reaping_kills_only_in_dir_pids(tmp_path: Path, monkeypatch: pytest.Monk
     killed: list[int] = []
     monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
 
     assert sorted(killed) == [4242, 4243]
@@ -167,7 +167,7 @@ def test_reaping_parses_terse_lsof_output(tmp_path: Path, monkeypatch: pytest.Mo
     killed: list[int] = []
     monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
 
     # Deduped (7001 appears twice), in first-seen order.
@@ -190,7 +190,7 @@ def test_reaping_dry_run_kills_nothing(tmp_path: Path, monkeypatch: pytest.Monke
     killed: list[int] = []
     monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     execute_gc(plan, dry_run=True, repo_root=repo)
 
     assert killed == [], "dry-run must kill nothing"
@@ -212,7 +212,7 @@ def test_lsof_missing_warns_and_still_rmtrees(
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
 
     err = capsys.readouterr().err
@@ -237,7 +237,7 @@ def test_lsof_error_does_not_abort_gc(tmp_path: Path, monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)  # must not raise
     assert not (wt_base / "run-del").exists()
     assert report.pids_reaped == []
@@ -267,7 +267,7 @@ def test_dead_pid_during_reap_is_skipped(tmp_path: Path, monkeypatch: pytest.Mon
     killed: list[int] = []
     monkeypatch.setattr(gc_execute_module.os, "kill", fake_kill)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
 
     # Only the live PID was killed; the dead one was skipped without aborting.
@@ -299,7 +299,7 @@ def test_foreign_worktree_tree_is_not_removed_or_reaped(
     killed: list[int] = []
     monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
 
     # The foreign tree is untouched; our pruned run's tree is removed + reaped.
@@ -334,7 +334,7 @@ def test_symlink_worktree_entry_is_not_reaped_or_removed(
     killed: list[int] = []
     monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
 
     assert symlink_tree not in plan.worktree_trees_to_remove
@@ -396,7 +396,7 @@ def test_lsof_invocation_is_cwd_scoped(tmp_path: Path, monkeypatch: pytest.Monke
         return SubprocessResult(returncode=0, stdout="", stderr="", duration_seconds=0.0)
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     execute_gc(plan, dry_run=False, repo_root=repo)
 
     assert captured, "lsof was not invoked"
@@ -425,7 +425,7 @@ def test_dry_run_reports_would_reap_pids_without_killing(
     killed: list[int] = []
     monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=True, repo_root=repo)
 
     # The would-reap PID IS reported, but nothing is actually killed/removed.
@@ -454,7 +454,7 @@ def test_lsof_real_error_emits_loud_warning(
         return SubprocessResult(returncode=0, stdout="", stderr="", duration_seconds=0.0)
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
 
     assert any("lsof errored" in e for e in report.errors), report.errors
@@ -486,7 +486,7 @@ def test_worktree_removal_failure_is_reported_not_silent_success(
             returncode=0, stdout="", stderr="", duration_seconds=0.0
         ),
     )
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
 
     os.chmod(wt_base, 0o500)  # parent non-writable → rmdir(tree) can't succeed
     try:
@@ -521,7 +521,7 @@ def test_real_git_orphan_with_registered_worktree_is_removed(tmp_path: Path) -> 
     foreign = wt_base / "foreign-run"
     foreign.mkdir(parents=True)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     assert gone in plan.orphan_worktree_trees, plan.orphan_worktree_trees
     assert foreign not in plan.orphan_worktree_trees
 

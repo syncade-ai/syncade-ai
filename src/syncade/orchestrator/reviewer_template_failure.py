@@ -34,6 +34,7 @@ def _reviewer_template_failure_result(
             ReviewerRunResult(
                 reviewer_name=reviewer.name,
                 provider=reviewer.provider,
+                model=reviewer.model,
                 output=None,
                 error=SubprocessError(message),
                 duration_seconds=0.0,

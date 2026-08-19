@@ -1,9 +1,14 @@
 """Shared fixtures for the orchestrator test subdir.
 
 A conftest in this subdir scopes its fixtures to ``tests/orchestrator/``
-only — the two autouse fixtures (``_isolated_worktree_base``,
-``_default_to_fake_synthesizer``) apply to every orchestrator test and
-to nothing else (no bleed to the other test files). ``repo_with_pr_doc``
+only — ``_default_to_fake_synthesizer`` applies to every orchestrator test and
+to nothing else (no bleed to the other test files).
+
+``_isolated_worktree_base`` MOVED to ``tests/conftest.py`` in PR-h-12 item 1b.
+Package scope was the bug: its docstring said it existed to prevent cross-test
+flakes, and six other packages never got it. Measured before the move —
+``tests/cli`` and ``tests/persistence`` each created the shared
+``/tmp/syncade`` (empty, no worktrees leaked). ``repo_with_pr_doc``
 is an opt-in fixture requested by name.
 
 Moved verbatim from the former ``tests/test_orchestrator.py``.
@@ -17,38 +22,6 @@ import pytest
 
 from syncade.adapters.fake import FakeSynthesizerAdapter
 from tests.orchestrator._helpers import _init_git_repo
-
-
-@pytest.fixture(autouse=True)
-def _isolated_worktree_base(monkeypatch, tmp_path):
-    """R2.T3.16: every test in this module runs against a
-    per-test worktree base directory under ``tmp_path``, NOT the
-    shared ``/tmp/syncade/``. Prevents cross-test flakes where
-    two tests in the same wall-clock second pick the same run-id
-    and collide on worktree paths (the
-    "rv2 already exists" failure seen in pre-R2.T3.16 reviews).
-
-    PR-v2-9 fix: ``run_review``'s fallback is now ``config.worktree_base``
-    (not a module-level constant). The Pydantic field default is patched
-    so that ``SyncadeConfig()`` instances without an explicit
-    ``worktree_base=`` also inherit the per-test path.
-
-    ``SyncadeConfig.model_rebuild(force=True)`` is called to recompile the
-    Pydantic core schema after patching the field default; it is restored
-    at teardown to avoid cross-test schema bleed.
-    """
-    from syncade.config import SyncadeConfig
-
-    test_base = tmp_path / "syncade-worktrees"
-
-    # Patch the Pydantic field default so SyncadeConfig() instances without
-    # an explicit worktree_base= also inherit the per-test path.
-    old_default = SyncadeConfig.model_fields["worktree_base"].default
-    SyncadeConfig.model_fields["worktree_base"].default = test_base
-    SyncadeConfig.model_rebuild(force=True)
-    yield
-    SyncadeConfig.model_fields["worktree_base"].default = old_default
-    SyncadeConfig.model_rebuild(force=True)
 
 
 @pytest.fixture(autouse=True)

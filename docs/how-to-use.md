@@ -450,9 +450,10 @@ below** before you commit anything yourself.
 - **Loop mode refuses a tracked-modified dirty tree** unless you pass `--force-dirty`. Single-pass
   review does not refuse: reviewers see committed HEAD, so uncommitted work is invisible to them.
 - **`<worktree_base>` grows.** NO-SHIP runs keep their worktrees so you can inspect what a reviewer
-  saw, and `syncade --gc` deliberately will not reclaim a run that is still resumable. It reached
-  4.4 GB on this machine before a cleanup. Point `worktree_base` somewhere you don't mind, delete
-  old run directories when you're done, and run `git worktree prune` afterward — removing the
+  saw. `syncade --gc` removes worktrees once a run can no longer plausibly be resumed, controlled by
+  `gc.worktree_max_age_days` (default 14 days) — this applies even to runs that remain
+  resume-eligible. It reached 4.4 GB on this machine before a cleanup. Point `worktree_base`
+  somewhere you don't mind and run `git worktree prune` after manual removals — removing the
   directory does not remove git's registration of it.
 - **Run artifacts are never deleted**, only transcripts are pruned. `syncade --metrics` is derived
   from that tree and would lose your history otherwise.

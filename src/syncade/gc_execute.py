@@ -28,10 +28,21 @@ def execute_gc(plan: GcPlan, *, dry_run: bool, repo_root: Path) -> GcReport:
     pids_reaped: list[int] = []
     worktrees_removed: list[Path] = []
     protected = set(plan.protected_run_ids) | current_protected_run_ids(repo_root)
+    # Tier-3 age release (PR-h-12 item 2). Subtracting these from `protected` above does NOT
+    # work and the first version tried it: `run_id_protected_now` falls through to a DISK
+    # re-check that re-derives protection from the run directory, which has not changed —
+    # only the run's AGE releases it. So the bound computed correctly and then removed nothing.
+    # Unit tests over `plan_gc` could not see that; the end-to-end CLI run did.
+    #
+    # Bypassing the re-check here is safe precisely because age is the criterion: the TOCTOU
+    # guard exists for a run that became resume-eligible BETWEEN plan and execute, and these
+    # were already resume-eligible at plan time and released on an age that cannot change in
+    # the seconds since. Transcripts still go through the unmodified guard.
+    age_released = set(plan.worktree_age_released)
 
     pruned_any = False
     for tree in plan.worktree_trees_to_remove:
-        if run_id_protected_now(repo_root, tree.name, protected):
+        if tree.name not in age_released and run_id_protected_now(repo_root, tree.name, protected):
             continue
         if tree_contains_repo_root(tree, repo_root):
             errors.append(f"skipping worktree tree {tree}: it contains repo root {repo_root}")

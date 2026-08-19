@@ -26,7 +26,7 @@ def test_gc_does_not_collect_main_checkout_as_orphan(tmp_path: Path) -> None:
     git("init", "-q")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-q", "-m", "i")
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=tmp_path)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=tmp_path, worktree_max_age_days=0)
 
     assert repo not in plan.orphan_worktree_trees
     assert repo not in plan.worktree_trees_to_remove
@@ -42,7 +42,7 @@ def test_gc_does_not_plan_main_checkout_as_pruned_run_worktree(tmp_path: Path) -
     (repo / "keep.txt").write_text("main checkout\n", encoding="utf-8")
     write_run(repo, repo.name, final_exit_code=0)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=tmp_path)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=tmp_path, worktree_max_age_days=0)
 
     assert plan.runs_to_slim == [repo.name]
     assert repo not in plan.worktree_trees_to_remove
@@ -65,7 +65,7 @@ def test_execute_gc_refuses_replacement_pruned_run_tree_from_stale_plan(tmp_path
     tree.mkdir(parents=True)
     (tree / "old-owned.txt").write_text("original\n", encoding="utf-8")
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     assert tree in plan.worktree_trees_to_remove
     assert tree in plan.worktree_tree_identities
 
@@ -153,7 +153,9 @@ def test_gc_does_not_remove_replacement_tree_from_stale_worktree_registry(
     registered_child = gone / "round-0" / "rv1"
     git("worktree", "add", "--detach", "-q", str(registered_child))
 
-    stale_plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    stale_plan = plan_gc(
+        repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0
+    )
     assert gone in stale_plan.orphan_worktree_trees
 
     shutil.rmtree(gone)
@@ -161,7 +163,9 @@ def test_gc_does_not_remove_replacement_tree_from_stale_worktree_registry(
     marker = gone / "foreign-owned.txt"
     marker.write_text("must survive\n", encoding="utf-8")
 
-    fresh_plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    fresh_plan = plan_gc(
+        repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0
+    )
     assert gone not in fresh_plan.orphan_worktree_trees
 
     report = execute_gc(stale_plan, dry_run=False, repo_root=repo)
@@ -188,7 +192,7 @@ def test_gc_does_not_collect_top_level_registered_worktree_as_orphan(tmp_path: P
     top_level_worktree = wt_base / "manual-worktree"
     git("worktree", "add", "--detach", "-q", str(top_level_worktree))
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     assert top_level_worktree not in plan.orphan_worktree_trees
 
     report = execute_gc(plan, dry_run=False, repo_root=repo)

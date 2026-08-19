@@ -85,6 +85,7 @@ def test_worktree_base_override_beats_config():
     assert out.worktree_base == Path("/fast/disk/syncade")
 
 
+@pytest.mark.real_worktree_base
 def test_worktree_base_unset_leaves_config_default():
     from syncade.worktree import DEFAULT_WORKTREE_BASE
 

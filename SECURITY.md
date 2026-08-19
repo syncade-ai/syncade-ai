@@ -44,15 +44,15 @@ background subprocesses**. There are three roles, at three trust levels:
 What bounds this:
 
 - **Worktrees under `<worktree_base>/` (default `/tmp/syncade/`).** Reviewers operate on a
-  *copy*, not your working tree. The copy is removed after a clean run, but it is
-  **deliberately preserved for inspection** when a run ends NO-SHIP / max-rounds /
-  decision-needed (exits 30/20/10) — so a full copy of your repo can remain under
-  `<worktree_base>/<run-id>/` after those outcomes, until you delete it or (for the
-  default `/tmp/syncade`) the OS clears `/tmp`. With the default base it lives outside your
-  repo, so it is never committed or pushed — but it is on disk. Configure `worktree_base` in
-  `.syncade/config.toml` or `--worktree-base` to change the location; keep it **outside** your
-  repository (or `.gitignore` it). Pointing `worktree_base` inside the repo makes each
-  preserved copy an embedded, untracked git worktree that `git add` / `git status` will surface.
+  *copy*, not your working tree. The copy is removed after a clean run, but is **preserved for
+  inspection** when a run ends NO-SHIP / max-rounds / decision-needed (exits 30/20/10) — so a
+  full copy of your repo can remain under `<worktree_base>/<run-id>/`. `syncade --gc` removes
+  these worktrees after `gc.worktree_max_age_days` (default 14 days), including runs that are
+  still resume-eligible. With the default `/tmp/syncade` base the worktrees live outside your
+  repo and are not committed or pushed. Configure `worktree_base` in `.syncade/config.toml` or
+  `--worktree-base` to change the location; keep it **outside** your repository (or
+  `.gitignore` it). Pointing `worktree_base` inside the repo makes each preserved copy an
+  embedded, untracked git worktree that `git add` / `git status` will surface.
 - **A sandbox wherever the CLI supports one** (Codex `workspace-write`).
 - **The default-branch commit guard** (above) and **the auth gate** — syncade refuses to
   run rather than silently bill an account you did not intend (see the README's auth
@@ -81,10 +81,15 @@ Mitigations that ship by default:
 
 ## Where your code goes
 
-**Syncade makes no network calls of its own** — no telemetry, no phone-home, no analytics.
-Its own egress is the provider CLI you already authenticated: `claude` talks to Anthropic
-and `codex` talks to OpenAI, exactly as they do when you run them yourself. Syncade never
-transmits your code anywhere *it* controls.
+**Syncade's own egress is one update check and the provider CLIs.** Once per session, syncade
+makes a GET to its public update manifest (`update-manifest.json` on the default branch of
+its GitHub repo) to check whether a newer version is available. No telemetry, no phone-home,
+no analytics, and no code or diffs leave in that request — it is a version-number poll only.
+`syncade --update` additionally invokes your package manager (`uv tool upgrade syncade`,
+`pipx upgrade syncade`, or instructs `pip install -U syncade`) — operator-requested and only
+when you run that flag. All other egress is the provider CLI you already
+authenticated: `claude` talks to Anthropic and `codex` talks to OpenAI, exactly as they do
+when you run them yourself. Syncade never transmits your code anywhere *it* controls.
 
 **But it runs the shell commands you configure.** If you set `[loop] test_command` or any
 `[[checks]]`, syncade executes those commands **through the shell** in a clean worktree

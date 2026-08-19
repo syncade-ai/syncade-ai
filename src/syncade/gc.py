@@ -79,6 +79,12 @@ DEFAULT_KEEP: int = 20
 """Default number of most-recent non-protected runs to keep."""
 
 DEFAULT_MAX_AGE_DAYS: int = 0
+
+#: Tier 3 (PR-h-12 item 2). Calibrated on this repo's corpus rather than picked round: over 421
+#: runs, 65 of them resume-protected, a 14-day floor releases 56 (86%) and keeps 9. A 7-day floor
+#: buys 6% more for half the safety margin; 30 leaves 19 runs at ~130 MB/round still accruing,
+#: which is the unbounded growth this exists to stop. ``0`` disables the bound entirely.
+DEFAULT_WORKTREE_MAX_AGE_DAYS: int = 14
 """Default age floor in days. ``0`` disables the age gate."""
 
 
@@ -116,6 +122,7 @@ def plan_gc(
     *,
     keep: int = DEFAULT_KEEP,
     max_age_days: int = DEFAULT_MAX_AGE_DAYS,
+    worktree_max_age_days: int = DEFAULT_WORKTREE_MAX_AGE_DAYS,
     worktree_base: Path = DEFAULT_WORKTREE_BASE,
     skip_worktrees: bool = False,
 ) -> GcPlan:
@@ -145,11 +152,27 @@ def plan_gc(
             worktree_trees_to_remove=[],
             orphan_worktree_trees=[],
             worktree_tree_identities={},
+            worktree_age_released=[],
         )
 
+    # TIER 3 (PR-h-12 item 2). Worktree removal is independent of tier-2 transcript slimming:
+    # `slim_names` is the transcript filter (beyond-keep AND old-enough), but a run INSIDE the
+    # keep window can still have an ancient worktree nobody is inspecting. The two tiers must be
+    # selected by their own criteria — `worktree_max_age_days` for tier 3, `keep`/`max_age_days`
+    # for tier 2 — so they can be non-zero for one and zero for the other simultaneously.
+    #
+    # `released` is the PROTECTED half: protected runs aged past the floor, with a TOCTOU bypass
+    # flag so execute_gc skips the on-disk protection re-check (the disk state hasn't changed —
+    # only age releases it). `worktree_aged` is the UNPROTECTED half: candidates aged past the
+    # floor, selected independently of slim_names. Both are empty when worktree_max_age_days=0
+    # (the opt-out that reproduces the pre-PR-h-12 behaviour).
+    # TIER 3, selected by its OWN rule — never derived from `slim_names`. See
+    # `_worktree_removable`: deriving tier-3 targets from tier-2's selection is what let a
+    # one-day-old worktree be deleted because its transcripts had aged out.
+    all_worktree_ids, released = _worktree_removable(run_dirs, protected, worktree_max_age_days)
     worktree_trees = [
         tree
-        for tree in existing_worktree_trees(worktree_base, slim_names)
+        for tree in existing_worktree_trees(worktree_base, all_worktree_ids)
         if not tree_contains_repo_root(tree, repo_root)
     ]
     known_run_ids = {d.name for d in run_dirs} | protected
@@ -168,6 +191,7 @@ def plan_gc(
         worktree_trees_to_remove=worktree_trees,
         orphan_worktree_trees=orphan_trees,
         worktree_tree_identities=tree_identities,
+        worktree_age_released=released,
     )
 
 
@@ -195,6 +219,39 @@ def _started_at_timestamp(run_dir: Path) -> float | None:
     except ValueError:
         return None
     return dt.timestamp()
+
+
+def _worktree_removable(
+    run_dirs: list[Path], protected: set[str], worktree_max_age_days: int
+) -> tuple[list[str], list[str]]:
+    """``(removable_run_ids, of_those_that_were_protected)`` — TIER 3's only rule.
+
+    One predicate, because the coupling was the defect. Worktree selection used to be a union
+    with ``slim_names``, so a run beyond ``gc.keep`` lost its worktree the moment its TRANSCRIPTS
+    became eligible — a one-day-old inspection worktree deleted under normal run volume, with the
+    age floor bypassed entirely. That contradicted the four-tier policy in ``CLAUDE.md``, which
+    says tier 3 is removed on its own age rule; the document was right and the code never matched
+    it. Two dogfood rounds fixed half of it each, because each added a source instead of removing
+    the coupling.
+
+    A worktree is removable when it is OLDER than the floor, and — for a run that is still
+    resume-eligible — only when a floor is actually configured::
+
+        age > floor  and  (not protected  or  floor > 0)
+
+    ``worktree_max_age_days = 0`` is the opt-out and keeps its meaning at both ends: an
+    unprotected run's worktree is collectable immediately, exactly as before PR-h-12, while a
+    resumable run's is never released. The second return value is the protected subset, which
+    ``execute_gc`` needs to bypass its protection re-check for those specific runs.
+    """
+    cutoff = datetime.now(UTC).timestamp() - (worktree_max_age_days * 86400)
+    removable = [d for d in run_dirs if _run_sort_key(d) < cutoff]
+    if worktree_max_age_days <= 0:
+        removable = [d for d in removable if d.name not in protected]
+    return (
+        sorted(d.name for d in removable),
+        sorted(d.name for d in removable if d.name in protected),
+    )
 
 
 def _select_for_slimming(

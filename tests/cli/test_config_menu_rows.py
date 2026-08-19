@@ -71,7 +71,11 @@ def test_advanced_screen_drills_to_sections():
 
 def test_retry_and_gc_section_field_rows():
     assert [r.key for r in screen_rows(SyncadeConfig(), "retry")] == ["retry.max_retries"]
-    assert [r.key for r in screen_rows(SyncadeConfig(), "gc")] == ["gc.keep", "gc.max_age_days"]
+    assert [r.key for r in screen_rows(SyncadeConfig(), "gc")] == [
+        "gc.keep",
+        "gc.max_age_days",
+        "gc.worktree_max_age_days",
+    ]
     for r in screen_rows(SyncadeConfig(), "gc"):
         assert r.kind == "edit"
 

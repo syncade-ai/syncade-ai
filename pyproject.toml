@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "syncade"
-version = "0.6.3"
+version = "0.7.0"
 description = "External blind multi-judge review orchestrator for AI-assisted coding"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -73,6 +73,7 @@ syncade = ["templates/*.md", "templates/presets/*.toml", "skills/*/*.md"]
 testpaths = ["tests"]
 markers = [
     "smoke: end-to-end integration tests that shell out to real provider CLIs (opt-in via `pytest -m smoke`)",
+    "real_worktree_base: opt out of the autouse worktree-base isolation, for the drift tests that must assert the REAL default (PR-h-12 item 1b)",
 ]
 addopts = "-m 'not smoke'"
 

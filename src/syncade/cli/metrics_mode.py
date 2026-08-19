@@ -17,6 +17,7 @@ from syncade import billing
 from syncade.billing import Billing
 from syncade.exit_codes import SUCCESS, WORKTREE_ERROR
 from syncade.metrics.aggregate import backfill
+from syncade.metrics.findings import blocker_curve, consensus_stats
 from syncade.metrics.schema import open_db
 from syncade.snapshot import SnapshotError, discover_repo_root
 
@@ -238,7 +239,10 @@ def render_report(conn: sqlite3.Connection, last_n: int | None = None) -> str:
         "SELECT COALESCE(SUM(blockers),0), COALESCE(SUM(minors),0), COALESCE(SUM(nits),0), "
         "COALESCE(SUM(dismissed),0) FROM runs"
     ).fetchone()
-    rounds = conn.execute("SELECT COALESCE(SUM(rounds_executed),0) FROM runs").fetchone()[0]
+    # From `rounds`, not `runs.rounds_executed`: the latter comes from loop-manifest.json, so an
+    # interrupted run with perfectly good round artifacts reported "rounds: 0 total" while the
+    # blocker curve simultaneously knew round 0 had happened.
+    rounds = conn.execute("SELECT COUNT(*) FROM rounds").fetchone()[0]
     handoffs, decisions = conn.execute(
         "SELECT COALESCE(SUM(handoff),0), COALESCE(SUM(decision_needed),0) FROM runs"
     ).fetchone()
@@ -294,10 +298,85 @@ def render_report(conn: sqlite3.Connection, last_n: int | None = None) -> str:
     if reviewer_rows:
         lines.append("  reviewers by model (findings/wall-clock):")
         for provider, model, findings, run_count, wall, tok in reviewer_rows:
-            label = f"{provider}/{model}" if model else (provider or "?")
+            # A row with no model is reported as UNKNOWN, never as a bare provider. A bare
+            # provider reads like a panel that had no model, which is a claim we cannot make;
+            # "unknown" says the thing that is actually true. (No such row exists in this
+            # corpus today — every recorded panel carries both — but the renderer must not be
+            # the reason a future one silently looks answered.)
+            label = f"{provider}/{model}" if model else f"{provider or '?'}/unknown"
             lines.append(
                 f"    {label:24} findings={findings} runs={run_count} "
                 f"wall={int(wall)}s tok={int(tok)}"
+            )
+        # Rounds whose panel was never recorded are INVISIBLE in the table above, which is worse
+        # than being wrong: anyone dividing findings by runs gets a denominator quietly missing
+        # them. They come from runs interrupted before the loop terminator wrote a manifest, so
+        # nothing ever summarised their reviewers. Never guessed — the configured roster is not
+        # evidence of what a killed run actually dispatched.
+        #
+        # DO NOT write a measured count here. This comment said "all 49" until the release audit
+        # found the line below printing 22: excluding known-empty panels changed the number and
+        # the prose kept the old one. A count in a comment is a measurement with no test reading
+        # it, which is the same defect this release had to fix in its own CHANGELOG.
+
+    # OUTSIDE the `if reviewer_rows` block on purpose. Nested inside it, a corpus where EVERY
+    # panel is unknown printed no warning at all — the one corpus that most needs it, silent.
+    # panel_source='unknown' means no manifest had a `reviewers` key for that round. This is
+    # independent of blockers_source: a manifest can record a blocker count without a reviewer
+    # list, and a no-dispatch round (no_changes_to_review) has panel_source='recorded' and
+    # panel_size=0 — explicitly empty, not unknown.
+    unknown_rounds, total_rounds = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN panel_source = 'unknown' THEN 1 ELSE 0 END), 0), "
+        "COUNT(*) FROM rounds"
+    ).fetchone()
+    if unknown_rounds:
+        lines.append(
+            f"  {unknown_rounds} of {total_rounds} rounds record no reviewer panel "
+            f"(no manifest evidence; excluded from consensus)"
+        )
+    manifest_only, unknown_only = conn.execute(
+        "SELECT "
+        "COALESCE(SUM(CASE WHEN blockers_source='manifest' THEN 1 ELSE 0 END), 0), "
+        "COALESCE(SUM(CASE WHEN blockers_source='unknown' THEN 1 ELSE 0 END), 0) "
+        "FROM rounds "
+        "WHERE NOT (panel_source='recorded' AND panel_size=0 AND blockers=0)"
+    ).fetchone()
+    if manifest_only:
+        lines.append(
+            f"  {manifest_only} of {total_rounds} rounds have no synthesizer artifact; their "
+            f"blocker counts come from round manifests and carry no provenance"
+        )
+    if unknown_only:
+        lines.append(
+            f"  {unknown_only} of {total_rounds} rounds have no blocker evidence "
+            f"(killed/interrupted before any artifact or manifest); "
+            f"excluded from the blocker curve"
+        )
+
+    consensus = consensus_stats(conn)
+    if consensus is not None:
+        total, single = consensus
+        lines.append(
+            f"  consensus: {single} of {total} active blockers ({single / total:.0%}) were "
+            f"raised by exactly ONE reviewer"
+        )
+        lines.append("    (over runs with a multi-reviewer panel; what a second reviewer earns)")
+
+    curve = blocker_curve(conn)
+    if curve:
+        # Density, never the raw total alone. The blocker count falls steeply across rounds and
+        # reads as convergence; it is SURVIVORSHIP — fewer runs reach each round, so the
+        # denominator falls with it. This repo published the raw sequence as convergence once
+        # and had to correct it, so the renderer shows both numbers and the per-round rate.
+        lines.append(
+            "  blockers by round (artifact- or manifest-backed only; "
+            "killed runs with no evidence excluded):"
+        )
+        for round_index, blockers, rounds in curve:
+            density = blockers / rounds if rounds else 0.0
+            lines.append(
+                f"    round {round_index}: {blockers} blockers over {rounds} rounds "
+                f"({density:.2f}/round)"
             )
 
     if last_n:

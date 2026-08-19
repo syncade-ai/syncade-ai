@@ -15,6 +15,7 @@ from syncade.config_loader import load_config
 from syncade.worktree import DEFAULT_WORKTREE_BASE
 
 
+@pytest.mark.real_worktree_base
 def test_default_reproduces_the_runtime_default():
     """Zero-config runs still provision worktrees under ``/tmp/syncade`` — byte-identical."""
     assert SyncadeConfig().worktree_base == DEFAULT_WORKTREE_BASE

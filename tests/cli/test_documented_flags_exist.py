@@ -105,3 +105,37 @@ def test_the_check_is_not_vacuous():
         for line in (_ROOT / rel).read_text().splitlines()
     )
     assert seen > 50, f"the scanner found only {seen} flag tokens — the regex or _DOCS broke"
+
+
+def test_every_changelog_release_has_a_link_ref() -> None:
+    """A release heading with no `[x.y.z]:` ref renders as literal brackets on the public repo.
+
+    Not hypothetical: 0.6.3 shipped with no link ref at all AND left `[Unreleased]` comparing
+    from v0.6.2, so the compare link skipped a whole release. Both were found by hand while
+    cutting 0.7.0 — nothing failed, because nothing was reading this file. Same class as the
+    documented-flag drift above: prose that no test reads is prose that drifts.
+    """
+    import re
+
+    text = (Path(__file__).resolve().parents[2] / "CHANGELOG.md").read_text()
+    headings = re.findall(r"^## \[([^\]]+)\]", text, re.M)
+    refs = set(re.findall(r"^\[([^\]]+)\]:", text, re.M))
+
+    assert [h for h in headings if headings.count(h) > 1] == [], "duplicate release heading"
+    assert [h for h in headings if h not in refs] == [], (
+        "every CHANGELOG release heading needs a matching [x.y.z]: link ref at the bottom"
+    )
+    # Assert the SHAPE before indexing into it. Without this, `headings[1]` silently means
+    # "second heading" instead of "newest release": renaming the Unreleased heading, or dropping
+    # it at release time, both produced a confident failure naming the SUPERSEDED tag as the
+    # newest release — a message that directs the maintainer to the wrong fix. Found by an
+    # adversarial review of this very test.
+    assert headings[0] == "Unreleased", (
+        f"the first CHANGELOG heading must be `## [Unreleased]`, not {headings[0]!r} — the "
+        "compare-link check below identifies the newest release by position"
+    )
+    compare = re.search(r"^\[Unreleased\]: .*compare/v([\d.]+)\.\.\.HEAD", text, re.M)
+    assert compare and compare.group(1) == headings[1], (
+        f"[Unreleased] must compare from the newest release ({headings[1]}), not "
+        f"{compare.group(1) if compare else 'nothing'} — otherwise the link skips a release"
+    )

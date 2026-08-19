@@ -229,9 +229,9 @@ def test_gc_threads_configured_worktree_base(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         gc_mod,
         "plan_gc",
-        lambda repo_root, *, keep, max_age_days, worktree_base: (
-            captured.update(base=worktree_base) or plan
-        ),
+        # **kw rather than a fixed list: this stub broke when `worktree_max_age_days` was added
+        # (PR-h-12 item 2), and the test's subject is the BASE, not the argument roster.
+        lambda repo_root, *, worktree_base, **kw: captured.update(base=worktree_base, **kw) or plan,
     )
     monkeypatch.setattr(gc_mod, "execute_gc", lambda p, *, dry_run, repo_root: report)
 

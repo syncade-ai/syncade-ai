@@ -45,7 +45,7 @@ def test_repo_owned_orphan_tree_is_collected(
         lambda repo_root, repo_resolved: {(ours / "round-0" / "rv1").resolve()},
     )
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     assert ours in plan.orphan_worktree_trees
     assert foreign not in plan.orphan_worktree_trees
 
@@ -62,7 +62,7 @@ def test_protected_runs_never_in_slim_set(tmp_path: Path) -> None:
     # A normally-completed run is a candidate.
     write_run(repo, "2026-01-06T00-00-00", final_exit_code=0)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_max_age_days=0)
 
     protected = set(plan.protected_run_ids)
     assert protected == {
@@ -87,7 +87,7 @@ def test_siblings_never_candidates(tmp_path: Path) -> None:
 
     write_run(repo, "2026-01-06T00-00-00", final_exit_code=0)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_max_age_days=0)
 
     assert plan.runs_to_slim == ["2026-01-06T00-00-00"]
     assert ".gitignore" not in plan.runs_to_slim
@@ -100,7 +100,7 @@ def test_keep_n_retains_newest_candidates(tmp_path: Path) -> None:
     for i in range(5):
         write_run(repo, f"run-{i}", started_at=base + timedelta(days=i), final_exit_code=0)
 
-    plan = plan_gc(repo, keep=2, max_age_days=0)
+    plan = plan_gc(repo, keep=2, max_age_days=0, worktree_max_age_days=0)
 
     assert set(plan.runs_to_slim) == {"run-0", "run-1", "run-2"}
 
@@ -112,7 +112,7 @@ def test_age_gate_only_deletes_beyond_n_and_older_than_d(tmp_path: Path) -> None
     write_run(repo, "run-old", started_at=now - timedelta(days=100), final_exit_code=0)
 
     # keep=0 so both are beyond keep, but age gate D=30 protects the recent one.
-    plan = plan_gc(repo, keep=0, max_age_days=30)
+    plan = plan_gc(repo, keep=0, max_age_days=30, worktree_max_age_days=0)
 
     assert plan.runs_to_slim == ["run-old"]
 
@@ -123,7 +123,7 @@ def test_age_gate_off_when_zero(tmp_path: Path) -> None:
     write_run(repo, "run-recent", started_at=now - timedelta(days=1), final_exit_code=0)
     write_run(repo, "run-old", started_at=now - timedelta(days=100), final_exit_code=0)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_max_age_days=0)
 
     assert set(plan.runs_to_slim) == {"run-recent", "run-old"}
 
@@ -136,7 +136,7 @@ def test_candidates_ordered_newest_first_by_started_at(tmp_path: Path) -> None:
     write_run(repo, "aaa", started_at=base + timedelta(days=1), final_exit_code=0)
     write_run(repo, "mmm", started_at=base, final_exit_code=0)
 
-    plan = plan_gc(repo, keep=1, max_age_days=0)
+    plan = plan_gc(repo, keep=1, max_age_days=0, worktree_max_age_days=0)
 
     assert set(plan.runs_to_slim) == {"aaa", "mmm"}
 
@@ -150,7 +150,7 @@ def test_missing_started_at_falls_back_to_mtime(tmp_path: Path) -> None:
     os.utime(d_old, (old_t, old_t))
     os.utime(d_new, (new_t, new_t))
 
-    plan = plan_gc(repo, keep=1, max_age_days=0)
+    plan = plan_gc(repo, keep=1, max_age_days=0, worktree_max_age_days=0)
 
     assert plan.runs_to_slim == ["no-ts-old"]
 
@@ -159,7 +159,7 @@ def test_run_without_run_init_is_protected_as_pre_init_state(tmp_path: Path) -> 
     repo = make_repo(tmp_path)
     write_run(repo, "orphan-dir", with_run_init=False, with_loop_manifest=False)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_max_age_days=0)
 
     assert "orphan-dir" in plan.protected_run_ids
     assert "orphan-dir" not in plan.runs_to_slim
@@ -170,14 +170,14 @@ def test_malformed_loop_manifest_is_protected(tmp_path: Path) -> None:
     run_dir = write_run(repo, "malformed", with_loop_manifest=False)
     (run_dir / "loop-manifest.json").write_text("{not json", encoding="utf-8")
 
-    plan = plan_gc(repo, keep=0, max_age_days=0)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_max_age_days=0)
 
     assert "malformed" in plan.protected_run_ids
     assert "malformed" not in plan.runs_to_slim
 
 
 def test_no_runs_dir_returns_empty_plan(tmp_path: Path) -> None:
-    plan = plan_gc(tmp_path, keep=20, max_age_days=0)
+    plan = plan_gc(tmp_path, keep=20, max_age_days=0, worktree_max_age_days=0)
     assert plan.runs_to_slim == []
     assert plan.protected_run_ids == []
 
@@ -191,7 +191,7 @@ def test_worktree_trees_mapped_for_each_deleted_run(tmp_path: Path) -> None:
     (wt_base / "run-del").mkdir(parents=True)
     (wt_base / "run-keep").mkdir(parents=True)
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
 
     assert (wt_base / "run-del") in plan.worktree_trees_to_remove
     # The protected run's worktree tree is NEVER removed.
@@ -210,7 +210,7 @@ def test_foreign_worktree_tree_with_no_run_is_left_alone(tmp_path: Path) -> None
     (wt_base / "run-del").mkdir(parents=True)
     (wt_base / "foreign-other-repo-run").mkdir(parents=True)  # NOT ours
 
-    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
 
     # Our pruned run's tree IS scheduled; the foreign tree is left alone.
     assert (wt_base / "run-del") in plan.worktree_trees_to_remove

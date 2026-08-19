@@ -62,6 +62,18 @@ def _write_run(runs_root, run_id, *, exit_code, rounds, handoff=False, config_re
     )
     if handoff:
         (d / "handoff.md").write_text("# handoff")
+    # Write synthesizer artifacts so backfill() derives blockers from findings rows (not
+    # the loop-manifest count, which is now a secondary source).
+    for i, rnd in enumerate(rounds):
+        synth = rnd.get("synthesizer") or {} if isinstance(rnd, dict) else {}
+        n = synth.get("active_blocker_count", 0)
+        rd = d / f"round-{i}"
+        rd.mkdir(exist_ok=True)
+        findings = [
+            {"severity": "blocker", "dismissed": False, "file": f"f{j}.py", "description": f"b{j}"}
+            for j in range(n)
+        ]
+        (rd / "synthesizer.parsed.json").write_text(json.dumps({"consolidated_findings": findings}))
     return d
 
 
@@ -173,7 +185,10 @@ def test_backfill_upserts_all_runs_idempotently(tmp_path):
     assert rows[1].blockers == 3
 
 
-def test_read_run_aggregates_reviewer_stats_with_model_join(tmp_path):
+def test_read_run_aggregates_reviewer_stats_blank_model_when_not_recorded(tmp_path):
+    """A reviewer entry that did not record a model stays blank — it is not guessed from
+    the run-init config_snapshot. Guessing would rewrite historical panel composition
+    whenever the config changes."""
     runs = tmp_path / "runs"
     _write_run(
         runs,
@@ -189,6 +204,7 @@ def test_read_run_aggregates_reviewer_stats_with_model_join(tmp_path):
                         "verdict": "SHIP",
                         "finding_count": 1,
                         "duration_seconds": 200.0,
+                        # no "model" key — legacy manifest
                     }
                 ],
             )
@@ -200,9 +216,8 @@ def test_read_run_aggregates_reviewer_stats_with_model_join(tmp_path):
     assert stats[0].name == "codex-reviewer"
     assert stats[0].provider == "openai"
     assert stats[0].finding_count == 1
-    # model is NOT in the manifest reviewer entry — it comes from the run-init
-    # config_snapshot roster, joined by name.
-    assert stats[0].model == "gpt-5.5"
+    # model absent from manifest — must stay blank, not be guessed from config snapshot
+    assert stats[0].model == ""
     # wall-clock is summed across rounds (folds in the usefulness headline)
     assert stats[0].duration_s == 200.0
 

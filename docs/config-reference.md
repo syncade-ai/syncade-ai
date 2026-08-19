@@ -222,13 +222,18 @@ any spend.
 ## `[gc]` — `GcConfig`
 
 Governs both the per-loop auto-prune and an explicit `syncade --gc`. Run directories are never
-deleted — only bulky subprocess transcripts. CLI `--gc-keep` / `--gc-max-age-days` override these.
+deleted. `keep` / `max_age_days` prune bulky subprocess transcripts; `worktree_max_age_days`
+removes stale worktrees under `worktree_base`, which is a separate retention tier because a
+worktree is reconstructible from a recorded SHA. CLI `--gc-keep` / `--gc-max-age-days` override
+the first two; the worktree bound is config-only (set it with
+`syncade --config set gc.worktree_max_age_days N`).
 
 <!-- config-fields: GcConfig -->
 | Field | Type | Default | What it does |
 |---|---|---|---|
 | `keep` | int ≥ 0 | `20` | Newest N runs whose transcripts are always kept. |
 | `max_age_days` | int ≥ 0 | `0` | Additional age floor: a beyond-`keep` run is pruned only if also older than this. `0` disables the age floor. |
+| `worktree_max_age_days` | int ≥ 0 | `14` | Days a run's **worktree** is kept, after which it is removed — including while the run is still resume-eligible. This is the ONLY rule that selects a worktree: one is never removed because its transcripts became prunable, so a young worktree you are still inspecting survives a busy week of runs. Separate from `max_age_days`, which gates transcripts only — a worktree is reconstructible from the SHA the run records, so removing one costs a `git worktree add` and never history. `0` disables the bound and restores the previous never-ending protection. |
 
 ## `[update]` — `UpdateConfig`
 

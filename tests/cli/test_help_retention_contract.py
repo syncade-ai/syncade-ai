@@ -1,4 +1,4 @@
-"""`syncade --help` must document the GC two-tier retention contract.
+"""`syncade --help` must document the GC four-tier retention contract.
 
 The README used to embed a verbatim copy of `syncade --help`, and this file guarded that
 copy against drift. The README is now an onboarding front-door that defers CLI detail to
@@ -28,12 +28,24 @@ def _live_help() -> str:
     ).stdout.strip()
 
 
-def test_help_documents_two_tier_retention() -> None:
+def test_gc_help_does_not_advertise_nonexistent_flag() -> None:
+    """``syncade --help`` must not reference ``--gc-worktree-max-age-days``.
+
+    That flag never existed. The worktree retention bound is config-only via
+    ``gc.worktree_max_age_days``; following the help text as written previously caused
+    an argparse error. The help now names the config key instead.
+    """
+    assert "--gc-worktree-max-age-days" not in _live_help(), (
+        "help references a nonexistent flag; use gc.worktree_max_age_days config key instead"
+    )
+
+
+def test_help_documents_four_tier_retention() -> None:
     """The retention contract is the one thing an operator MUST not get wrong: it
     determines whether they believe `--gc` destroys their run history. Assert the
     substance is in `syncade --help`, not merely that two copies match."""
     block = " ".join(line.strip() for line in _live_help().split("\n"))
-    # argparse wraps long words across the hyphen ("TWO-" / "TIER"); rejoin them.
+    # argparse wraps long words across the hyphen ("FOUR-" / "TIER"); rejoin them.
     block = re.sub(r"-\s+", "-", block)
-    for claim in ("Retention is TWO-TIER", "kept FOREVER", "NO run directory is ever deleted"):
+    for claim in ("Retention is FOUR-TIER", "kept FOREVER", "NO run directory is ever deleted"):
         assert claim in block, f"`syncade --help` no longer documents: {claim!r}"

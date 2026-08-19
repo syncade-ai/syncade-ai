@@ -18,6 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # Drift-guarded literal mirrors of syncade.gc.DEFAULT_KEEP / DEFAULT_MAX_AGE_DAYS (see docstring).
 _DEFAULT_KEEP = 20
 _DEFAULT_MAX_AGE_DAYS = 0
+#: Calibrated on 421 runs / 65 resume-protected: 14d releases 86% while keeping 9.
+#: 7d buys 6% more for half the margin; 30d leaves 19 runs at ~130 MB/round accruing.
+_DEFAULT_WORKTREE_MAX_AGE_DAYS = 14  # mirrors gc.DEFAULT_WORKTREE_MAX_AGE_DAYS
 
 
 class GcConfig(BaseModel):
@@ -41,7 +44,21 @@ class GcConfig(BaseModel):
         ),
     )
 
-    @field_validator("keep", "max_age_days", mode="before")
+    worktree_max_age_days: int = Field(
+        default=_DEFAULT_WORKTREE_MAX_AGE_DAYS,
+        ge=0,
+        description=(
+            "Days after which a run's WORKTREE is removed even though the run is still "
+            f"resume-eligible (default {_DEFAULT_WORKTREE_MAX_AGE_DAYS}; 0 disables the bound "
+            "and restores the previous never-ending protection). Tier 3 of the retention "
+            "policy: a worktree is reconstructible from the SHA the run already records, so "
+            "removing one costs a `git worktree add` and never history. Distinct from "
+            "`max_age_days`, which gates TRANSCRIPTS only — one key cannot be non-zero for "
+            "worktrees and zero for transcripts at once."
+        ),
+    )
+
+    @field_validator("keep", "max_age_days", "worktree_max_age_days", mode="before")
     @classmethod
     def _strict_int(cls, value: object) -> object:
         # Pydantic's lax mode coerces a quoted number ("0"→0), an exact float (1.0→1), and a boolean

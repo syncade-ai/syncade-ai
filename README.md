@@ -257,7 +257,7 @@ syncade runs AI coding-agent CLIs with **elevated tool access on your repo**:
 - **Reviewers** run headless inside throwaway worktree copies under `/tmp/syncade/` (Codex reviewers are additionally sandboxed to theirs).
 - **The producer** runs unsandboxed and **commits to your current branch** (syncade refuses the default branch by default).
 - Full LLM transcripts — including source a reviewer read — are written to `.syncade/runs/` (gitignored, auto-pruned). **A secret in a file a reviewer opens lands there in plaintext.**
-- syncade makes **no network calls of its own**; its only egress is the provider CLIs you already authenticated and the test/check commands you configure.
+- syncade makes **one network call of its own**: a once-per-session GET to its public update manifest to check for a newer version (suppressible via `[update] check = false`). `syncade --update` additionally invokes your package manager (`uv tool upgrade`, `pipx upgrade`, or `pip install -U`) — operator-requested and only when you run that flag. All other egress is the provider CLIs you already authenticated and the test/check commands you configure.
 
 Running syncade is comparable to running the target repo's `Makefile` — it executes code
 with your permissions. See **[SECURITY.md](SECURITY.md)** for the full threat model and how
@@ -272,12 +272,12 @@ Early access. These are measured, not suspected.
   Both findings were real. If a SHIP arrives over code you did not change since a NO-SHIP, treat
   it as the weaker signal — compare the verdict to what the *code* changed, not to the previous
   verdict.
-- **NO-SHIP runs keep their worktrees.** They are preserved so you can inspect what a reviewer
-  saw, and `syncade --gc` deliberately will not reclaim a run that is still resumable — so
-  `<worktree_base>` grows, and each worktree is a full checkout. It reached 4.4 GB on this
-  machine before a cleanup. Point `worktree_base` somewhere you do not mind, delete old run
-  directories once you are done with them, and run `git worktree prune` afterwards: removing the
-  directory does not remove git's registration of it.
+- **Worktrees accumulate under `<worktree_base>`.** NO-SHIP runs keep their worktrees for
+  inspection. `syncade --gc` removes worktrees once a run can no longer plausibly be resumed —
+  controlled by `gc.worktree_max_age_days` (default 14 days), which applies even to runs that are
+  technically still resume-eligible. It reached 4.4 GB on this machine before a cleanup. Point
+  `worktree_base` somewhere you do not mind, and run `git worktree prune` after manual removals:
+  removing the directory does not remove git's registration of it.
 - **A hard-killed run keeps almost all of what its reviewers had written.** Reviewer stdout and
   stderr are copied to `<round>/<name>.stdout` / `<round>/<name>.stderr` as the child produces
   them, rather than held in memory until it exits, so a run ended by `SIGKILL` (or a machine

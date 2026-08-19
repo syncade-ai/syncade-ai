@@ -29,6 +29,7 @@ def _usage_round():
             {
                 "name": "cdx",
                 "provider": "openai",
+                "model": "gpt-5.5",
                 "finding_count": 1,
                 "duration_seconds": 1.0,
                 "tokens": 1000,

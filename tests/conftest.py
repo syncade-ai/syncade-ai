@@ -76,3 +76,39 @@ def _isolate_global_config(monkeypatch, tmp_path_factory):
     an absent path; tests that exercise the global layer pass an explicit ``global_config_path``."""
     absent = tmp_path_factory.mktemp("no-global-config") / "config.toml"
     monkeypatch.setattr("syncade.config_loader._default_global_config_path", lambda: absent)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_worktree_base(request, tmp_path):
+    """No test may touch the SHARED worktree base — PR-h-12 item 1b.
+
+    Moved here from ``tests/orchestrator/conftest.py``, where it was package-scoped. Its own
+    docstring said it existed to prevent cross-test flakes (two tests in the same wall-clock
+    second picking one run-id and colliding), and six packages never received it. Measured before
+    the move: ``tests/cli`` and ``tests/persistence`` each created ``/tmp/syncade``. Empty, and no
+    worktrees leaked — so the brief's original 4.4 GB attribution was wrong, exactly as it later
+    corrected itself to say. The gap was real; the magnitude was not.
+
+    ``run_review`` falls back to ``config.worktree_base`` (PR-v2-9), so the PYDANTIC FIELD DEFAULT
+    is what must move: a bare ``SyncadeConfig()`` has to inherit the per-test path too.
+    ``model_rebuild(force=True)`` recompiles the core schema after the patch, and both are
+    restored at teardown so no schema state bleeds between tests.
+    """
+    from syncade.config import SyncadeConfig
+
+    # A DRIFT TEST must be able to see the real default. Two of them assert exactly that
+    # (`SyncadeConfig().worktree_base == DEFAULT_WORKTREE_BASE`, "byte-identical"), and this
+    # fixture defeated both when it went repo-wide -- correctly, since it is doing what it says.
+    # The opt-out is a declared marker rather than a package exemption, because a package
+    # exemption is what put six packages outside the isolation in the first place.
+    if request.node.get_closest_marker("real_worktree_base"):
+        yield
+        return
+
+    field = SyncadeConfig.model_fields["worktree_base"]
+    old_default = field.default
+    field.default = tmp_path / "syncade-worktrees"
+    SyncadeConfig.model_rebuild(force=True)
+    yield
+    field.default = old_default
+    SyncadeConfig.model_rebuild(force=True)

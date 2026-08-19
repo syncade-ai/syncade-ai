@@ -7,6 +7,56 @@ include breaking changes.
 
 ## [Unreleased]
 
+
+## [0.7.0] — 2026-08-19
+
+### Added
+
+- **`syncade --metrics` now answers the question a second reviewer is for.** It reports what
+  share of blocking findings were raised by exactly ONE of your reviewers — on this project's
+  own corpus, **266 of 475 (56%)**. Drop either reviewer and you lose about half your blockers,
+  and not the same half. Printed only when your runs actually had more than one reviewer: a
+  single-reviewer corpus would report 100% by construction, so it prints nothing instead.
+- **A per-round blocker curve, with its denominator.** The raw blocker count falls sharply by
+  round, which looks like convergence and is not — fewer runs reach each round, so the total
+  falls with the population. Each row shows blockers, rounds, and the per-round rate. On this
+  project's corpus the rate RISES from round 0 to round 1 (0.60 → 1.59) and then drifts down,
+  which is the opposite of the story the raw totals tell.
+- **Rounds whose reviewer panel was never recorded are named rather than dropped.** These are
+  rounds interrupted before a manifest was written; they are excluded from the consensus figure
+  and counted separately, so the share above is not quietly computed on a short denominator. The
+  count is in ROUNDS because that is the unit consensus is measured in — a resumed run can change
+  panel between rounds, so a per-run count would not describe what was excluded.
+
+
+### Changed
+
+- **`syncade --gc` now reclaims worktrees from runs it used to protect forever.** A run that could
+  still be resumed was shielded unconditionally and nothing ever ended that protection — on this
+  project's own corpus that reached **4.4 GB across 73 run directories** with `--gc` reporting
+  nothing to do. Worktrees are now released after `gc.worktree_max_age_days` (default **14**, `0`
+  restores the old behaviour). Run history, findings, manifests and summaries are still never
+  deleted; a worktree is reconstructible from the SHA the run already records, which is the whole
+  reason it is the tier that may go.
+- **A worktree is no longer removed just because its transcripts aged out.** Worktree selection
+  used to ride transcript selection, so under normal run volume a one-day-old worktree could be
+  deleted while `gc.worktree_max_age_days` advertised 14 days. The two are now selected by
+  independent rules, and retention is documented as four tiers rather than two.
+
+
+### Known issues
+
+- `syncade --metrics` reports `0 minors, 0 nits, 0 dismissed` for runs that were INTERRUPTED
+  before their loop manifest was written, even when the finding rows exist in `metrics.db`. The
+  blocker counts — the figures this project publishes — are re-derived from the per-round
+  authority and are correct for every round that left evidence, while the other three severity
+  columns still come from the loop manifest. `--metrics` separately names the rounds that left no
+  blocker evidence at all, which it counts as zero by convention rather than by measurement, so
+  the blocker total is a lower bound over the corpus. The report names those rounds explicitly
+  and notes they are excluded from the blocker curve, but does not label the top-line total as
+  a lower bound.
+  Raised as a non-blocking finding by syncade's own review of the release commit.
+
 ## [0.6.3] — 2026-08-18
 
 ### Changed
@@ -500,7 +550,9 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.0
+[0.6.3]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.3
 [0.6.2]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.2
 [0.6.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.1
 [0.6.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.0
@@ -510,6 +562,6 @@ Initial public release.
 [0.3.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.3.0
 [0.2.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.2.0
 [0.1.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.1.0
-<!-- 0.2.0 - 0.4.0 shipped as commits and were TAGGED RETROSPECTIVELY in PR-h-10 item 6, at
+<!-- 0.2.0 - 0.4.0 shipped as commits and were TAGGED RETROSPECTIVELY later, at
      the commits whose pyproject carried each version. Two public commits are titled
      "syncade v0.2.0"; the later one is the tag target. -->

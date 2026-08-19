@@ -65,7 +65,11 @@ report "DANGLING reference to an EXCLUDED (unshipped) file in a shipped file:" "
 
 
 # --- Tier B: internal PR-number citations, banned in user-facing docs + skill bundles -----------
-tierB_pattern='PR-v2-[0-9]|pr-v2-[0-9]|PR-[0-9]|pr-[0-9]|PR #[0-9]'
+# `PR-h-`/`pr-h-` are NOT covered by `PR-[0-9]` — after `PR-` comes a letter — so the entire
+# hardening-wave series (and `pr-h-field-NN`) was invisible to this gate. Found while cutting
+# 0.7.0: one `PR-h-10 item 6` reference had already shipped to the public CHANGELOG. Matched
+# on the prefix rather than a digit class so `pr-h-field-07` is covered by construction.
+tierB_pattern='PR-v2-[0-9]|pr-v2-[0-9]|PR-[0-9]|pr-[0-9]|PR #[0-9]|PR-h-|pr-h-'
 tierB_paths=(
   README.md SECURITY.md CONTRIBUTING.md CHANGELOG.md CODE_OF_CONDUCT.md
   docs/config-reference.md docs/how-to-use.md

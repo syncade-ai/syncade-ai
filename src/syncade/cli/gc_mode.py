@@ -70,7 +70,15 @@ def _run_gc(args) -> int:
     # worktree_base: clean the base the runs actually use (config.worktree_base / --worktree-base),
     # not the hardcoded default — else a relocated base leaves worktree leftovers uncollected.
     plan = plan_gc(
-        repo_root, keep=keep, max_age_days=max_age_days, worktree_base=config.worktree_base
+        repo_root,
+        keep=keep,
+        max_age_days=max_age_days,
+        # Tier 3 has no CLI flag on purpose: it is a machine-level retention preference set once,
+        # not a per-invocation choice, and `--config set gc.worktree_max_age_days N` already
+        # reaches it. Another flag would need parser, validation, docs and two drift-test entries
+        # for a knob nobody tunes twice.
+        worktree_max_age_days=config.gc.worktree_max_age_days,
+        worktree_base=config.worktree_base,
     )
     report = execute_gc(plan, dry_run=args.gc_dry_run, repo_root=repo_root)
 
