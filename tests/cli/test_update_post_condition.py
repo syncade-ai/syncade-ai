@@ -463,6 +463,9 @@ def test_a_genuinely_pinned_install_still_gets_the_pin_message(
 def test_doctor_reds_when_the_manifest_is_unreachable(monkeypatch) -> None:
     """Doctor exists to surface a quietly-broken setup for $0, and this failure is invisible
     everywhere else: unreachable and up-to-date look identical, permanently."""
+    # CI is set in GitHub Actions and makes this check SKIP by design; without clearing it
+    # these assert red/ok locally and fail in the very environment that gates the release.
+    monkeypatch.delenv("CI", raising=False)
     from syncade.doctor_env import _check_update_manifest
 
     monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: None)
@@ -474,6 +477,9 @@ def test_doctor_reds_when_the_manifest_is_unreachable(monkeypatch) -> None:
 
 
 def test_doctor_is_green_and_names_the_release_when_reachable(monkeypatch) -> None:
+    # CI is set in GitHub Actions and makes this check SKIP by design; without clearing it
+    # these assert red/ok locally and fail in the very environment that gates the release.
+    monkeypatch.delenv("CI", raising=False)
     monkeypatch.setattr("syncade.update_check._fetch", lambda url: {"latest": "9.9.9"})
     from syncade.doctor_env import _check_update_manifest
 
@@ -485,6 +491,9 @@ def test_doctor_is_green_and_names_the_release_when_reachable(monkeypatch) -> No
 def test_doctor_reds_on_a_reachable_but_unusable_manifest(monkeypatch) -> None:
     """Reachable is not the same as usable — a manifest whose `latest` cannot be parsed announces
     nothing, which is the same operator-visible outcome as being offline."""
+    # CI is set in GitHub Actions and makes this check SKIP by design; without clearing it
+    # these assert red/ok locally and fail in the very environment that gates the release.
+    monkeypatch.delenv("CI", raising=False)
     monkeypatch.setattr("syncade.update_check._fetch", lambda url: {"latest": "garbage"})
     from syncade.doctor_env import _check_update_manifest
 
@@ -626,3 +635,22 @@ def test_ci_suppresses_manifest_fetch_on_unchanged_version(tmp_path, monkeypatch
 
     update_mode.run_update(cwd=tmp_path)
     assert calls == [], "CI=true must suppress the manifest fetch on the unchanged-version path"
+
+
+def test_doctor_skips_the_check_under_ci(monkeypatch) -> None:
+    """`CI` set means no human is reading, so the row SKIPs rather than reaching the network.
+
+    Pinned because its absence broke a release: three tests above asserted red/ok without
+    clearing `CI`, so they passed on a laptop and failed inside GitHub Actions — the one
+    environment that gates publishing. The behaviour was right; nothing tested it, and the tests
+    that touched it silently depended on `CI` being unset.
+    """
+    from syncade.doctor_env import _check_update_manifest
+
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setattr(
+        "syncade.update_check._fetch", lambda url: pytest.fail("must not fetch under CI")
+    )
+    check = _check_update_manifest(enabled=True)
+    assert check.status == "skip"
+    assert "CI" in check.detail

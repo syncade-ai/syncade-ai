@@ -8,7 +8,26 @@ include breaking changes.
 ## [Unreleased]
 
 
+## [0.7.3] — 2026-08-20
+
+Everything in 0.7.2 below, which never reached PyPI — see the note under it. 0.7.3 adds only a
+test fix, no behaviour change.
+
+### Fixed
+
+- Three tests asserted the `--doctor` update-check row was red or green without clearing the `CI`
+  environment variable, which makes that row **skip** by design. They passed on a developer
+  machine and failed inside the release workflow, where `CI` is always set. The behaviour was
+  correct throughout; only the tests were wrong about the environment they run in.
+
+
+
 ## [0.7.2] — 2026-08-20
+
+> **Tagged but never published.** Its release workflow failed on the test suite before the
+> publish step, so there is no `0.7.2` on PyPI and no GitHub Release — the tag exists and is
+> preserved rather than moved. Everything described here shipped in **0.7.3**; install that.
+
 
 ### Added
 
@@ -613,7 +632,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.3
 [0.7.2]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.2
 [0.7.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.1
 [0.7.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.0
