@@ -201,9 +201,19 @@ def test_second_invocation_in_a_session_makes_no_network_call(
 
 
 def test_a_new_session_makes_exactly_one_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One fetch per session — the SESSION gate, which is separate from the process cache.
+
+    A new session is a new PROCESS in reality (the key derives from the harness id or the parent
+    pid), so the cache is cleared between iterations here. Without that, `manifest_once` would
+    serve all three from one request and this test would pass whatever the session gate did —
+    measuring the cache instead of the thing it is named for.
+    """
+    from syncade import update_check as uc
+
     calls: list = []
     _fetches(monkeypatch, {"latest": "0.7.0"}, calls=calls)
     for n, session in enumerate(("s1", "s2", "s3"), start=1):
+        uc._manifest_cache = uc._UNFETCHED  # a new session means a new process means a cold cache
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
         assert check_for_update("0.6.2") is not None
         assert len(calls) == n

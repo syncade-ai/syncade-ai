@@ -355,8 +355,9 @@ class SyncadeConfig(BaseModel):
     # Run-artifact retention (PR-v2-9). Defaults reproduce gc.DEFAULT_KEEP / DEFAULT_MAX_AGE_DAYS;
     # governs BOTH the per-loop auto-prune and an explicit ``syncade --gc``.
     gc: GcConfig = Field(default_factory=GcConfig)
-    # One-key off switch for the once-per-session update check (PR-h-field-07). The check
-    # only ever prints — it cannot block a run or change an exit code.
+    # One-key opt-out for update manifest fetches (PR-h-field-07). Suppresses background
+    # check, --update, and --doctor's manifest row when false. --doctor's red manifest row
+    # exits 60; the background check only prints, silent errors.
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     # Where per-run git worktrees are provisioned (PR-v2-9). A single top-level value (not a
     # ``[worktree]`` block — Q5); default reproduces worktree.DEFAULT_WORKTREE_BASE.

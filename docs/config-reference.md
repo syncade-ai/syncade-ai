@@ -99,7 +99,7 @@ below; `worktree_base` is the one top-level scalar.
 | `review` | `[review]` table | — | What reviewers see. See [`[review]`](#review--reviewconfig). |
 | `retry` | `[retry]` table | — | Transient-error retry bound. See [`[retry]`](#retry--retryconfig). |
 | `gc` | `[gc]` table | — | Run-artifact retention. See [`[gc]`](#gc--gcconfig). |
-| `update` | `[update]` table | — | The once-per-session update check. See [`[update]`](#update--updateconfig). |
+| `update` | `[update]` table | — | Background update check and opt-out. See [`[update]`](#update--updateconfig). |
 | `worktree_base` | path | `/tmp/syncade` | Base dir for per-run git worktrees. Overridable with `--worktree-base`; point it at a fast local disk if `/tmp` is small or slow. |
 | `checks` | `[[checks]]` list | none | Mechanical exit-code gates. See [`[[checks]]`](#checks--checkconfig). |
 | `pricing` | `[pricing]` table | packaged price table | Per-model token pricing for cost estimation. See [`[pricing]`](#pricing--pricingconfig). |
@@ -237,10 +237,17 @@ the first two; the worktree bound is config-only (set it with
 
 ## `[update]` — `UpdateConfig`
 
-Whether syncade checks for a newer release. The check only ever **prints**: it cannot block a run,
-change an exit code, or fail one — every error (offline, timeout, bad JSON) is silent. It fires at
-most once per window, at the first syncade invocation, and is skipped entirely whenever `CI` is
-set. Nothing about your repo, diff, run, or identity is sent.
+Whether syncade checks for a newer release. Nothing about your repo, diff, run, or identity is
+sent. The check has two distinct modes with different behaviors:
+
+**Background check** (automatic, at first invocation): fires at most once per session window,
+only ever **prints** — it cannot block a run, change an exit code, or fail one. Every error
+(offline, timeout, bad JSON) is silent. Skipped entirely when `CI` is set.
+
+**Explicit check** (`--doctor` and `--update`): each makes its own manifest fetch (one per
+process, independent of the background check). `--doctor` displays the result as a row in the
+preflight table and exits 60 if the manifest is unreachable. `--update` surfaces an unreachable
+manifest as an explicit message. Both are also skipped when `check = false` or `CI` is set.
 
 The advisory source is deliberately not configurable — a repo-local file that could repoint or
 silence a security notice would be a hole, not a feature.
@@ -248,7 +255,7 @@ silence a security notice would be a hole, not a feature.
 <!-- config-fields: UpdateConfig -->
 | Field | Type | Default | What it does |
 |---|---|---|---|
-| `check` | bool | `true` | Check once per session whether a newer syncade is published. Set `false` to never make the request. |
+| `check` | bool | `true` | Enable update checks. Set `false` to suppress all manifest fetches — background, `--doctor`, and `--update`. Also skipped whenever `CI` is set. At most one fetch per invocation: the background check is once per session, `--doctor` and `--update` check whenever you run them, and a single process never fetches twice. |
 
 ## `[[checks]]` — `CheckConfig`
 

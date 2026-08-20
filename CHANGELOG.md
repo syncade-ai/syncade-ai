@@ -8,6 +8,46 @@ include breaking changes.
 ## [Unreleased]
 
 
+## [0.7.2] — 2026-08-20
+
+### Added
+
+- **`syncade --update` now works for `pip` installs.** It previously refused, because it proves
+  how syncade was installed from a marker inside the install tree and had no marker for pip — so
+  pip users were told an update existed and then left to run the command themselves. pip does
+  leave one (`dist-info/INSTALLER`), read from the directory this syncade actually lives in, and
+  the upgrade runs through *your* interpreter (`<your python> -m pip install -U syncade`) rather
+  than whichever `pip` is first on `PATH`. `--user` is added when, and only when, syncade lives in
+  your user site directory.
+- **`syncade --doctor` now reports whether the update check can reach its manifest.** That failure
+  was invisible: an unreachable manifest and an up-to-date syncade looked identical, permanently.
+
+### Fixed
+
+- **A failed update check no longer looks like being up to date.** On stock python.org macOS
+  builds, `urllib` has no CA bundle unless `Install Certificates.command` was run, so the manifest
+  request fails TLS verification instantly — and every update check has been silently dead on
+  those machines. `--update` and `--doctor` now say they could not check, and name that cause.
+- **`--update` no longer blames a version pin it cannot see.** When the manifest is unreadable it
+  says so, instead of telling an already-current install to go hunting in `uv tool list`.
+- **`CI` and `[update] check = false` now suppress every manifest request**, not just the
+  background one. Setting either means no manifest egress from any path.
+
+### Changed
+
+- Documentation states the egress bound exactly: **at most one manifest GET per invocation** — the
+  background check once per session, `--doctor` and `--update` whenever you run them, and never
+  twice in one process.
+- **If you installed before 0.6.3 you are never notified of updates** — that release introduced
+  the check, so nothing earlier can announce anything. README and this page now say so, with the
+  one-line upgrade for each install method.
+
+### Known issues
+
+- Unchanged from 0.7.0: `syncade --metrics` reports `0 minors, 0 nits, 0 dismissed` for runs
+  interrupted before their loop manifest was written. Blocker counts are unaffected.
+
+
 ## [0.7.1] — 2026-08-20
 
 ### Fixed
@@ -573,7 +613,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.2
 [0.7.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.1
 [0.7.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.0
 [0.6.3]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.3

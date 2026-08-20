@@ -42,6 +42,14 @@ _DOCS = [
 #: can confirm the exemption rather than trust it.
 _FOREIGN = {
     "--check": "ruff format --check / git diff --check",
+    # The pre-0.6.3 upgrade recipes in README's Updating section. Those releases have no
+    # update check and no `--update`, so the only way out is the operator's own package
+    # manager — which means foreign flags in a syncade doc, by necessity.
+    "--force": "uv tool install --force (reinstall over an existing tool install)",
+    # NOT `--upgrade`: the README uses `-U` instead, deliberately. `--upgrade` sits one
+    # letter from syncade's real `--update`, so allowlisting it forever would let a future
+    # "syncade --upgrade" ship a command that exits 2.
+    "--user": "pip install --user (macOS user-site installs)",
     "--dangerously-bypass-approvals-and-sandbox": "codex",
     "--git": "git diff --git (the diff header)",
     "--hard": "git reset --hard",

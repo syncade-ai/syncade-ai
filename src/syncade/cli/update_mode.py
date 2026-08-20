@@ -16,6 +16,8 @@ the PR-h-04.5 shape one layer up: refuse rather than act on an unproven belief.
 
 from __future__ import annotations
 
+import os
+import site
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -24,7 +26,7 @@ from pathlib import Path
 import syncade
 from syncade.exit_codes import SUCCESS, WORKTREE_ERROR
 from syncade.process import SubprocessError, run_subprocess
-from syncade.update_check import MANIFEST_URL, _fetch, _parse, _text
+from syncade.update_check import _parse, _text, manifest_once
 
 _UPGRADE_TIMEOUT = 300.0
 #: Reading one version string out of a fresh interpreter. Generous, because a cold venv
@@ -38,9 +40,89 @@ _MARKER_DEPTH = 7
 
 @dataclass(frozen=True)
 class InstallMethod:
-    kind: str  # "uv" | "pipx" | "source" | "unknown"
+    kind: str  # "uv" | "pipx" | "pip" | "source" | "unknown"
     command: list[str] | None  # the upgrade to run, or None when we must not run anything
     where: Path | None
+
+
+def _in_user_site() -> bool:
+    """Whether THIS syncade lives in the per-user site directory.
+
+    Decides one thing: whether the pip upgrade needs ``--user``. A user-site install requires it
+    and a system-site install rejects it, so guessing either way breaks half the population. The
+    answer is derivable from paths we already hold, so it is derived rather than assumed.
+    """
+    try:
+        user_site = Path(site.getusersitepackages()).resolve()
+    except (AttributeError, OSError):  # no user site on this interpreter
+        return False
+    return user_site in Path(syncade.__file__).resolve().parents
+
+
+def _read_scoped_installer() -> str:
+    """Read INSTALLER from the dist-info directory that BELONGS to this syncade install.
+
+    Path-scoped to the site-packages directory containing ``syncade/__init__.py``, so an
+    unrelated dist-info for a different interpreter's syncade cannot prove this tree as pip.
+    Returns the installer name (e.g. ``"pip"``), or empty string when not found or ambiguous.
+
+    Contradictory duplicate dist-info directories (a broken packaging state) are refused
+    conservatively: if two ``syncade-*.dist-info`` entries disagree on INSTALLER, the result
+    is empty string — the same as not found.  First-match would misclassify in that state,
+    which contradicts the PROVE-or-refuse posture the rest of this module maintains.
+    """
+    site_packages = Path(syncade.__file__).resolve().parent.parent
+    found: list[str] = []
+    try:
+        for entry in site_packages.iterdir():
+            if (
+                entry.name.startswith("syncade-")
+                and entry.name.endswith(".dist-info")
+                and entry.is_dir()
+            ):
+                try:
+                    found.append((entry / "INSTALLER").read_text(encoding="utf-8").strip())
+                except OSError:
+                    pass  # No INSTALLER file — this dist-info cannot prove anything.
+    except OSError:
+        pass
+    if not found:
+        return ""
+    # Contradictory entries in a broken packaging state are not proof of anything.
+    return found[0] if len(set(found)) == 1 else ""
+
+
+def _pip_or_unknown(where: Path | None) -> InstallMethod:
+    """``pip`` when the distribution records pip as its installer, else ``unknown``.
+
+    Reached ONLY after the marker walk has failed to prove uv, pipx or a checkout. That ordering
+    is load-bearing, not tidiness: uv and pipx write ``dist-info/INSTALLER`` naming THEMSELVES, so
+    consulting it earlier would run pip against a uv tool. Their own markers are the specific ones
+    and they are checked first.
+
+    ``INSTALLER`` is a marker file naming its writer, exactly like ``uv-receipt.toml`` — reading it
+    keeps this PROVING rather than guessing, which is the distinction the refusal exists to
+    protect. Before this, a plain pip install was ``unknown`` and ``--update`` refused: correct
+    under the rule, and wrong about the facts, because pip had left proof all along and syncade
+    never looked. Found by an operator whose real install was exactly this shape.
+
+    The lookup is PATH-SCOPED to the site-packages directory containing ``syncade/__init__.py``.
+    Reading by project name from ambient ``importlib.metadata`` would match an unrelated
+    dist-info (e.g. from a different interpreter's install) and classify a markerless tree as
+    pip when it is not — measured in a worktree where ``syncade.__file__`` was the reviewed
+    source while metadata pointed at a real installed dist-info.
+
+    ``sys.executable -m pip``, never a bare ``pip`` from PATH — that resolves to whichever pip
+    comes first and would upgrade some other interpreter's syncade as often as this one's.
+    """
+    installer = _read_scoped_installer()
+    if installer != "pip":
+        # Some other installer, or a name we do not recognise. Unproven is still unproven.
+        return InstallMethod("unknown", None, where)
+    user = ["--user"] if _in_user_site() else []
+    return InstallMethod(
+        "pip", [sys.executable, "-m", "pip", "install", "-U", *user, "syncade"], where
+    )
 
 
 def detect_install() -> InstallMethod:
@@ -59,7 +141,7 @@ def detect_install() -> InstallMethod:
         # specific; reaching here means the environment exists but its manager is unproven,
         # which is exactly what "unknown" is for.
         if (parent / "pyvenv.cfg").is_file():
-            return InstallMethod("unknown", None, parent)
+            return _pip_or_unknown(parent)
         # A checkout is the one case where upgrading would be actively wrong: the operator's
         # own working tree is the install, and `uv tool upgrade` would neither touch it nor
         # tell them why nothing changed. Detected by the project file naming THIS project, so a
@@ -67,7 +149,7 @@ def detect_install() -> InstallMethod:
         pyproject = parent / "pyproject.toml"
         if pyproject.is_file() and 'name = "syncade"' in _read(pyproject):
             return InstallMethod("source", None, parent)
-    return InstallMethod("unknown", None, None)
+    return _pip_or_unknown(None)
 
 
 def _read(path: Path) -> str:
@@ -203,16 +285,21 @@ def _installed_version() -> str | None:
     return candidate if _parse(candidate) is not None else None
 
 
-def _is_newest(installed: str) -> bool:
-    """Whether ``installed`` is at or beyond the newest version the manifest advertises.
+def _is_newest(installed: str, *, enabled: bool = True) -> bool | None:
+    """Whether ``installed`` is at or beyond the newest the manifest advertises, or ``None``.
+
+    THREE answers, because the caller has three outcomes and two states could not express
+    them. ``None`` means the manifest could not be read AT ALL, which is NOT "a newer version
+    exists" — collapsing those is a shipped defect: on a machine whose TLS verification fails,
+    an already-current install was told "nothing was installed, most often the install pins a
+    version" and sent hunting a pin that did not exist.
 
     Only ever consulted on the unhappy path — the version failed to move — so the happy path
     stays offline. Anything that leaves the question unanswered (unreachable manifest, no usable
-    ``latest``, an installed version we cannot parse) returns ``False``, i.e. "cannot prove you
-    are current", which routes to the louder message. That is the safe direction: telling someone
-    to check for a pin when they were merely current is a wasted minute; telling someone they are
-    up to date when the upgrade silently failed strands them on an old version believing it is
-    the new one.
+    ``latest``, an installed version we cannot parse) returns ``None`` — the third state meaning
+    "could not determine". That is the safe direction when used with care: the caller must render
+    ``None`` as "manifest unreachable" rather than a pin diagnosis, because collapsing the two was
+    the shipped defect this three-valued return exists to fix.
 
     **This compares versions itself and must never delegate to ``evaluate()``.** That function
     answers a DIFFERENT question — "should the operator see a notice?" — and the two answers
@@ -224,13 +311,23 @@ def _is_newest(installed: str) -> bool:
     neighbouring answer — and the fix both times was to ask the actual question.
 
     There is deliberately no special case for an unreachable manifest: ``{}`` has no usable
-    ``latest``, so the one parse rule already answers it. An explicit branch was there and a
-    mutation run proved it dead — every input reached the same verdict without it.
+    ``latest``, so the one parse rule already answers it. An explicit ``if manifest is None``
+    branch has been added and removed TWICE, both times proved dead by a mutation run — the
+    second time by the same person who wrote this sentence, four lines below it. If you are about
+    to add it again, mutate it first: replace ``manifest_once(...) or {}`` and watch nothing
+    fail.
+
+    ``enabled=False`` fetches NOTHING and yields ``None`` — an operator who set
+    ``[update] check = false`` gets no egress from the explicit path either, which is what
+    makes README's "one network call of its own, suppressible" true. The caller already
+    reports ``None`` as "could not check", so honouring the opt-out costs no new branch.
     """
-    manifest = _fetch(MANIFEST_URL) or {}
+    manifest = manifest_once(enabled=enabled) or {}
     latest = _parse(_text(manifest.get("latest")))
     current = _parse(installed)
-    return latest is not None and current is not None and current >= latest
+    if latest is None or current is None:
+        return None
+    return current >= latest
 
 
 def run_update(*, cwd: Path | None = None, out=None) -> int:
@@ -270,7 +367,7 @@ def run_update(*, cwd: Path | None = None, out=None) -> int:
     if method.command is None:
         print(
             "[syncade] could not determine how syncade was installed, so nothing was run.\n"
-            "          If you used pip:  pip install -U syncade",
+            f"          If you used pip:  {sys.executable} -m pip install -U syncade",
             file=out,
         )
         return WORKTREE_ERROR
@@ -311,18 +408,55 @@ def run_update(*, cwd: Path | None = None, out=None) -> int:
         # first version of this guard and it told an operator who was simply already current
         # that their install was pinned and broken — a fresh false claim inside the fix for a
         # false claim, caught by testing the path instead of reasoning about it.
-        if _is_newest(now):
+        # The opt-out reaches HERE too, not just the startup notice: `[update] check = false`
+        # means no manifest request from any path, which is the documented contract.
+        from syncade.cli.update_notice import _check_enabled
+
+        # CI is honoured here for the same reason check_for_update honours it: no human is
+        # reading the output, so a manifest request adds no value and contradicts the
+        # documented "also skipped whenever CI is set" guarantee for [update] check.
+        newest = _is_newest(now, enabled=_check_enabled(cwd) and not bool(os.environ.get("CI")))
+        if newest:
             skills_ok = _resync_skills(out)
             print(f"[syncade] already up to date ({now}).", file=out)
             return SUCCESS if skills_ok else WORKTREE_ERROR
-        print(
-            f"[syncade] the upgrade command succeeded but syncade is still "
-            f"{syncade.__version__} — nothing was installed.\n"
-            f"          Most often the install pins a version: check `uv tool list` / "
-            f"`pipx list`, then\n"
-            f"          reinstall unpinned (e.g. `uv tool install --force syncade`).",
-            file=out,
-        )
+        if newest is None:
+            # Cannot read the manifest, so whether an upgrade was even due is unknown. Rendering
+            # the pin diagnosis here sends the operator hunting a pin that may not exist —
+            # measured on macOS framework Python, where a missing CA bundle fails TLS in 0.05s
+            # and leaves every update check silently dead. The manifest may also be reachable
+            # but malformed; either way, the CA remedy is a conditional suggestion, not a
+            # diagnosis.
+            print(
+                f"[syncade] syncade is still {now}, and the update manifest could not be\n"
+                "          read, so whether that is correct is unknown. Compare your version\n"
+                "          against https://github.com/syncade-ai/syncade-ai/releases\n"
+                "          On macOS python.org builds a missing CA bundle can cause this —\n"
+                "          run `Install Certificates.command` from your Python's Applications\n"
+                "          folder if you see TLS errors.",
+                file=out,
+            )
+            return WORKTREE_ERROR
+        if method.kind == "pip":
+            user_flag = " --user" if _in_user_site() else ""
+            print(
+                f"[syncade] the upgrade command succeeded but syncade is still "
+                f"{syncade.__version__} — nothing was installed.\n"
+                "          Most often a resolver constraint or pinned requirement prevented "
+                "the upgrade.\n"
+                "          Reinstall unpinned: "
+                f"{sys.executable} -m pip install -U{user_flag} --force-reinstall syncade",
+                file=out,
+            )
+        else:
+            print(
+                f"[syncade] the upgrade command succeeded but syncade is still "
+                f"{syncade.__version__} — nothing was installed.\n"
+                f"          Most often the install pins a version: check `uv tool list` / "
+                f"`pipx list`, then\n"
+                f"          reinstall unpinned (e.g. `uv tool install --force syncade`).",
+                file=out,
+            )
         return WORKTREE_ERROR
 
     skills_ok = _resync_skills(out)

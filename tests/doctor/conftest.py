@@ -35,6 +35,16 @@ def healthy_env(monkeypatch, tmp_path):
         lambda base: _real_worktree_check(_safe_base if base == DEFAULT_WORKTREE_BASE else base),
     )
     monkeypatch.setattr(doctor_env, "disk_usage", lambda p: SimpleNamespace(free=10 * 1024**3))
+    # The update-manifest row makes a real network GET. Stub it hermetically so the healthy
+    # baseline is not network-dependent and cannot turn red from a CI or offline environment.
+    # Tests that specifically exercise the update-manifest row stub it themselves.
+    from syncade.doctor_types import _OK, DoctorCheck
+
+    monkeypatch.setattr(
+        doctor,
+        "_check_update_manifest",
+        lambda **_: DoctorCheck("update check", _OK, "stubbed for test baseline"),
+    )
     monkeypatch.setattr(doctor, "preflight", lambda *a, **k: [])
     monkeypatch.setattr(doctor, "probe_credentials", lambda *a, **k: [_ok_auth()])
     monkeypatch.setattr(doctor, "run_selfcheck", lambda *a, **k: SUCCESS)

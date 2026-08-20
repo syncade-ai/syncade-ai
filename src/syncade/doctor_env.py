@@ -216,3 +216,50 @@ def _check_worktree_root(worktree_base: Path) -> DoctorCheck:
             fix="free up disk space; each reviewer/producer/test leg checks out a worktree",
         )
     return DoctorCheck("worktree", _OK, f"{probe_dir} writable, {free_gib:.1f} GiB free")
+
+
+def _check_update_manifest(*, enabled: bool = True) -> DoctorCheck:
+    """Can this machine reach the update manifest at all?
+
+    A red row here does not affect a review — the background check is silent by design and must
+    never slow or fail a run. It is worth a row because its failure is INVISIBLE everywhere else:
+    an unreachable manifest and an up-to-date syncade look identical, forever, so an operator can
+    sit years behind believing they are current. Doctor exists to surface exactly that kind of
+    quietly-broken setup for $0.
+
+    Measured cause on the reporting machine: python.org's macOS framework build ships no CA
+    bundle, its `openssl_cafile` points at a `cert.pem` that does not exist, and TLS verification
+    fails in 0.05s. Not a timeout — no timeout value would have changed it.
+
+    Costs one bounded GET (1.5s ceiling, fails open), the same request the first run of any
+    session already makes, so this adds no capability doctor did not already exercise.
+
+    Skipped (with a SKIP row, not red) when ``enabled`` is False or when the ``CI`` environment
+    variable is set — the same gate ``check_for_update`` applies to the background notice.
+    A disabled check cannot be meaningfully diagnosed, and CI environments rarely have a human
+    to act on the result.
+    """
+    import os
+
+    from syncade.update_check import _parse, _text, manifest_once
+
+    if not enabled or os.environ.get("CI"):
+        return DoctorCheck(
+            "update check",
+            _SKIP,
+            "skipped: update check is disabled (check=false or CI is set)",
+        )
+    manifest = manifest_once(enabled=True)  # `enabled` already gated above
+    if manifest is None:
+        return DoctorCheck(
+            "update check",
+            _RED,
+            "cannot reach the update manifest — new releases will never be announced",
+            "on macOS python.org builds, run `Install Certificates.command` from your "
+            "Python's Applications folder; otherwise check network/proxy access to "
+            "raw.githubusercontent.com",
+        )
+    latest = _text(manifest.get("latest"))
+    if _parse(latest) is None:
+        return DoctorCheck("update check", _RED, f"manifest reachable but unusable: {latest!r}")
+    return DoctorCheck("update check", _OK, f"reachable; latest release is {latest}")

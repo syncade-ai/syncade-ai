@@ -104,7 +104,7 @@ def test_an_unprovable_install_refuses_and_prints_the_manual_command(
 
     assert update_mode.run_update(cwd=tmp_path) == WORKTREE_ERROR
     err = capsys.readouterr().err
-    assert "could not determine" in err and "pip install -U syncade" in err
+    assert "could not determine" in err and "-m pip install -U syncade" in err
     assert ran == []
 
 
@@ -321,7 +321,7 @@ def test_a_venv_under_a_checkout_is_not_a_source_install(tmp_path, monkeypatch, 
     assert method.kind == "unknown", "an environment install is not a checkout"
     assert update_mode.run_update(cwd=tmp_path) == WORKTREE_ERROR
     err = capsys.readouterr().err
-    assert "pip install -U syncade" in err
+    assert "-m pip install -U syncade" in err
     assert "source checkout" not in err, "git is the wrong remediation for a venv install"
 
 
@@ -405,3 +405,161 @@ def test_refused_skill_resync_prints_valid_force_install_command(
     assert "--install-skill --force-install claude" not in msg, (
         f"remediation message uses invalid argument order: {msg!r}"
     )
+
+
+# ------------------------------------------------------------------ pip is provable (field-09)
+#
+# A pip install was `unknown` and `--update` refused. Correct under "prove, never guess" — and
+# wrong about the facts: pip writes `dist-info/INSTALLER` naming itself, exactly the kind of
+# marker the walk already trusts, and syncade never read it. Reported by an operator whose real
+# install was `pip install --user` on macOS.
+
+
+def _write_dist_info_installer(pkg: Path, value: str | None) -> None:
+    """Write (or omit) INSTALLER in a syncade dist-info directory adjacent to pkg.
+
+    Uses the same site-packages layout that ``_read_scoped_installer`` looks for:
+    ``<site-packages>/syncade-X.Y.Z.dist-info/INSTALLER``. When value is ``None``, no
+    dist-info is written — the tree appears unproven, as if pip never ran.
+
+    This is disk-based rather than a monkeypatch of ``metadata.distribution`` because the
+    fix it tests is a PATH-SCOPED lookup: ambient metadata from a different interpreter's
+    dist-info must not classify a markerless tree as pip. Writing a real dist-info in the
+    correct directory exercises the actual path; patching the global lookup would not.
+    """
+    if value is None:
+        return
+    site_packages = pkg.parent  # pkg == <site-packages>/syncade
+    dist_info = site_packages / "syncade-0.1.0.dist-info"
+    dist_info.mkdir(exist_ok=True)
+    (dist_info / "INSTALLER").write_text(value, encoding="utf-8")
+
+
+def test_a_pip_install_is_proven_and_upgraded_with_its_own_interpreter(
+    tmp_path, monkeypatch
+) -> None:
+    pkg = _install_tree(tmp_path, "unrelated.txt")  # no uv/pipx/venv/checkout marker anywhere
+    _point_syncade_at(monkeypatch, pkg)
+    _write_dist_info_installer(pkg, "pip\n")
+    monkeypatch.setattr(update_mode, "_in_user_site", lambda: False)
+
+    method = update_mode.detect_install()
+
+    assert method.kind == "pip"
+    assert method.command == [sys.executable, "-m", "pip", "install", "-U", "syncade"]
+    assert "pip" not in method.command[:1], (
+        "must invoke pip through THIS interpreter, never a bare `pip` from PATH — that resolves "
+        "to whichever pip is first and upgrades a different interpreter's syncade"
+    )
+
+
+def test_a_pip_install_in_a_different_site_packages_is_not_proven(tmp_path, monkeypatch) -> None:
+    """A dist-info that lives in a DIFFERENT site-packages must not prove this tree.
+
+    Regression for the ambient-metadata bug: ``metadata.distribution('syncade')`` found the
+    correct dist-info by project name regardless of which interpreter's tree it belonged to,
+    so a markerless worktree where ``syncade.__file__`` pointed elsewhere was classified as
+    pip because some ambient install had INSTALLER=pip in the ambient interpreter's site dir.
+    """
+    pkg = _install_tree(tmp_path, "unrelated.txt")
+    _point_syncade_at(monkeypatch, pkg)
+    # Write the dist-info in a DIFFERENT site-packages tree, not the one pkg lives in.
+    other_site = tmp_path / "other_site"
+    other_site.mkdir()
+    dist_info = other_site / "syncade-0.1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "INSTALLER").write_text("pip", encoding="utf-8")
+    # The install tree has no dist-info → must be unknown, not pip.
+    assert update_mode.detect_install().kind == "unknown"
+
+
+def test_a_user_site_install_gets_the_user_flag(tmp_path, monkeypatch) -> None:
+    """`--user` is required by a user-site install and rejected by a system-site one, so it is
+    derived from where syncade actually lives rather than assumed either way."""
+    pkg = _install_tree(tmp_path, "unrelated.txt")
+    _point_syncade_at(monkeypatch, pkg)
+    _write_dist_info_installer(pkg, "pip")
+    monkeypatch.setattr(update_mode, "_in_user_site", lambda: True)
+
+    assert update_mode.detect_install().command == [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "-U",
+        "--user",
+        "syncade",
+    ]
+
+
+def test_an_installer_that_is_not_pip_is_still_unknown(tmp_path, monkeypatch) -> None:
+    """uv and pipx write INSTALLER naming THEMSELVES. Reaching here means their own markers did
+    not match, so the environment is not one we can act on — unproven stays unproven."""
+    for value in ("uv", "pipx", "poetry", "", None, "PIP", " pip x "):
+        pkg = _install_tree(tmp_path / str(abs(hash(str(value)))), "unrelated.txt")
+        _point_syncade_at(monkeypatch, pkg)
+        _write_dist_info_installer(pkg, value)
+        method = update_mode.detect_install()
+        assert method.kind == "unknown", f"INSTALLER={value!r} must not be treated as pip"
+        assert method.command is None
+
+
+def test_a_missing_distribution_is_unknown_not_a_crash(tmp_path, monkeypatch) -> None:
+    """No dist-info directory present means the tree is unproven — must not crash."""
+    pkg = _install_tree(tmp_path, "unrelated.txt")
+    _point_syncade_at(monkeypatch, pkg)
+    # No dist-info written: _read_scoped_installer returns "" → unknown.
+    assert update_mode.detect_install().kind == "unknown"
+
+
+def test_contradictory_dist_info_directories_are_unknown(tmp_path, monkeypatch) -> None:
+    """Two syncade dist-info dirs with different INSTALLER values must not prove pip.
+
+    Broken packaging state (e.g. a leftover from a previous install), but the conservative
+    posture is: first-match is order-dependent and therefore not proof; refuse.
+    """
+    pkg = _install_tree(tmp_path, "unrelated.txt")
+    _point_syncade_at(monkeypatch, pkg)
+    site_packages = pkg.parent
+    # Write two dist-info dirs with contradictory INSTALLER values.
+    for name, installer in [
+        ("syncade-0.1.0.dist-info", "pip"),
+        ("syncade-0.2.0.dist-info", "poetry"),
+    ]:
+        d = site_packages / name
+        d.mkdir()
+        (d / "INSTALLER").write_text(installer, encoding="utf-8")
+
+    assert update_mode.detect_install().kind == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [("uv-receipt.toml", "uv"), ("pipx_metadata.json", "pipx"), ("pyvenv.cfg", "pip")],
+)
+def test_the_specific_markers_are_consulted_before_installer(
+    tmp_path, monkeypatch, marker, expected
+) -> None:
+    """ORDERING IS LOAD-BEARING. pipx installs *through* pip, so its dist-info can name pip —
+    consulting INSTALLER first would run bare pip against a pipx-managed venv. The specific
+    markers win; INSTALLER is the fallback. `pyvenv.cfg` is the deliberate exception: a venv whose
+    manager is unproven IS answerable by INSTALLER, which is the case this PR adds.
+    """
+    pkg = _install_tree(tmp_path / marker, marker)
+    _point_syncade_at(monkeypatch, pkg)
+    _write_dist_info_installer(pkg, "pip")
+    assert update_mode.detect_install().kind == expected
+
+
+def test_a_source_checkout_still_refuses_even_when_installer_says_pip(
+    tmp_path, monkeypatch
+) -> None:
+    """An editable install records pip in INSTALLER while the code IS the operator's worktree.
+    Upgrading it would be actively wrong, so the checkout marker must keep winning."""
+    pkg = _install_tree(tmp_path, "pyproject.toml", 'name = "syncade"\n')
+    _point_syncade_at(monkeypatch, pkg)
+    _write_dist_info_installer(pkg, "pip")
+
+    method = update_mode.detect_install()
+    assert method.kind == "source"
+    assert method.command is None

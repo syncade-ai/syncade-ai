@@ -37,15 +37,16 @@ from syncade.config import SyncadeConfig
 from syncade.config_auth import ALL_BLOCKS
 
 # Re-exported for import stability after the PR-h-field-01 split (Decomposition Rule): callers
-# keep importing these from `syncade.doctor`. MONKEYPATCH TARGETS ARE `doctor_env`, NOT
-# here — these names are bindings, and rebinding one does not change what the function
-# bodies in doctor_env read.
+# keep importing these from `syncade.doctor`. MONKEYPATCH TARGETS ARE `syncade.doctor`, NOT
+# `doctor_env` — `collect_checks()` calls these names through the binding HERE, so patching
+# `doctor_env` does not affect what the function body reads.
 from syncade.doctor_env import (  # noqa: F401
     _CLI_LAUNCH_TIMEOUT,
     _MIN_FREE_DISK_BYTES,
     _PROVIDER_CLI,
     _check_config,
     _check_provider_clis,
+    _check_update_manifest,
     _check_worktree_root,
     _configured_providers,
     _probe_cli_launch,
@@ -330,6 +331,10 @@ def collect_checks(
         check_cost(config, repo_root, max_rounds=max_rounds),
         check_budget(config),
     ]
+    # The update-manifest check is informational: an unreachable manifest does not refuse a real
+    # run, so it must NOT be in `cheap` (whose reds gate the live legs). It is run after the
+    # gating decision, and its red status does not suppress auth or producer-commit.
+    update_check = _check_update_manifest(enabled=config.update.check)
     checks = list(cheap)
     if quick:
         checks.append(DoctorCheck("auth", _SKIP, "skipped (--quick): credential probe not run"))
@@ -355,6 +360,9 @@ def collect_checks(
             )
         else:
             checks.append(_check_producer_commit(config, timeout_seconds=timeout_seconds))
+    # Append the update-manifest check after the live-legs decision: it is informational and
+    # its red status must not appear to gate the live legs (which were decided above without it).
+    checks.append(update_check)
     return checks
 
 

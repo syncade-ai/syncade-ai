@@ -18,11 +18,13 @@ could stop a run would be a remote kill switch, and a cheap one — one JSON lin
 write plus a release plus a publish, and needing no action from the operator to take effect.
 Print-only means the worst a compromised manifest can do is lie, which is visible and survivable.
 
-**It pings ONCE PER SESSION.** Not once per invocation and not once per N hours: the operator's
-rule is that a later invocation in the same window must not re-ping. The session is marked
-checked BEFORE the fetch, deliberately — marking after a *successful* fetch would make a flaky
-network cost a 1.5s stall on every invocation for the whole session, where marking first costs
-at most one missed notice.
+**The background check pings ONCE PER SESSION via ``check_for_update``.** Not once per
+invocation and not once per N hours: the operator's rule is that a later invocation in the same
+window must not re-ping. The session is marked checked BEFORE the fetch, deliberately — marking
+after a *successful* fetch would make a flaky network cost a 1.5s stall on every invocation for
+the whole session, where marking first costs at most one missed notice. Explicit operator
+invocations (``--update``, ``--doctor``) bypass the session gate and make their own fetch — they
+are diagnostic tools, not background checks, and the docs say so.
 
 Severity cannot come from PyPI's JSON, which has no such field. It comes from a manifest we host,
 so a version can be marked critical the day a hole is found rather than when the fix ships.
@@ -239,6 +241,36 @@ def _exclusive_check_and_mark(path: Path, key: str) -> bool:
         return _mark_checked(path, key)
 
 
+#: Sentinel distinguishing "not fetched yet" from a fetch that legitimately returned ``None``.
+_UNFETCHED = object()
+_manifest_cache: object = _UNFETCHED
+
+
+def manifest_once(*, enabled: bool) -> dict | None:
+    """The update manifest, fetched AT MOST ONCE per process. ``None`` when disabled or unreadable.
+
+    THE single egress point for the manifest. Three callers want it — the startup notice,
+    ``--update`` and ``--doctor`` — and before this each fetched independently, so a CLI
+    ``--doctor`` made two requests and ``--update`` fetched even with ``[update] check = false``.
+    That made `README`'s "one network call of its own, suppressible" FALSE, which is a published
+    privacy claim rather than a tidiness point. A blind panel raised it in all four rounds of one
+    dogfood and three producer attempts each fixed a different facet, because the fix is to remove
+    the duplication, not to patch each site.
+
+    ``enabled`` is a PARAMETER, not read here: this module is a stdlib-only leaf and importing the
+    config surface to answer it would end that. Callers hold the config; this holds the socket.
+
+    A failed fetch is cached too. A syncade process is short-lived, and retrying inside one would
+    reintroduce exactly the multiplication this exists to prevent.
+    """
+    global _manifest_cache
+    if not enabled:
+        return None
+    if _manifest_cache is _UNFETCHED:
+        _manifest_cache = _fetch(MANIFEST_URL)
+    return _manifest_cache
+
+
 def check_for_update(installed: str, *, enabled: bool = True) -> UpdateNotice | None:
     """One ping per session, or ``None``. Never raises, never blocks, never touches exit codes.
 
@@ -255,7 +287,7 @@ def check_for_update(installed: str, *, enabled: bool = True) -> UpdateNotice | 
         # first invocations from all fetching simultaneously.
         if not _exclusive_check_and_mark(path, key):
             return None
-        return evaluate(_fetch(MANIFEST_URL), installed)
+        return evaluate(manifest_once(enabled=True), installed)
     except Exception:  # noqa: BLE001
         # The outermost guarantee, not a duplicate of the inner ones: `Path.home()` raises
         # RuntimeError with no $HOME and no passwd entry, and this runs on the review path where

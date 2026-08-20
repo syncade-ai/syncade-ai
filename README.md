@@ -93,10 +93,34 @@ syncade --update        # upgrade, then re-run your command
 ```
 
 `--update` works out how syncade was installed by looking for a marker inside its own install
-tree, and **refuses rather than guessing** if it cannot tell — printing the manual `pip` command
-instead. It also refuses while a review is still running, and declines to touch a source
+tree — `uv`, `pipx`, or the `INSTALLER` record pip leaves — and **refuses rather than guessing**
+if no marker proves one, printing the manual command instead. It also refuses while a review is still running, and declines to touch a source
 checkout. A running process cannot switch to the version it just installed, so it exits and asks
 you to re-run.
+
+> **Installed before 0.6.3? You will never be told about updates.** The check itself arrived in
+> **0.6.3**; every release before it — `0.1.0` through `0.6.2` — has no such code, so it cannot
+> announce anything and `--update` is not a flag it knows. There is no way for us to reach those
+> installs, which is why this paragraph exists. Check with `syncade --version`, and if it is below
+> `0.6.3`, upgrade once by hand:
+>
+> ```bash
+> uv tool install --force syncade          # if you installed with uv
+> pipx upgrade syncade                     # if you installed with pipx
+> python3 -m pip install --user -U syncade   # if you installed with pip --user
+> python3 -m pip install -U syncade          # if you installed with pip
+> ```
+>
+> **Check `syncade --version` afterwards either way** — do not trust the success message. Each
+> of these can report success while changing nothing: `pipx` refuses a package you have
+> `pipx pin`ned, `pip` may target a different interpreter than the one `syncade` resolves to,
+> and on `0.6.3`/`0.7.0` `--update` itself could claim success having installed nothing (fixed
+> in `0.7.1`). The `uv` line is the exception: it upgrades *and* clears any pin.
+>
+> From `0.6.3` on syncade tells you about updates itself — **when it can reach the manifest**.
+> That check is silent on failure by design, so a machine that cannot reach it looks exactly
+> like a machine that is up to date. If you want certainty, compare `syncade --version` against
+> the [releases page](https://github.com/syncade-ai/syncade-ai/releases).
 
 **Requirements**
 - **Python 3.11+**, on **macOS or Linux** (on Windows, use WSL).
@@ -257,7 +281,7 @@ syncade runs AI coding-agent CLIs with **elevated tool access on your repo**:
 - **Reviewers** run headless inside throwaway worktree copies under `/tmp/syncade/` (Codex reviewers are additionally sandboxed to theirs).
 - **The producer** runs unsandboxed and **commits to your current branch** (syncade refuses the default branch by default).
 - Full LLM transcripts — including source a reviewer read — are written to `.syncade/runs/` (gitignored, auto-pruned). **A secret in a file a reviewer opens lands there in plaintext.**
-- syncade makes **one network call of its own**: a once-per-session GET to its public update manifest to check for a newer version (suppressible via `[update] check = false`). `syncade --update` additionally invokes your package manager (`uv tool upgrade`, `pipx upgrade`, or `pip install -U`) — operator-requested and only when you run that flag. All other egress is the provider CLIs you already authenticated and the test/check commands you configure.
+- syncade makes a small number of network calls of its own: a **once-per-session** GET to its public update manifest at the first invocation in each terminal or harness window (suppressible via `[update] check = false`, or set `CI`). `syncade --update` and `syncade --doctor` check every time you run them — operator-requested, so not session-gated. **At most one manifest GET per invocation** either way: a single `syncade` process fetches once and shares it, so `--doctor` does not add a request on top of the session check. `syncade --update` also invokes your package manager (`uv tool upgrade`, `pipx upgrade`, or your own interpreter's `-m pip install -U`) — only when you run that flag. All other egress is the provider CLIs you already authenticated and the test/check commands you configure.
 
 Running syncade is comparable to running the target repo's `Makefile` — it executes code
 with your permissions. See **[SECURITY.md](SECURITY.md)** for the full threat model and how

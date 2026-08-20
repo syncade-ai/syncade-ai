@@ -112,3 +112,19 @@ def _isolated_worktree_base(request, tmp_path):
     yield
     field.default = old_default
     SyncadeConfig.model_rebuild(force=True)
+
+
+@pytest.fixture(autouse=True)
+def _clear_manifest_cache():
+    """`manifest_once` memoises for the life of a PROCESS, and pytest is one process.
+
+    Without this, the first test to reach a real or patched fetch fixes the answer for every
+    later test in the run — and the failure would look like a patch that "did not take", which
+    is exactly the kind of ghost that costs an afternoon. Cleared both sides so ordering cannot
+    matter.
+    """
+    from syncade import update_check
+
+    update_check._manifest_cache = update_check._UNFETCHED
+    yield
+    update_check._manifest_cache = update_check._UNFETCHED

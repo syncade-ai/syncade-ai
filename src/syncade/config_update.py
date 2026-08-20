@@ -19,11 +19,12 @@ class UpdateConfig(BaseModel):
     check: bool = Field(
         default=True,
         description=(
-            "Check once per session whether a newer syncade is published (default true). One "
-            "HTTPS GET to the public repo's update manifest, 1.5s timeout, at the first syncade "
-            "invocation in a window and never again in that window. It only ever PRINTS: it "
-            "cannot block a run, change an exit code, or fail one — every error is silent. "
-            "Nothing about your repo, diff, run, or identity is sent. Also skipped whenever CI "
+            "Enable update checks (default true). An HTTPS GET to the public repo's update "
+            "manifest, 1.5s timeout. Nothing about your repo, diff, run, or identity is sent. "
+            "Set false to suppress all fetches — background, --update, and --doctor. "
+            "Background: fires at most once per session window, only prints, every error is "
+            "silent. Explicit (--update, --doctor): each makes its own fetch per process; "
+            "--doctor exits 60 when the manifest is unreachable. Also skipped whenever CI "
             "is set."
         ),
     )

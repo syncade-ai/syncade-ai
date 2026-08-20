@@ -310,8 +310,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--update",
         action="store_true",
         help="Upgrade syncade to the latest published release, then exit. Detects how syncade "
-        "was installed by finding a marker inside its own install tree (uv tool / pipx) and "
-        "REFUSES rather than guessing when it cannot tell, printing the manual pip command "
+        "was installed by finding a marker inside its own install tree (uv tool / pipx / pip) "
+        "and REFUSES rather than guessing when it cannot tell, printing the manual pip command "
         "instead. Refuses while a run is still going. Re-installs any skill you already have, "
         "using the upgraded code. A running process cannot switch to the new version, so this "
         "exits and asks you to re-run your command.",

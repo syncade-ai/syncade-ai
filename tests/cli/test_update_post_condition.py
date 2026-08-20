@@ -24,7 +24,12 @@ import syncade
 from syncade.cli import update_mode
 from syncade.exit_codes import SUCCESS, WORKTREE_ERROR
 from syncade.process import SubprocessError, SubprocessResult
-from tests.cli.test_update_mode import _install_tree, _point_syncade_at, _Result
+from tests.cli.test_update_mode import (
+    _install_tree,
+    _point_syncade_at,
+    _Result,
+    _write_dist_info_installer,
+)
 
 # --------------------------------------------------------------------- the post-condition
 #
@@ -49,7 +54,7 @@ def test_an_upgrade_that_changed_nothing_is_reported_as_failure(
     """The defect itself: same version after a 'successful' upgrade must not read as success."""
     _upgrade_reporting_success(monkeypatch, tmp_path)
     monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
-    monkeypatch.setattr(update_mode, "_fetch", lambda url: {"latest": "99.0.0"})
+    monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: {"latest": "99.0.0"})
 
     assert update_mode.run_update() == WORKTREE_ERROR
     out = capsys.readouterr().err
@@ -153,7 +158,9 @@ def test_an_already_current_install_is_not_reported_as_a_failed_upgrade(
     """
     _upgrade_reporting_success(monkeypatch, tmp_path)
     monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
-    monkeypatch.setattr(update_mode, "_fetch", lambda url: {"latest": syncade.__version__})
+    monkeypatch.setattr(
+        update_mode, "manifest_once", lambda *, enabled=True: {"latest": syncade.__version__}
+    )
 
     assert update_mode.run_update() == SUCCESS
     out = capsys.readouterr().err
@@ -172,7 +179,7 @@ def test_an_unreachable_manifest_cannot_certify_you_as_current(
     """
     _upgrade_reporting_success(monkeypatch, tmp_path)
     monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
-    monkeypatch.setattr(update_mode, "_fetch", lambda url: None)
+    monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: None)
 
     assert update_mode.run_update() == WORKTREE_ERROR
     assert "already up to date" not in capsys.readouterr().err
@@ -184,7 +191,9 @@ def test_the_happy_path_never_touches_the_network(tmp_path, monkeypatch) -> None
     _upgrade_reporting_success(monkeypatch, tmp_path)
     monkeypatch.setattr(update_mode, "_installed_version", lambda: "99.0.0")
     monkeypatch.setattr(
-        update_mode, "_fetch", lambda url: pytest.fail("the happy path must not fetch")
+        update_mode,
+        "manifest_once",
+        lambda *, enabled=True: pytest.fail("the happy path must not fetch"),
     )
 
     assert update_mode.run_update() == SUCCESS
@@ -217,9 +226,12 @@ def test_is_newest_treats_malformed_manifest_as_unverifiable(manifest, monkeypat
     None while providing no actual version information, so the pre-fix code returned True and
     certified the operator as already-current on an unusable manifest.
     """
-    monkeypatch.setattr(update_mode, "_fetch", lambda url: manifest)
-    assert update_mode._is_newest("0.7.0") is False, (
-        f"manifest {manifest!r} cannot prove current status; _is_newest must return False"
+    monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: manifest)
+    # `None`, not `False`: field-09 made this three-valued. "Cannot prove you are current" and
+    # "a newer release exists" are different facts and the caller reports them differently —
+    # rendering the second for the first is what blamed a pin that did not exist.
+    assert update_mode._is_newest("0.7.0") is None, (
+        f"manifest {manifest!r} cannot prove current status, and cannot prove staleness either"
     )
 
 
@@ -230,12 +242,18 @@ def test_a_malformed_manifest_does_not_produce_already_up_to_date(
     did not move. Verified: fails against the pre-fix code."""
     _upgrade_reporting_success(monkeypatch, tmp_path)
     monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
-    monkeypatch.setattr(update_mode, "_fetch", lambda url: {})  # reachable but malformed
+    monkeypatch.setattr(
+        update_mode, "manifest_once", lambda *, enabled=True: {}
+    )  # reachable but malformed
 
     assert update_mode.run_update() == WORKTREE_ERROR
     out = capsys.readouterr().err
     assert "already up to date" not in out
-    assert "nothing was installed" in out
+    # It must also not diagnose a PIN, which is the field-09 correction: an unusable manifest
+    # says nothing about how the package was installed, and sending the operator to `uv tool
+    # list` for a pin that does not exist wastes the one message they get.
+    assert "pins a version" not in out
+    assert "manifest could not be" in out
 
 
 # ------------------------------------------------------------ already-current resync regression
@@ -252,7 +270,9 @@ def test_skills_are_resynced_on_the_already_current_path(tmp_path, monkeypatch) 
     _point_syncade_at(monkeypatch, _install_tree(tmp_path, "uv-receipt.toml"))
     monkeypatch.setattr(update_mode, "run_subprocess", lambda *a, **k: _Result(0))
     monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
-    monkeypatch.setattr(update_mode, "_fetch", lambda url: {"latest": syncade.__version__})
+    monkeypatch.setattr(
+        update_mode, "manifest_once", lambda *, enabled=True: {"latest": syncade.__version__}
+    )
 
     calls: list = []
     monkeypatch.setattr(update_mode, "_resync_skills", lambda out: calls.append(1) or True)
@@ -268,7 +288,9 @@ def test_a_failed_skill_resync_on_already_current_path_returns_non_zero(
     _point_syncade_at(monkeypatch, _install_tree(tmp_path, "uv-receipt.toml"))
     monkeypatch.setattr(update_mode, "run_subprocess", lambda *a, **k: _Result(0))
     monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
-    monkeypatch.setattr(update_mode, "_fetch", lambda url: {"latest": syncade.__version__})
+    monkeypatch.setattr(
+        update_mode, "manifest_once", lambda *, enabled=True: {"latest": syncade.__version__}
+    )
     monkeypatch.setattr(update_mode, "_resync_skills", lambda out: False)
 
     assert update_mode.run_update(cwd=tmp_path) == WORKTREE_ERROR
@@ -292,8 +314,8 @@ def test_a_critical_advisory_with_no_newer_release_is_still_current(
     monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
     monkeypatch.setattr(
         update_mode,
-        "_fetch",
-        lambda url: {
+        "manifest_once",
+        lambda *, enabled=True: {
             "latest": syncade.__version__,
             "critical_below": "99.0.0",
             "critical_reason": "a critical fix with no newer release",
@@ -311,26 +333,29 @@ def test_is_newest_answers_the_version_question_across_every_manifest_shape(monk
     this function reached its third revision."""
     installed = "0.7.0"
     cases = [
+        # True = current, False = a newer release exists, None = COULD NOT CHECK. The third
+        # value is the point: two states cannot express three outcomes, and collapsing
+        # "unreachable" into "newer exists" is what made --update blame a nonexistent pin.
         ({"latest": "0.7.0"}, True, "manifest agrees"),
         ({"latest": "0.6.3"}, True, "manifest is BEHIND the install"),
         ({"latest": "0.7.0", "critical_below": "99.0.0"}, True, "critical, no newer release"),
         ({"latest": "99.0.0"}, False, "a newer release exists"),
-        (None, False, "unreachable"),
-        ({}, False, "no latest key"),
-        ({"latest": None}, False, "latest is null"),
-        ({"latest": ""}, False, "latest is empty"),
-        ({"latest": "garbage"}, False, "latest unparseable"),
-        ({"latest": 5}, False, "latest not a string"),
-        ({"latest": "1.2"}, False, "latest not three components"),
+        (None, None, "unreachable — NOT the same as 'newer exists'"),
+        ({}, None, "no latest key"),
+        ({"latest": None}, None, "latest is null"),
+        ({"latest": ""}, None, "latest is empty"),
+        ({"latest": "garbage"}, None, "latest unparseable"),
+        ({"latest": 5}, None, "latest not a string"),
+        ({"latest": "1.2"}, None, "latest not three components"),
     ]
     for manifest, expected, why in cases:
-        monkeypatch.setattr(update_mode, "_fetch", lambda url, m=manifest: m)
+        monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True, m=manifest: m)
         assert update_mode._is_newest(installed) is expected, why
 
 
 def test_is_newest_cannot_certify_an_unparseable_installed_version(monkeypatch) -> None:
-    monkeypatch.setattr(update_mode, "_fetch", lambda url: {"latest": "0.7.0"})
-    assert update_mode._is_newest("not-a-version") is False
+    monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: {"latest": "0.7.0"})
+    assert update_mode._is_newest("not-a-version") is None
 
 
 def test_the_probe_is_isolated_from_ambient_interpreter_state(monkeypatch) -> None:
@@ -396,3 +421,208 @@ def test_the_isolated_probe_still_resolves_the_real_install() -> None:
         "(drops PYTHONPATH but keeps the environment's own site-packages)"
     )
     assert _parse(result) is not None, f"result {result!r} must be a parseable version string"
+
+
+# ------------------------------------------------- unreachable manifest is not a pin (field-09)
+
+
+def test_an_unreachable_manifest_does_not_diagnose_a_pin(tmp_path, monkeypatch, capsys) -> None:
+    """The shipped defect: TLS verification fails, and a CURRENT install is told it is pinned.
+
+    Reproduced on python.org's macOS framework CPython, whose `openssl_cafile` points at a
+    `cert.pem` the installer never creates — `urlopen` raises CERTIFICATE_VERIFY_FAILED in 0.05s.
+    `_is_newest` correctly could not prove currency, but the caller rendered that as the pin
+    message and sent the operator to `uv tool list` hunting a pin that did not exist.
+    """
+    _upgrade_reporting_success(monkeypatch, tmp_path)
+    monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
+    monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: None)
+
+    assert update_mode.run_update() == WORKTREE_ERROR
+    out = capsys.readouterr().err
+    assert "manifest could not be" in out
+    assert "pins a version" not in out, "an unreadable manifest says nothing about how it installed"
+    assert "already up to date" not in out, "and nothing about whether it is current"
+
+
+def test_a_genuinely_pinned_install_still_gets_the_pin_message(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The guard above must not swallow the case it was built for: manifest READABLE, a newer
+    release exists, version did not move — that IS a pin (or a hold), and says so."""
+    _upgrade_reporting_success(monkeypatch, tmp_path)
+    monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
+    monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: {"latest": "99.0.0"})
+
+    assert update_mode.run_update() == WORKTREE_ERROR
+    out = capsys.readouterr().err
+    assert "pins a version" in out
+    assert "manifest could not be" not in out
+
+
+def test_doctor_reds_when_the_manifest_is_unreachable(monkeypatch) -> None:
+    """Doctor exists to surface a quietly-broken setup for $0, and this failure is invisible
+    everywhere else: unreachable and up-to-date look identical, permanently."""
+    from syncade.doctor_env import _check_update_manifest
+
+    monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: None)
+    monkeypatch.setattr("syncade.update_check._fetch", lambda url: None)
+    check = _check_update_manifest()
+    assert check.status == "red"
+    assert "cannot reach" in check.detail
+    assert "Install Certificates" in (check.fix or ""), "name the macOS remedy, not just the fault"
+
+
+def test_doctor_is_green_and_names_the_release_when_reachable(monkeypatch) -> None:
+    monkeypatch.setattr("syncade.update_check._fetch", lambda url: {"latest": "9.9.9"})
+    from syncade.doctor_env import _check_update_manifest
+
+    check = _check_update_manifest()
+    assert check.status == "ok"
+    assert "9.9.9" in check.detail
+
+
+def test_doctor_reds_on_a_reachable_but_unusable_manifest(monkeypatch) -> None:
+    """Reachable is not the same as usable — a manifest whose `latest` cannot be parsed announces
+    nothing, which is the same operator-visible outcome as being offline."""
+    monkeypatch.setattr("syncade.update_check._fetch", lambda url: {"latest": "garbage"})
+    from syncade.doctor_env import _check_update_manifest
+
+    assert _check_update_manifest().status == "red"
+
+
+def test_pip_unchanged_version_names_pip_remediation(tmp_path, monkeypatch, capsys) -> None:
+    """A pip install whose upgrade exits 0 but leaves the version unchanged must not be told
+    to check `uv tool list` or `pipx list` — those tools are irrelevant to a pip install.
+
+    Regression for a pip user newly reaching the unchanged-version branch: the message still
+    gave uv/pipx-only remediation, sending them hunting for a pin that does not exist.
+    """
+    pkg = _install_tree(tmp_path, "unrelated.txt")
+    _point_syncade_at(monkeypatch, pkg)
+    _write_dist_info_installer(pkg, "pip")
+    monkeypatch.setattr(update_mode, "_in_user_site", lambda: False)
+    monkeypatch.setattr(update_mode, "run_subprocess", lambda *a, **k: _Result(0))
+    monkeypatch.setattr(update_mode, "_resync_skills", lambda out: True)
+    monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
+    monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: {"latest": "99.0.0"})
+
+    assert update_mode.run_update(cwd=tmp_path) == WORKTREE_ERROR
+    out = capsys.readouterr().err
+    assert "nothing was installed" in out
+    assert "uv tool list" not in out, "pip users must not be sent to uv"
+    assert "pipx list" not in out, "pip users must not be sent to pipx"
+    assert "force-reinstall" in out, "should name the pip remedy"
+
+
+def test_pip_user_site_unchanged_version_includes_user_flag(tmp_path, monkeypatch, capsys) -> None:
+    """A user-site pip install whose upgrade exits 0 unchanged must include --user in the
+    force-reinstall command, so the remedy targets the same install scheme the upgrade used.
+
+    Regression: the force-reinstall command omitted --user even when the install lived in the
+    user site-packages, potentially targeting the wrong scheme on the operator's machine.
+    """
+    pkg = _install_tree(tmp_path, "unrelated.txt")
+    _point_syncade_at(monkeypatch, pkg)
+    _write_dist_info_installer(pkg, "pip")
+    monkeypatch.setattr(update_mode, "_in_user_site", lambda: True)
+    monkeypatch.setattr(update_mode, "run_subprocess", lambda *a, **k: _Result(0))
+    monkeypatch.setattr(update_mode, "_resync_skills", lambda out: True)
+    monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
+    monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: {"latest": "99.0.0"})
+
+    assert update_mode.run_update(cwd=tmp_path) == WORKTREE_ERROR
+    out = capsys.readouterr().err
+    assert "--user" in out, "user-site pip remedy must include --user"
+    assert "force-reinstall" in out
+
+
+# --------------------------------------------- one fetch, one opt-out (field-09, round-3 blocker)
+#
+# Unanimous in all four rounds of one dogfood; three producer attempts each fixed a different
+# facet and left the duplication. It is not tidiness: README publishes "one network call of its
+# own ... suppressible via `[update] check = false`", and with three independent fetch sites that
+# sentence was false in both halves.
+
+
+def _count_fetches(monkeypatch, result=None):
+    """Route every manifest fetch through a counter, with a cold cache."""
+    from syncade import update_check as uc
+
+    calls: list[str] = []
+    monkeypatch.setattr(uc, "_fetch", lambda url: calls.append(url) or result)
+    monkeypatch.setattr(uc, "_manifest_cache", uc._UNFETCHED, raising=False)
+    return calls
+
+
+def test_all_three_callers_share_one_fetch(monkeypatch) -> None:
+    """Startup notice, `--update` and `--doctor` in one process must make ONE request.
+
+    Measured before the fix: a CLI `--doctor` alone made two, because startup already fetched.
+    """
+    from syncade.doctor_env import _check_update_manifest
+    from syncade.update_check import check_for_update
+
+    calls = _count_fetches(monkeypatch, {"latest": "9.9.9"})
+    check_for_update("0.7.1", enabled=True)
+    update_mode._is_newest("0.7.1", enabled=True)
+    _check_update_manifest(enabled=True)
+
+    assert len(calls) == 1, f"expected one shared fetch across all three callers, got {len(calls)}"
+
+
+def test_the_opt_out_silences_every_path_not_just_the_startup_notice(monkeypatch) -> None:
+    """`[update] check = false` must mean NO manifest egress at all.
+
+    Before the fix it suppressed only the startup notice; `--update` and `--doctor` still went to
+    the network, so the published privacy claim was false for anyone who had opted out.
+    """
+    from syncade.doctor_env import _check_update_manifest
+    from syncade.update_check import check_for_update
+
+    calls = _count_fetches(monkeypatch, {"latest": "9.9.9"})
+    assert check_for_update("0.7.1", enabled=False) is None
+    assert update_mode._is_newest("0.7.1", enabled=False) is None
+    assert _check_update_manifest(enabled=False).status == "skip"
+
+    assert calls == [], "an operator who disabled the check must generate no requests"
+
+
+def test_a_failed_fetch_is_not_retried_within_the_process(monkeypatch) -> None:
+    """Caching the FAILURE too is deliberate: a syncade process is short-lived, and retrying
+    inside one reintroduces the multiplication this exists to prevent."""
+    calls = _count_fetches(monkeypatch, None)
+    from syncade.update_check import manifest_once
+
+    assert manifest_once(enabled=True) is None
+    assert manifest_once(enabled=True) is None
+    assert len(calls) == 1
+
+
+def test_update_honours_the_opt_out_end_to_end(tmp_path, monkeypatch, capsys) -> None:
+    """`--update` with the check disabled still upgrades — it just cannot say whether one was
+    due, and reports that instead of inventing a diagnosis."""
+    _upgrade_reporting_success(monkeypatch, tmp_path)
+    monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
+    monkeypatch.setattr("syncade.cli.update_notice._check_enabled", lambda root=None: False)
+    calls = _count_fetches(monkeypatch, {"latest": "99.0.0"})
+
+    assert update_mode.run_update() == WORKTREE_ERROR
+    assert calls == [], "--update must not fetch when the operator disabled the check"
+    assert "could not be" in capsys.readouterr().err
+
+
+def test_ci_suppresses_manifest_fetch_on_unchanged_version(tmp_path, monkeypatch, capsys) -> None:
+    """`CI=true` must gate the manifest fetch on the unchanged-version path.
+
+    `check_for_update` skips in CI, but `_is_newest` was called with only
+    `_check_enabled(cwd)` — so `CI=true --update` still fetched when the version did not
+    move. The published contract says "also skipped whenever CI is set."
+    """
+    _upgrade_reporting_success(monkeypatch, tmp_path)
+    monkeypatch.setattr(update_mode, "_installed_version", lambda: syncade.__version__)
+    calls = _count_fetches(monkeypatch, {"latest": "99.0.0"})
+    monkeypatch.setenv("CI", "true")
+
+    update_mode.run_update(cwd=tmp_path)
+    assert calls == [], "CI=true must suppress the manifest fetch on the unchanged-version path"

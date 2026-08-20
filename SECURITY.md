@@ -81,15 +81,20 @@ Mitigations that ship by default:
 
 ## Where your code goes
 
-**Syncade's own egress is one update check and the provider CLIs.** Once per session, syncade
-makes a GET to its public update manifest (`update-manifest.json` on the default branch of
-its GitHub repo) to check whether a newer version is available. No telemetry, no phone-home,
-no analytics, and no code or diffs leave in that request — it is a version-number poll only.
-`syncade --update` additionally invokes your package manager (`uv tool upgrade syncade`,
-`pipx upgrade syncade`, or instructs `pip install -U syncade`) — operator-requested and only
-when you run that flag. All other egress is the provider CLI you already
-authenticated: `claude` talks to Anthropic and `codex` talks to OpenAI, exactly as they do
-when you run them yourself. Syncade never transmits your code anywhere *it* controls.
+**Syncade's own egress is a small number of update checks and the provider CLIs.** At the
+first invocation in each terminal or harness window, syncade makes a GET to its public update
+manifest (`update-manifest.json` on the default branch of its GitHub repo) to check whether a
+newer version is available — once per session, suppressible via `[update] check = false` or `CI`.
+`syncade --update` and `syncade --doctor` check every time you run them; these are
+operator-requested and so not session-gated. **At most one manifest GET per invocation** in
+every case — a single syncade process fetches once and shares that answer, so an explicit
+command adds no request on top of the session check it already performed. No telemetry, no
+phone-home, no analytics, and no code or diffs leave in any of these requests — they are
+version-number polls only. `syncade --update` also invokes your package manager
+(`uv tool upgrade syncade`, `pipx upgrade syncade`, or `<your python> -m pip install -U syncade`)
+— only when you run that flag. All other egress is the provider CLI you already authenticated:
+`claude` talks to Anthropic and `codex` talks to OpenAI, exactly as they do when you run them
+yourself. Syncade never transmits your code anywhere *it* controls.
 
 **But it runs the shell commands you configure.** If you set `[loop] test_command` or any
 `[[checks]]`, syncade executes those commands **through the shell** in a clean worktree
