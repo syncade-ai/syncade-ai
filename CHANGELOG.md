@@ -8,6 +8,29 @@ include breaking changes.
 ## [Unreleased]
 
 
+## [0.7.1] — 2026-08-20
+
+### Fixed
+
+- **`syncade --update` no longer reports success when nothing was installed.** It decided the
+  upgrade had worked from the package manager's exit code alone — but exit 0 means *the command
+  ran*, not *the version moved*. A pinned install (`uv tool install syncade==X`) records that pin
+  in its receipt, so `uv tool upgrade` correctly does nothing, exits 0, and 0.7.0 told you it had
+  updated. You re-ran, saw the same version, and were told again the next session, indefinitely.
+  `--update` now reads the version actually installed and reports honestly: it names the new
+  version when one arrived, says **already up to date** when you were current, and exits non-zero
+  naming the likely cause when the upgrade silently did nothing.
+- **The version check is no longer confusable by anything else running in your interpreter.** It
+  reads the installed version in an isolated subprocess that writes directly to its output and
+  exits without running shutdown hooks, so a `sitecustomize` or `.pth` on the path cannot append
+  text that would be mistaken for a version.
+
+### Known issues
+
+- Unchanged from 0.7.0: `syncade --metrics` reports `0 minors, 0 nits, 0 dismissed` for runs
+  interrupted before their loop manifest was written. Blocker counts are unaffected.
+
+
 ## [0.7.0] — 2026-08-19
 
 ### Added
@@ -550,7 +573,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.1
 [0.7.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.0
 [0.6.3]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.3
 [0.6.2]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.6.2

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -359,7 +360,6 @@ def test_syncade_argv_uses_current_interpreter() -> None:
 
     Verified: this test would fail against the pre-fix code that called shutil.which.
     """
-    import sys
 
     assert update_mode._syncade_argv() == [sys.executable, "-m", "syncade"]
 

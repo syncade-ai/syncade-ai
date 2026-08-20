@@ -24,8 +24,12 @@ from pathlib import Path
 import syncade
 from syncade.exit_codes import SUCCESS, WORKTREE_ERROR
 from syncade.process import SubprocessError, run_subprocess
+from syncade.update_check import MANIFEST_URL, _fetch, _parse, _text
 
 _UPGRADE_TIMEOUT = 300.0
+#: Reading one version string out of a fresh interpreter. Generous, because a cold venv
+#: import is slower than it looks; short, because we already hold the operator's terminal.
+_VERSION_TIMEOUT = 60.0
 #: How far up from ``syncade/__init__.py`` an install marker can sit. A venv layout is
 #: ``<root>/lib/python3.x/site-packages/syncade/__init__.py`` — five parents to the root; the
 #: extra headroom costs nothing and covers layouts that nest one deeper.
@@ -149,6 +153,86 @@ def _resync_skills(out) -> bool:
     return all_ok
 
 
+def _installed_version() -> str | None:
+    """The version on disk NOW, or ``None`` when it cannot be established.
+
+    It CANNOT be ``syncade.__version__``: this process imported that before the upgrade ran, so
+    it is by definition the old number. A fresh interpreter re-reads the metadata the upgrade
+    just rewrote, and ``sys.executable`` is the tool venv's own python under both uv and pipx —
+    precisely the environment that changed.
+
+    ``None`` means "could not verify", which is deliberately NOT the same as "did not change":
+    the caller must not turn an unreadable version into a failure report.
+    """
+    try:
+        result = run_subprocess(
+            # `-I` (isolated) is load-bearing, not tidiness. Without it the probe inherits
+            # PYTHONPATH and the user site dir, so a `sitecustomize` on that path runs inside
+            # the answer and can emit stdout before OR after the version print.
+            # `-I` keeps the venv's own site-packages, so `importlib.metadata` still finds
+            # the install (verified) — but it does NOT suppress `sitecustomize.py` that lives
+            # in those site-packages. An atexit hook registered there (syncade ships such a
+            # shim for worktree imports) can append a version-shaped line AFTER the real one.
+            # `os._exit(0)` bypasses all atexit handlers: the process terminates immediately
+            # after `os.write`, so nothing can append to our stdout (reproduced: a hostile
+            # sitecustomize turned "0.7.0" into "0.7.0\n99.0.0" before this fix).
+            # `os.write` is used instead of `print` because `os._exit` skips stdio flushing;
+            # an unbuffered syscall guarantees the version byte reaches the pipe.
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import importlib.metadata as m, os; "
+                "os.write(1, (m.version('syncade') + '\\n').encode()); "
+                "os._exit(0)",
+            ],
+            timeout=_VERSION_TIMEOUT,
+        )
+    except SubprocessError:
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    # sitecustomize from PYTHONPATH (suppressed by -I) could emit noise before -c runs;
+    # the venv's own sitecustomize can still do so. Take the LAST line — atexit is now
+    # impossible (os._exit), so the last line is what os.write put there — and validate it
+    # parses as a version. Noise that accidentally ends in a dotted string still fails _parse.
+    candidate = raw.splitlines()[-1].strip()
+    return candidate if _parse(candidate) is not None else None
+
+
+def _is_newest(installed: str) -> bool:
+    """Whether ``installed`` is at or beyond the newest version the manifest advertises.
+
+    Only ever consulted on the unhappy path — the version failed to move — so the happy path
+    stays offline. Anything that leaves the question unanswered (unreachable manifest, no usable
+    ``latest``, an installed version we cannot parse) returns ``False``, i.e. "cannot prove you
+    are current", which routes to the louder message. That is the safe direction: telling someone
+    to check for a pin when they were merely current is a wasted minute; telling someone they are
+    up to date when the upgrade silently failed strands them on an old version believing it is
+    the new one.
+
+    **This compares versions itself and must never delegate to ``evaluate()``.** That function
+    answers a DIFFERENT question — "should the operator see a notice?" — and the two answers
+    only usually coincide. They part company in the documented critical-no-fix state: when
+    ``critical_below`` is above the installed version and no newer release exists, ``evaluate()``
+    returns a notice while the operator is genuinely current, so reading its ``None``-ness told a
+    fully up-to-date install that its upgrade had failed and it was probably pinned. Two dogfood
+    rounds landed on this function for the same underlying reason — a near-miss reuse of a
+    neighbouring answer — and the fix both times was to ask the actual question.
+
+    There is deliberately no special case for an unreachable manifest: ``{}`` has no usable
+    ``latest``, so the one parse rule already answers it. An explicit branch was there and a
+    mutation run proved it dead — every input reached the same verdict without it.
+    """
+    manifest = _fetch(MANIFEST_URL) or {}
+    latest = _parse(_text(manifest.get("latest")))
+    current = _parse(installed)
+    return latest is not None and current is not None and current >= latest
+
+
 def run_update(*, cwd: Path | None = None, out=None) -> int:
     """Upgrade syncade in place, then exit asking to be re-run."""
     out = out or sys.stderr
@@ -213,9 +297,38 @@ def run_update(*, cwd: Path | None = None, out=None) -> int:
         )
         return WORKTREE_ERROR
 
+    # THE POST-CONDITION. Exit 0 from the package manager means "the command ran", NOT "the
+    # version moved", and the two come apart routinely: `uv tool install syncade==0.6.3` records
+    # `specifier = "==0.6.3"` in its receipt, so `uv tool upgrade` honours the pin, prints
+    # "Nothing to upgrade" and exits 0. Held packages, resolver conflicts and a manifest that is
+    # ahead of PyPI all land in the same place. Without this check syncade says "updated. Re-run
+    # your command", the operator re-runs, gets the same version, and is told again next session
+    # — forever. Measured live on the 0.7.0 release, which is why item 5 of that release existed.
+    now = _installed_version()
+    if now is not None and now == syncade.__version__:
+        # The version did not move. There are TWO reasons for that and they need opposite
+        # answers, so ask the manifest which one this is rather than guessing. Guessing was the
+        # first version of this guard and it told an operator who was simply already current
+        # that their install was pinned and broken — a fresh false claim inside the fix for a
+        # false claim, caught by testing the path instead of reasoning about it.
+        if _is_newest(now):
+            skills_ok = _resync_skills(out)
+            print(f"[syncade] already up to date ({now}).", file=out)
+            return SUCCESS if skills_ok else WORKTREE_ERROR
+        print(
+            f"[syncade] the upgrade command succeeded but syncade is still "
+            f"{syncade.__version__} — nothing was installed.\n"
+            f"          Most often the install pins a version: check `uv tool list` / "
+            f"`pipx list`, then\n"
+            f"          reinstall unpinned (e.g. `uv tool install --force syncade`).",
+            file=out,
+        )
+        return WORKTREE_ERROR
+
     skills_ok = _resync_skills(out)
+    moved = f" to {now}" if now else ""
     print(
-        "[syncade] updated. Re-run your command to use the new version — this process is\n"
+        f"[syncade] updated{moved}. Re-run your command to use the new version — this process is\n"
         "          still running the old one and cannot switch to it.",
         file=out,
     )
