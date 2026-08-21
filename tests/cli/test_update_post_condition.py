@@ -15,7 +15,6 @@ that finally held is to validate a value as the thing it claims to be, at the po
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -23,7 +22,6 @@ import pytest
 import syncade
 from syncade.cli import update_mode
 from syncade.exit_codes import SUCCESS, WORKTREE_ERROR
-from syncade.process import SubprocessError, SubprocessResult
 from tests.cli.test_update_mode import (
     _install_tree,
     _point_syncade_at,
@@ -88,62 +86,6 @@ def test_an_unverifiable_version_is_not_reported_as_failure(tmp_path, monkeypatc
     assert "updated." in out
     assert "nothing was installed" not in out
     assert "updated to" not in out, "no version may be named when none was established"
-
-
-def test_the_version_probe_reads_a_fresh_interpreter_not_this_one(monkeypatch) -> None:
-    """It must not answer from `syncade.__version__`, which this process imported BEFORE the
-    upgrade and is therefore the old number by construction."""
-    seen: list[list[str]] = []
-
-    def spy(cmd, **kw):
-        seen.append(cmd)
-        return SubprocessResult(returncode=0, stdout="1.2.3\n", stderr="", duration_seconds=0.0)
-
-    monkeypatch.setattr(update_mode, "run_subprocess", spy)
-    assert update_mode._installed_version() == "1.2.3"
-    assert seen and seen[0][0] == sys.executable, "must re-invoke the interpreter, not import"
-    assert "importlib.metadata" in seen[0][-1]
-
-
-def test_an_unreadable_probe_degrades_to_none(monkeypatch) -> None:
-    for outcome in (
-        lambda *a, **k: (_ for _ in ()).throw(SubprocessError("no python")),
-        lambda *a, **k: SubprocessResult(returncode=1, stdout="", stderr="x", duration_seconds=0.0),
-        lambda *a, **k: SubprocessResult(
-            returncode=0, stdout="  \n", stderr="", duration_seconds=0.0
-        ),
-    ):
-        monkeypatch.setattr(update_mode, "run_subprocess", outcome)
-        assert update_mode._installed_version() is None
-
-
-def test_startup_noise_before_version_line_is_stripped(monkeypatch) -> None:
-    """sitecustomize imported from PYTHONPATH can emit stdout before the version print.
-
-    The old code returned the full stdout verbatim, so "noise\\n0.7.0" != "0.7.0" and
-    run_update treated the install as having moved — a false success on an unchanged version.
-    """
-    monkeypatch.setattr(
-        update_mode,
-        "run_subprocess",
-        lambda *a, **k: SubprocessResult(
-            returncode=0, stdout="startup noise\n1.2.3\n", stderr="", duration_seconds=0.0
-        ),
-    )
-    assert update_mode._installed_version() == "1.2.3"
-
-
-def test_non_version_stdout_degrades_to_none(monkeypatch) -> None:
-    """stdout that doesn't end with a parseable version string means 'could not verify'."""
-    for stdout in ("not a version\n", "noise only\n", "1.2\n", "1.2.3.4\n"):
-        monkeypatch.setattr(
-            update_mode,
-            "run_subprocess",
-            lambda *a, stdout=stdout, **k: SubprocessResult(
-                returncode=0, stdout=stdout, stderr="", duration_seconds=0.0
-            ),
-        )
-        assert update_mode._installed_version() is None, f"should be None for {stdout!r}"
 
 
 def test_an_already_current_install_is_not_reported_as_a_failed_upgrade(
@@ -356,71 +298,6 @@ def test_is_newest_answers_the_version_question_across_every_manifest_shape(monk
 def test_is_newest_cannot_certify_an_unparseable_installed_version(monkeypatch) -> None:
     monkeypatch.setattr(update_mode, "manifest_once", lambda *, enabled=True: {"latest": "0.7.0"})
     assert update_mode._is_newest("not-a-version") is None
-
-
-def test_the_probe_is_isolated_from_ambient_interpreter_state(monkeypatch) -> None:
-    """`-I` is load-bearing: without it the probe inherits PYTHONPATH and the user site dir.
-
-    A `sitecustomize` on that path runs INSIDE the answer — an atexit hook printing a version
-    number becomes the last stdout line, so a no-op upgrade reads as a move. Reproduced live: a
-    hostile PYTHONPATH turned the probe's `"0.7.0"` into `"0.7.0\\n99.0.0"`. Syncade ships such a
-    shim itself for worktree imports, so this is not purely adversarial.
-
-    `-I` suppresses PYTHONPATH but NOT the venv's own site-packages, where a `sitecustomize.py`
-    can still register atexit hooks. The probe must call `os._exit(0)` to bypass atexit entirely —
-    the only guarantee against a venv-local hook appending to stdout after the version line.
-    `os.write` is asserted alongside it: `os._exit` skips stdio flushing, so `print()` would lose
-    the version; the unbuffered syscall guarantees delivery before the process exits.
-
-    Pinned as flag assertions because the behavioural twin below cannot run the failure case
-    without installing a real adversarial sitecustomize.
-    """
-    seen: list[list[str]] = []
-    monkeypatch.setattr(
-        update_mode,
-        "run_subprocess",
-        lambda cmd, **kw: (
-            seen.append(cmd)
-            or SubprocessResult(returncode=0, stdout="1.2.3\n", stderr="", duration_seconds=0.0)
-        ),
-    )
-    update_mode._installed_version()
-    assert seen and "-I" in seen[0], (
-        "the version probe must run isolated; without -I a sitecustomize on PYTHONPATH can "
-        "append a version number to its stdout and fake a successful upgrade"
-    )
-    assert seen[0].index("-I") < seen[0].index("-c"), "-I must precede -c to take effect"
-    c_arg = seen[0][seen[0].index("-c") + 1]
-    assert "os._exit(0)" in c_arg, (
-        "the probe must call os._exit(0) to bypass atexit handlers; a venv-local "
-        "sitecustomize can register atexit hooks that append a fake version line after the real one"
-    )
-    assert "os.write" in c_arg, (
-        "the probe must use os.write (unbuffered) not print; os._exit skips stdio flushing "
-        "so print output would be lost before reaching the pipe"
-    )
-
-
-def test_the_isolated_probe_still_resolves_the_real_install() -> None:
-    """The behavioural twin: `-I` must not break what the probe is FOR.
-
-    It drops PYTHONPATH and the user site dir but keeps the environment's own site-packages, so
-    `importlib.metadata` still finds the package. Runs the real subprocess — a flag assertion
-    alone would happily pin an isolation level that returns None for everyone.
-
-    We assert the result is a parseable, non-None version, NOT that it equals
-    `syncade.__version__`. In a dev worktree the source version and the installed distribution
-    version legitimately differ (e.g. 0.7.0 in source, 0.1.0 in site-packages); asserting
-    equality would make this test prove the ambient installation, not the probe's behaviour.
-    """
-    from syncade.update_check import _parse
-
-    result = update_mode._installed_version()
-    assert result is not None, (
-        "the probe must find the installed package under -I "
-        "(drops PYTHONPATH but keeps the environment's own site-packages)"
-    )
-    assert _parse(result) is not None, f"result {result!r} must be a parseable version string"
 
 
 # ------------------------------------------------- unreachable manifest is not a pin (field-09)
@@ -654,3 +531,6 @@ def test_doctor_skips_the_check_under_ci(monkeypatch) -> None:
     check = _check_update_manifest(enabled=True)
     assert check.status == "skip"
     assert "CI" in check.detail
+
+
+# ------------------------------------- the probe must see a user-site install (pr-h-field-10)

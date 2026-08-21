@@ -8,6 +8,37 @@ include breaking changes.
 ## [Unreleased]
 
 
+## [0.7.5] — 2026-08-20
+
+Everything in 0.7.4 below, which never reached the public repository or PyPI — see the note under
+it. 0.7.5 adds only a test-harness compatibility fix; runtime behaviour is unchanged.
+
+### Fixed
+
+- The suite-wide worktree isolation fixture now works at the declared Pydantic 2.0 dependency
+  floor. It previously changed Pydantic's compiled field metadata and relied on
+  `model_rebuild(force=True)`, which does not refresh that default on Pydantic 2.0. The config now
+  resolves the same `/tmp/syncade` production default through a normal default factory, giving
+  tests a version-independent seam without changing user-visible behaviour.
+
+
+## [0.7.4] — 2026-08-20
+
+> **Release rehearsal only; never published.** The oldest-supported-dependency CI job failed
+> before the public push, so there is no `0.7.4` on PyPI and no public GitHub Release or tag. The
+> failed rehearsal record is preserved rather than rewritten. Everything described here shipped
+> in **0.7.5**; install that.
+
+### Fixed
+
+- **`syncade --update` now verifies the version from the exact install tree it just upgraded.**
+  The isolated interpreter used by 0.7.3 cannot see `pip install --user` packages; relaxing that
+  isolation makes unrelated CWD or user-site metadata win instead. The post-condition now reads
+  `Version` directly from the single `syncade-*.dist-info/METADATA` beside the package supplying
+  the running code, so `PYTHONPATH`, `PYTHONUSERBASE`, `sitecustomize`, and shutdown hooks are no
+  longer resolution channels.
+
+
 ## [0.7.3] — 2026-08-20
 
 Everything in 0.7.2 below, which never reached PyPI — see the note under it. 0.7.3 adds only a
@@ -632,7 +663,9 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.5
+[0.7.4]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.4
 [0.7.3]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.3
 [0.7.2]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.2
 [0.7.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.1

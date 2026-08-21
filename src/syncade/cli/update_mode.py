@@ -21,6 +21,7 @@ import site
 import subprocess
 import sys
 from dataclasses import dataclass
+from importlib.metadata import Distribution
 from pathlib import Path
 
 import syncade
@@ -29,9 +30,6 @@ from syncade.process import SubprocessError, run_subprocess
 from syncade.update_check import _parse, _text, manifest_once
 
 _UPGRADE_TIMEOUT = 300.0
-#: Reading one version string out of a fresh interpreter. Generous, because a cold venv
-#: import is slower than it looks; short, because we already hold the operator's terminal.
-_VERSION_TIMEOUT = 60.0
 #: How far up from ``syncade/__init__.py`` an install marker can sit. A venv layout is
 #: ``<root>/lib/python3.x/site-packages/syncade/__init__.py`` — five parents to the root; the
 #: extra headroom costs nothing and covers layouts that nest one deeper.
@@ -59,6 +57,21 @@ def _in_user_site() -> bool:
     return user_site in Path(syncade.__file__).resolve().parents
 
 
+def _scoped_dist_infos() -> list[Path]:
+    """The dist-info directories beside the package that supplied this process's code."""
+    try:
+        site_packages = Path(syncade.__file__).resolve().parent.parent
+        return sorted(
+            entry
+            for entry in site_packages.iterdir()
+            if entry.name.casefold().startswith("syncade-")
+            and entry.name.casefold().endswith(".dist-info")
+            and entry.is_dir()
+        )
+    except (OSError, RuntimeError, TypeError):
+        return []
+
+
 def _read_scoped_installer() -> str:
     """Read INSTALLER from the dist-info directory that BELONGS to this syncade install.
 
@@ -71,25 +84,42 @@ def _read_scoped_installer() -> str:
     is empty string — the same as not found.  First-match would misclassify in that state,
     which contradicts the PROVE-or-refuse posture the rest of this module maintains.
     """
-    site_packages = Path(syncade.__file__).resolve().parent.parent
     found: list[str] = []
-    try:
-        for entry in site_packages.iterdir():
-            if (
-                entry.name.startswith("syncade-")
-                and entry.name.endswith(".dist-info")
-                and entry.is_dir()
-            ):
-                try:
-                    found.append((entry / "INSTALLER").read_text(encoding="utf-8").strip())
-                except OSError:
-                    pass  # No INSTALLER file — this dist-info cannot prove anything.
-    except OSError:
-        pass
+    for entry in _scoped_dist_infos():
+        try:
+            found.append((entry / "INSTALLER").read_text(encoding="utf-8").strip())
+        except OSError:
+            pass  # No INSTALLER file — this dist-info cannot prove anything.
     if not found:
         return ""
     # Contradictory entries in a broken packaging state are not proof of anything.
     return found[0] if len(set(found)) == 1 else ""
+
+
+def _read_scoped_version() -> str | None:
+    """Read ``Version`` from this syncade install's one adjacent dist-info.
+
+    The package directory is already the authoritative identity: it supplied the code running
+    this function. Reading its sibling metadata after the package manager returns sees the new
+    on-disk version without resolving the name ``syncade`` through ``sys.path`` again. A missing,
+    malformed, or duplicate dist-info is ambiguous and therefore unverifiable, never first-match.
+    """
+    candidates = _scoped_dist_infos()
+    if len(candidates) != 1:
+        return None
+    try:
+        if not (candidates[0] / "METADATA").is_file():
+            return None
+        metadata = Distribution.at(candidates[0]).metadata
+        names = metadata.get_all("Name") or []
+        versions = metadata.get_all("Version") or []
+    except Exception:  # noqa: BLE001 — broken install metadata degrades to "unverifiable".
+        return None
+    if len(names) != 1 or names[0].strip().casefold() != "syncade":
+        return None
+    if len(versions) != 1:
+        return None
+    return versions[0].strip()
 
 
 def _pip_or_unknown(where: Path | None) -> InstallMethod:
@@ -239,49 +269,14 @@ def _installed_version() -> str | None:
     """The version on disk NOW, or ``None`` when it cannot be established.
 
     It CANNOT be ``syncade.__version__``: this process imported that before the upgrade ran, so
-    it is by definition the old number. A fresh interpreter re-reads the metadata the upgrade
-    just rewrote, and ``sys.executable`` is the tool venv's own python under both uv and pipx —
-    precisely the environment that changed.
+    it is by definition the old number. The value is read from the dist-info tree that belongs
+    to this install, so the answer follows the package on disk instead of any ambient metadata
+    discovery or subprocess import state.
 
     ``None`` means "could not verify", which is deliberately NOT the same as "did not change":
     the caller must not turn an unreadable version into a failure report.
     """
-    try:
-        result = run_subprocess(
-            # `-I` (isolated) is load-bearing, not tidiness. Without it the probe inherits
-            # PYTHONPATH and the user site dir, so a `sitecustomize` on that path runs inside
-            # the answer and can emit stdout before OR after the version print.
-            # `-I` keeps the venv's own site-packages, so `importlib.metadata` still finds
-            # the install (verified) — but it does NOT suppress `sitecustomize.py` that lives
-            # in those site-packages. An atexit hook registered there (syncade ships such a
-            # shim for worktree imports) can append a version-shaped line AFTER the real one.
-            # `os._exit(0)` bypasses all atexit handlers: the process terminates immediately
-            # after `os.write`, so nothing can append to our stdout (reproduced: a hostile
-            # sitecustomize turned "0.7.0" into "0.7.0\n99.0.0" before this fix).
-            # `os.write` is used instead of `print` because `os._exit` skips stdio flushing;
-            # an unbuffered syscall guarantees the version byte reaches the pipe.
-            [
-                sys.executable,
-                "-I",
-                "-c",
-                "import importlib.metadata as m, os; "
-                "os.write(1, (m.version('syncade') + '\\n').encode()); "
-                "os._exit(0)",
-            ],
-            timeout=_VERSION_TIMEOUT,
-        )
-    except SubprocessError:
-        return None
-    if result.returncode != 0:
-        return None
-    raw = result.stdout.strip()
-    if not raw:
-        return None
-    # sitecustomize from PYTHONPATH (suppressed by -I) could emit noise before -c runs;
-    # the venv's own sitecustomize can still do so. Take the LAST line — atexit is now
-    # impossible (os._exit), so the last line is what os.write put there — and validate it
-    # parses as a version. Noise that accidentally ends in a dotted string still fails _parse.
-    candidate = raw.splitlines()[-1].strip()
+    candidate = _read_scoped_version()
     return candidate if _parse(candidate) is not None else None
 
 

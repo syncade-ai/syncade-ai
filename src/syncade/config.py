@@ -327,6 +327,11 @@ def _default_reviewers() -> list[ReviewerConfig]:
     #                  model="claude-opus-4-6", adversarial_lens=True)
 
 
+def _default_worktree_base() -> Path:
+    """Resolve the worktree default when a config instance is created."""
+    return DEFAULT_WORKTREE_BASE
+
+
 class SyncadeConfig(BaseModel):
     """Top-level ``.syncade/config.toml`` schema.
 
@@ -363,7 +368,7 @@ class SyncadeConfig(BaseModel):
     # ``[worktree]`` block — Q5); default reproduces worktree.DEFAULT_WORKTREE_BASE.
     # ``--worktree-base`` overrides per-invocation; threaded into the review run and doctor preview.
     worktree_base: Path = Field(
-        default=DEFAULT_WORKTREE_BASE,
+        default_factory=_default_worktree_base,
         description=(
             "Base directory under which each run's per-reviewer/producer/test git worktrees are "
             f"created (default ``{DEFAULT_WORKTREE_BASE}``). Overridable per-run with "

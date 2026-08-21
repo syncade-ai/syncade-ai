@@ -79,7 +79,7 @@ def _isolate_global_config(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def _isolated_worktree_base(request, tmp_path):
+def _isolated_worktree_base(request, tmp_path, monkeypatch):
     """No test may touch the SHARED worktree base — PR-h-12 item 1b.
 
     Moved here from ``tests/orchestrator/conftest.py``, where it was package-scoped. Its own
@@ -89,12 +89,12 @@ def _isolated_worktree_base(request, tmp_path):
     worktrees leaked — so the brief's original 4.4 GB attribution was wrong, exactly as it later
     corrected itself to say. The gap was real; the magnitude was not.
 
-    ``run_review`` falls back to ``config.worktree_base`` (PR-v2-9), so the PYDANTIC FIELD DEFAULT
-    is what must move: a bare ``SyncadeConfig()`` has to inherit the per-test path too.
-    ``model_rebuild(force=True)`` recompiles the core schema after the patch, and both are
-    restored at teardown so no schema state bleeds between tests.
+    ``run_review`` falls back to ``config.worktree_base`` (PR-v2-9), so the config default is what
+    must move: a bare ``SyncadeConfig()`` has to inherit the per-test path too. The field uses a
+    default factory so patching its module-level source works across the supported Pydantic range
+    without mutating Pydantic's compiled schema.
     """
-    from syncade.config import SyncadeConfig
+    from syncade import config as config_module
 
     # A DRIFT TEST must be able to see the real default. Two of them assert exactly that
     # (`SyncadeConfig().worktree_base == DEFAULT_WORKTREE_BASE`, "byte-identical"), and this
@@ -105,13 +105,12 @@ def _isolated_worktree_base(request, tmp_path):
         yield
         return
 
-    field = SyncadeConfig.model_fields["worktree_base"]
-    old_default = field.default
-    field.default = tmp_path / "syncade-worktrees"
-    SyncadeConfig.model_rebuild(force=True)
+    monkeypatch.setattr(
+        config_module,
+        "DEFAULT_WORKTREE_BASE",
+        tmp_path / "syncade-worktrees",
+    )
     yield
-    field.default = old_default
-    SyncadeConfig.model_rebuild(force=True)
 
 
 @pytest.fixture(autouse=True)

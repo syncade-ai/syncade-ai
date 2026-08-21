@@ -23,8 +23,8 @@ _ROOT = Path(__file__).resolve().parent
 
 
 def test_a_bare_config_never_resolves_to_the_shared_base(tmp_path: Path) -> None:
-    """The fixture patches the PYDANTIC FIELD DEFAULT, because `run_review` falls back to
-    `config.worktree_base` (PR-v2-9). Patching only an explicit argument would leave
+    """The fixture patches the default factory's source, because `run_review` falls back to
+    `config.worktree_base` (PR-v2-9). Patching only an explicit argument would leave a bare
     `SyncadeConfig()` pointing at the shared base — which is how six packages kept reaching it.
     """
     assert SyncadeConfig().worktree_base != DEFAULT_WORKTREE_BASE
