@@ -8,6 +8,18 @@ include breaking changes.
 ## [Unreleased]
 
 
+## [0.7.6] — 2026-08-21
+
+### Fixed
+
+- **`syncade --metrics` now uses one authority for every finding count.** Blockers, minors, nits,
+  and dismissed findings all sum the same validated per-round vector, including runs interrupted
+  before their loop manifest was written. Complete artifacts win, complete manifest vectors are
+  the fallback, and rounds with neither are named as missing evidence while the top-line totals
+  are explicitly labelled lower bounds. An older syncade also refuses a metrics database written
+  by a newer version before executing schema DDL, so it cannot alter future-schema data.
+
+
 ## [0.7.5] — 2026-08-20
 
 Everything in 0.7.4 below, which never reached the public repository or PyPI — see the note under
@@ -663,7 +675,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.6
 [0.7.5]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.5
 [0.7.3]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.3
 [0.7.2]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.2

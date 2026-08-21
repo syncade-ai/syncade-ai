@@ -75,12 +75,16 @@ class RoundRow:
     run_id: str
     round: int
     blockers: int = 0
-    #: Where ``blockers`` came from, never guessed:
+    minors: int = 0
+    nits: int = 0
+    dismissed: int = 0
+    #: Where the complete finding-count vector came from, never guessed:
     #: ``artifacts`` — counted from ``synthesizer.parsed.json`` (the only source that also
     #: supports consensus, since provenance lives there);
-    #: ``manifest`` — the round ran and a manifest recorded a count, but the artifact is gone;
-    #: ``unknown`` — the round ran and nothing credible records what it found.
-    blockers_source: str = "unknown"
+    #: ``manifest`` — the round ran and a manifest recorded all four counts, but the artifact
+    #: is gone;
+    #: ``unknown`` — the round ran and nothing credible records the complete vector.
+    counts_source: str = "unknown"
     #: Distinct reviewers in this round. ``0`` means the panel was never recorded — reported as
     #: unknown, never inferred from the configured roster.
     panel_size: int = 0
@@ -88,10 +92,10 @@ class RoundRow:
     #: ``recorded`` — a manifest had a ``reviewers`` key (even an empty list, e.g. a
     #: no-dispatch round like ``no_changes_to_review``);
     #: ``unknown`` — no manifest had a ``reviewers`` key, so the composition is unknown.
-    #: Panel provenance is independent from blocker-count provenance: a round can have
-    #: ``blockers_source='manifest'`` while ``panel_source='unknown'`` (manifest has a count
-    #: but no reviewer list), or ``panel_source='recorded'`` with ``panel_size=0`` (explicitly
-    #: no reviewers, a deliberate no-dispatch round).
+    #: Panel provenance is independent from finding-count provenance: a round can have
+    #: ``counts_source='manifest'`` while ``panel_source='unknown'`` (manifest has counts but
+    #: no reviewer list), or ``panel_source='recorded'`` with ``panel_size=0`` (explicitly no
+    #: reviewers, a deliberate no-dispatch round).
     panel_source: str = "unknown"
 
 
@@ -192,7 +196,10 @@ CREATE TABLE IF NOT EXISTS rounds (
     run_id TEXT NOT NULL,
     round INTEGER NOT NULL,
     blockers INTEGER,
-    blockers_source TEXT,
+    minors INTEGER,
+    nits INTEGER,
+    dismissed INTEGER,
+    counts_source TEXT,
     panel_size INTEGER,
     panel_source TEXT,
     PRIMARY KEY (run_id, round)
@@ -258,7 +265,7 @@ CREATE TABLE IF NOT EXISTS actor_stats (
 # OLDER on-disk schema is dropped + recreated (backfill repopulates from the
 # corpus) rather than ALTER-migrated. A NEWER on-disk schema is left untouched —
 # it may hold data this binary can't rebuild (e.g. PR-4's live token/cost).
-_SCHEMA_VERSION = 15  # PR-h-12: add panel_source to rounds; drop stale tables unconditionally
+_SCHEMA_VERSION = 16  # PR-h-12.5: one source for the complete per-round finding-count vector
 
 
 def open_db(path: Path | str) -> sqlite3.Connection:
@@ -267,15 +274,27 @@ def open_db(path: Path | str) -> sqlite3.Connection:
     Creates parent dirs + tables if absent; if the on-disk schema version is
     stale (an older syncade wrote it), the derived tables are dropped and
     recreated so a later ``upsert`` never hits a missing column.
+
+    Raises ``sqlite3.DatabaseError`` when the on-disk schema version is newer
+    than this binary's ``_SCHEMA_VERSION``.  A newer schema may hold columns or
+    data this binary cannot rebuild; proceeding would corrupt it.  Delete
+    ``metrics.db`` to force a rebuild, or upgrade syncade.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     try:
-        if conn.execute("PRAGMA user_version").fetchone()[0] < _SCHEMA_VERSION:
-            # Older schema only: rebuild. A newer on-disk version is left as-is so an
-            # older binary never destroys data it cannot rebuild (see _SCHEMA_VERSION).
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version > _SCHEMA_VERSION:
+            raise sqlite3.DatabaseError(
+                f"metrics.db has schema version {version}, but this binary knows "
+                f"version {_SCHEMA_VERSION}. Delete metrics.db to rebuild, or "
+                "upgrade syncade."
+            )
+        if version < _SCHEMA_VERSION:
+            # Older schema: rebuild. The DB is a derived, rebuildable view, so
+            # drop-and-recreate is correct; ALTER TABLE is never needed.
             conn.executescript(
                 "DROP TABLE IF EXISTS runs; "
                 "DROP TABLE IF EXISTS reviewer_stats; "
@@ -285,10 +304,9 @@ def open_db(path: Path | str) -> sqlite3.Connection:
                 "DROP TABLE IF EXISTS finding_provenance; "
             )
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")  # int constant, not user input
-        # Unconditional: these tables are explicitly obsolete for ALL schema versions.
-        # A DB at the current version can still carry them if it was created by an intermediate
-        # binary that added them before the rebuild path ran. DROP TABLE IF EXISTS is a no-op
-        # when the tables are absent, so this is safe for any schema version including newer ones.
+        # Unconditional for current/older schemas: these tables are obsolete. A DB at
+        # the current version can still carry them if it was created by an intermediate
+        # binary that added them before the rebuild path ran.
         conn.execute("DROP TABLE IF EXISTS reached_rounds")
         conn.execute("DROP TABLE IF EXISTS round_panels")
         conn.execute(_RUNS_DDL)

@@ -16,11 +16,13 @@ import pytest
 from syncade.metrics.schema import (
     ActorStatRow,
     ReviewerStatRow,
+    RoundRow,
     RunRow,
     fetch_runs,
     open_db,
     upsert_actor_stat,
     upsert_reviewer_stat,
+    upsert_round,
     upsert_run,
 )
 
@@ -37,6 +39,31 @@ def test_open_db_reserves_nullable_token_cost_columns(tmp_path):
     conn = open_db(tmp_path / "metrics.db")
     cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
     assert {"tokens", "cost_usd"} <= cols
+
+
+def test_round_count_vector_schema_roundtrips(tmp_path):
+    """The round authority stores one four-count vector under one source."""
+    conn = open_db(tmp_path / "metrics.db")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(rounds)")}
+    assert {"blockers", "minors", "nits", "dismissed", "counts_source"} <= columns
+    assert "blockers_source" not in columns
+
+    upsert_round(
+        conn,
+        RoundRow(
+            run_id="R1",
+            round=0,
+            blockers=1,
+            minors=2,
+            nits=3,
+            dismissed=4,
+            counts_source="artifacts",
+        ),
+    )
+    row = conn.execute(
+        "SELECT blockers, minors, nits, dismissed, counts_source FROM rounds"
+    ).fetchone()
+    assert tuple(row) == (1, 2, 3, 4, "artifacts")
 
 
 def test_open_db_creates_actor_usage_table(tmp_path):
@@ -72,6 +99,32 @@ def test_open_db_rebuilds_when_schema_is_stale(tmp_path):
     rows = fetch_runs(conn)
     assert len(rows) == 1
     assert rows[0].blockers == 3
+
+
+def test_open_db_rebuilds_v15_round_authority(tmp_path):
+    """The immediately preceding derived schema is dropped, not ALTER-migrated."""
+    from syncade.metrics.schema import _SCHEMA_VERSION
+
+    db = tmp_path / "m.db"
+    stale = sqlite3.connect(str(db))
+    stale.executescript(
+        "CREATE TABLE rounds ("
+        "run_id TEXT NOT NULL, round INTEGER NOT NULL, blockers INTEGER, "
+        "blockers_source TEXT, panel_size INTEGER, panel_source TEXT, "
+        "PRIMARY KEY (run_id, round)); "
+        "INSERT INTO rounds VALUES ('STALE', 0, 9, 'manifest', 2, 'recorded'); "
+        "PRAGMA user_version = 15;"
+    )
+    stale.commit()
+    stale.close()
+
+    conn = open_db(db)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION == 16
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(rounds)")}
+    assert {"minors", "nits", "dismissed", "counts_source"} <= columns
+    assert "blockers_source" not in columns
+    assert conn.execute("SELECT COUNT(*) FROM rounds").fetchone()[0] == 0
 
 
 def test_open_db_drops_obsolete_reached_rounds_and_round_panels_on_rebuild(tmp_path):
@@ -144,11 +197,10 @@ def test_open_db_drops_obsolete_tables_even_at_current_schema_version(tmp_path):
         check.close()
 
 
-def test_open_db_does_not_wipe_a_newer_schema_db(tmp_path):
-    # A NEWER syncade may hold data not rebuildable from artifacts (e.g. PR-4's
-    # live token/cost). An older binary opening that db must NOT drop its tables.
-    import sqlite3
-
+def test_open_db_refuses_a_newer_schema_db(tmp_path):
+    # A NEWER syncade may hold data not rebuildable from artifacts (e.g. future
+    # columns).  An older binary must refuse rather than return a writable
+    # connection that backfill() can use to delete rows it cannot rebuild.
     db = tmp_path / "m.db"
     newer = sqlite3.connect(str(db))
     newer.executescript(
@@ -158,10 +210,43 @@ def test_open_db_does_not_wipe_a_newer_schema_db(tmp_path):
     newer.commit()
     newer.close()
 
-    open_db(db)  # this (older) binary's version is < 999
+    with pytest.raises(sqlite3.DatabaseError, match="schema version 999"):
+        open_db(db)
+
+    # The refusal must happen before any DDL: future data must survive intact.
     check = sqlite3.connect(str(db))
     try:
-        assert check.execute("SELECT run_id FROM runs WHERE run_id = 'KEEP'").fetchone() is not None
+        row = check.execute("SELECT run_id FROM runs WHERE run_id = 'KEEP'").fetchone()
+        assert row is not None, "open_db must not mutate a newer-schema DB before refusing"
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 999, (
+            "open_db must not alter user_version of a newer-schema DB"
+        )
+    finally:
+        check.close()
+
+
+def test_open_db_refuses_newer_schema_before_unconditional_ddl(tmp_path):
+    # The unconditional DROP TABLE IF EXISTS reached_rounds / round_panels must
+    # not run against a newer schema — those names may be legitimate future tables.
+    db = tmp_path / "m.db"
+    future = sqlite3.connect(str(db))
+    future.executescript(
+        "CREATE TABLE reached_rounds (x INTEGER); "
+        "INSERT INTO reached_rounds VALUES (42); "
+        "PRAGMA user_version = 999;"
+    )
+    future.commit()
+    future.close()
+
+    with pytest.raises(sqlite3.DatabaseError):
+        open_db(db)
+
+    check = sqlite3.connect(str(db))
+    try:
+        tables = {r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "reached_rounds" in tables, "future table must survive a refused open"
+        count = check.execute("SELECT COUNT(*) FROM reached_rounds").fetchone()[0]
+        assert count == 1, "future table rows must survive a refused open"
     finally:
         check.close()
 

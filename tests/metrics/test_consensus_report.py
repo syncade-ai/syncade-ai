@@ -20,6 +20,15 @@ from syncade.metrics.findings import blocker_curve, consensus_stats
 from syncade.metrics.schema import open_db
 
 
+def _synth_counts(blockers=0, minors=0, nits=0, dismissed=0) -> dict[str, int]:
+    return {
+        "active_blocker_count": blockers,
+        "active_minor_count": minors,
+        "active_nit_count": nits,
+        "dismissed_count": dismissed,
+    }
+
+
 def _run(runs: Path, run_id: str, reviewers: list[str], rounds: list[list[dict]]) -> None:
     d = runs / run_id
     d.mkdir(parents=True, exist_ok=True)
@@ -39,13 +48,24 @@ def _run(runs: Path, run_id: str, reviewers: list[str], rounds: list[list[dict]]
                             {"name": n, "provider": "openai", "model": "m", "finding_count": 1}
                             for n in reviewers
                         ],
-                        "synthesizer": {
-                            "active_blocker_count": sum(
+                        "synthesizer": _synth_counts(
+                            sum(
                                 1
                                 for f in findings
                                 if f.get("severity") == "blocker" and not f.get("dismissed")
-                            )
-                        },
+                            ),
+                            sum(
+                                1
+                                for f in findings
+                                if f.get("severity") == "minor" and not f.get("dismissed")
+                            ),
+                            sum(
+                                1
+                                for f in findings
+                                if f.get("severity") == "nit" and not f.get("dismissed")
+                            ),
+                            sum(1 for f in findings if f.get("dismissed") is True),
+                        ),
                     }
                     for findings in rounds
                 ],
@@ -183,8 +203,8 @@ def test_interrupted_run_counts_in_blocker_curve_denominator(tmp_path: Path) -> 
     The old denominator query used ``runs.rounds_executed``, so an interrupted run that reached
     round 0 (with a synthesizer artifact present) contributed its blocker to the numerator but
     zero to the denominator, yielding the impossible output "1 blockers over 0 rounds".
-    The fix: derive the denominator from ``reached_rounds``, populated from the synthesizer
-    artifact's presence, independent of loop-manifest state.
+    The fix: derive the denominator from ``rounds``, populated from the synthesizer artifact's
+    presence, independent of loop-manifest state.
     """
     runs = tmp_path / ".syncade" / "runs"
     # Interrupted run: has a synth artifact but no loop-manifest
@@ -254,8 +274,8 @@ def test_manifest_proven_round_with_missing_dir_preserves_blocker_count(tmp_path
                 "run_id": run_id,
                 "final_exit_code": 30,
                 "rounds": [
-                    {"synthesizer": {"active_blocker_count": 0}},
-                    {"synthesizer": {"active_blocker_count": 2}},
+                    {"synthesizer": _synth_counts()},
+                    {"synthesizer": _synth_counts(2)},
                 ],
             }
         )
@@ -289,7 +309,7 @@ def test_zero_blocker_round_with_missing_synth_artifact_counts_in_curve(tmp_path
             {
                 "run_id": "2026-01-02T00-00-00",
                 "final_exit_code": 0,
-                "rounds": [{"synthesizer": {"active_blocker_count": 0}}],
+                "rounds": [{"synthesizer": _synth_counts()}],
             }
         )
     )
@@ -336,7 +356,7 @@ def test_single_reviewer_round_excluded_from_consensus_in_mixed_panel_run(tmp_pa
     the run as a whole had two reviewers (e.g. a resumed run with a changed panel).
 
     Run-level multi-reviewer detection (from reviewer_stats) would incorrectly include round 1's
-    finding. Round-level detection (from round_panels) correctly excludes it.
+    finding. Round-level detection (from ``rounds.panel_size``) correctly excludes it.
     """
     runs = tmp_path / ".syncade" / "runs"
     run_id = "2026-01-01T00-00-00"
@@ -366,13 +386,13 @@ def test_single_reviewer_round_excluded_from_consensus_in_mixed_panel_run(tmp_pa
                             {"name": "r1", "provider": "openai", "model": "m", "finding_count": 1},
                             {"name": "r2", "provider": "openai", "model": "m", "finding_count": 1},
                         ],
-                        "synthesizer": {"active_blocker_count": 1},
+                        "synthesizer": _synth_counts(1),
                     },
                     {
                         "reviewers": [
                             {"name": "r1", "provider": "openai", "model": "m", "finding_count": 1},
                         ],
-                        "synthesizer": {"active_blocker_count": 1},
+                        "synthesizer": _synth_counts(1),
                     },
                 ],
             }
@@ -391,13 +411,13 @@ def test_single_reviewer_round_excluded_from_consensus_in_mixed_panel_run(tmp_pa
 
 
 def test_unknown_source_rounds_excluded_from_blocker_curve(tmp_path: Path) -> None:
-    """A killed/interrupted run with no manifest and no artifact records blockers_source='unknown'.
+    """A killed/interrupted run with no manifest and no artifact records counts_source='unknown'.
 
     Before the fix, blocker_curve() summed ALL rounds, so these runs appeared as "round 0: 0
     blockers" — a fabricated zero for a missing-data path, not a measured one.
 
-    The fixture: two runs. Run 1 has a synth artifact (1 blocker, blockers_source='artifacts').
-    Run 2 was killed before any artifact or manifest was written (blockers_source='unknown', 0
+    The fixture: two runs. Run 1 has a synth artifact (1 blocker, counts_source='artifacts').
+    Run 2 was killed before any artifact or manifest was written (counts_source='unknown', 0
     blockers by convention).
 
     Expected curve: [(0, 1, 1)] — run 2 must not appear in the denominator.
@@ -405,7 +425,7 @@ def test_unknown_source_rounds_excluded_from_blocker_curve(tmp_path: Path) -> No
     runs = tmp_path / ".syncade" / "runs"
     # run 1: has a synthesizer artifact (artifact-backed)
     _run(runs, "2026-01-01T00-00-00", ["r1", "r2"], [[_blocker("r1")]])
-    # run 2: killed before any manifest or artifact — blockers_source='unknown'
+    # run 2: killed before any manifest or artifact — counts_source='unknown'
     killed = runs / "2026-01-02T00-00-00"
     (killed / "round-0").mkdir(parents=True)
     (killed / "run-init.json").write_text("{}")
@@ -415,10 +435,10 @@ def test_unknown_source_rounds_excluded_from_blocker_curve(tmp_path: Path) -> No
     backfill(conn, runs)
 
     row = conn.execute(
-        "SELECT blockers_source FROM rounds WHERE run_id='2026-01-02T00-00-00'"
+        "SELECT counts_source FROM rounds WHERE run_id='2026-01-02T00-00-00'"
     ).fetchone()
     assert row is not None and row[0] == "unknown", (
-        f"killed run must record blockers_source='unknown', got {row!r}"
+        f"killed run must record counts_source='unknown', got {row!r}"
     )
 
     curve = blocker_curve(conn)

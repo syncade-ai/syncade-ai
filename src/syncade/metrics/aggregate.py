@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from syncade.metrics.findings import (
+    read_finding_artifacts,
     read_findings,
     read_rounds,
 )
@@ -136,6 +137,9 @@ def _load_init(run_dir: Path) -> dict:
 
 def read_run(run_dir: Path | str) -> tuple[RunRow, list[ReviewerStatRow]] | None:
     """Map one run directory to a :class:`RunRow` + per-reviewer stats.
+
+    Finding totals on the returned row are provisional loop-manifest summaries. ``backfill()``
+    replaces the complete vector from normalized round evidence before persisting the row.
 
     Returns ``None`` when ``loop-manifest.json`` is present but unparseable — a
     *corrupt* run, which the caller skips with a warning rather than counting it as
@@ -510,7 +514,8 @@ def backfill(conn: sqlite3.Connection, runs_root: Path | str) -> None:
 
     Upserts every present run, refreshes each run's reviewer set (so a changed
     roster drops stale rows), and prunes runs no longer in ``.syncade/runs/`` — so
-    the DB stays a faithful derived view even after ``--gc`` slims runs.
+    the DB stays a faithful derived view even after ``--gc`` slims runs. This is the final
+    authority for persisted run totals; ``read_run()`` alone returns provisional summaries.
     """
     present: list[str] = []
     for d in _candidate_run_dirs(runs_root):
@@ -522,6 +527,15 @@ def backfill(conn: sqlite3.Connection, runs_root: Path | str) -> None:
             )
             continue
         row, stats = parsed
+        artifacts = read_finding_artifacts(d)
+        findings, provenance = read_findings(d, row.run_id, artifacts)
+        round_rows = read_rounds(d, row.run_id, artifacts)
+        row.blockers, row.minors, row.nits, row.dismissed = (
+            sum(r.blockers for r in round_rows),
+            sum(r.minors for r in round_rows),
+            sum(r.nits for r in round_rows),
+            sum(r.dismissed for r in round_rows),
+        )
         upsert_run(conn, row)
         conn.execute("DELETE FROM reviewer_stats WHERE run_id = ?", (row.run_id,))
         conn.execute("DELETE FROM actor_stats WHERE run_id = ?", (row.run_id,))
@@ -533,24 +547,13 @@ def backfill(conn: sqlite3.Connection, runs_root: Path | str) -> None:
         for stat in read_actor_stats(d):
             upsert_actor_stat(conn, stat)
 
-        findings, provenance = read_findings(d, row.run_id)
         for finding in findings:
             upsert_finding(conn, finding)
         for entry in provenance:
             upsert_finding_provenance(conn, entry)
 
-        # ONE derivation, no branch. `rounds` already resolved artifacts-vs-manifest per round
-        # and recorded which it used, so the run total is a sum rather than a choice between two
-        # counts that could disagree. What stood here was a reached-set supplement plus a
-        # conditional derive-or-preserve — three rounds of patching the same question, which is
-        # what the single authority replaces.
-        round_rows = read_rounds(d, row.run_id)
         for round_row in round_rows:
             upsert_round(conn, round_row)
-        conn.execute(
-            "UPDATE runs SET blockers = ? WHERE run_id = ?",
-            (sum(r.blockers for r in round_rows), row.run_id),
-        )
 
         present.append(row.run_id)
     _prune_absent(conn, present)

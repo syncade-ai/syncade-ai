@@ -11,12 +11,9 @@ physical lines against a 600 ceiling; extraction there would have breached it on
 rebuild on schema drift exactly like ``runs``. The derived-view rule is intact: nothing here is
 the only copy of anything.
 
-**The count-agreement hazard is the reason this module has a public
-:func:`count_disagreements`.** ``runs.blockers`` sums each round manifest's
-``active_blocker_count``; these rows come from the synthesizer artifact. Two paths to one fact
-WILL drift, so the disagreement is measured and reported rather than assumed away — and the
-verdict on what to do about it is the caller's, because a hard failure would make one
-inconsistent legacy run poison a whole backfill.
+**The count-agreement hazard is the reason this module owns the per-round authority.** Every
+finding count travels as one vector with one recorded source; consumers sum those rows rather
+than choosing independently between artifacts and manifests.
 """
 
 from __future__ import annotations
@@ -27,6 +24,11 @@ from pathlib import Path
 from syncade.metrics.schema import FindingProvenanceRow, FindingRow, RoundRow
 
 _SYNTH_ARTIFACT = "synthesizer.parsed.json"
+_KNOWN_EMPTY_REASONS = {"no_changes_to_review", "producer_emptied_diff"}
+_KNOWN_FINDING_SEVERITIES = {"blocker", "minor", "nit"}
+_CountVector = tuple[int, int, int, int]
+_ArtifactEvidence = tuple[list[dict[str, object]], _CountVector]
+_RoundArtifacts = dict[int, tuple[Path, _ArtifactEvidence | None]]
 
 
 def round_dirs(run_dir: Path) -> list[tuple[int, Path]]:
@@ -54,8 +56,47 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _normalize_artifact(container: object) -> _ArtifactEvidence | None:
+    """One complete finding list and its count vector, or no artifact evidence."""
+    if not isinstance(container, dict):
+        return None
+    consolidated = container.get("consolidated_findings")
+    if not isinstance(consolidated, list):
+        return None
+    normalized: list[dict[str, object]] = []
+    active = {severity: 0 for severity in _KNOWN_FINDING_SEVERITIES}
+    dismissed = 0
+    for finding in consolidated:
+        if not isinstance(finding, dict):
+            return None
+        severity = finding.get("severity")
+        is_dismissed = finding.get("dismissed")
+        if not isinstance(severity, str) or severity not in active:
+            return None
+        if type(is_dismissed) is not bool:
+            return None
+        normalized.append(finding)
+        if is_dismissed:
+            dismissed += 1
+        else:
+            active[severity] += 1
+    return normalized, (active["blocker"], active["minor"], active["nit"], dismissed)
+
+
+def read_finding_artifacts(run_dir: Path | str) -> _RoundArtifacts:
+    """Parse and count each round's count-critical artifact exactly once."""
+    artifacts: _RoundArtifacts = {}
+    for round_index, round_dir in round_dirs(Path(run_dir)):
+        try:
+            data = json.loads((round_dir / _SYNTH_ARTIFACT).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        artifacts[round_index] = (round_dir, _normalize_artifact(data))
+    return artifacts
+
+
 def read_findings(
-    run_dir: Path | str, run_id: str
+    run_dir: Path | str, run_id: str, artifacts: _RoundArtifacts
 ) -> tuple[list[FindingRow], list[FindingProvenanceRow]]:
     """Every consolidated finding in a run, with its provenance. Never raises.
 
@@ -71,26 +112,14 @@ def read_findings(
         _loop = {}
     _loop_rounds = _loop.get("rounds") if isinstance(_loop, dict) else None
 
-    for round_index, round_dir in round_dirs(run_dir):
+    for round_index, (round_dir, evidence) in sorted(artifacts.items()):
         # A reviewer absent from the round's PANEL cannot have raised a finding in it. Ghost
         # provenance inflates consensus, and the ratio is the number the whole feature exists
         # to report. An unrecorded panel (empty) cannot convict anyone, so it filters nothing.
         _panel, _ = _round_panel(_loop_rounds, round_dir, round_index)
-        try:
-            data = json.loads((round_dir / _SYNTH_ARTIFACT).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        if evidence is None:
             continue
-        if not isinstance(data, dict):
-            continue
-        consolidated = data.get("consolidated_findings")
-        if not isinstance(consolidated, list):
-            continue
-        # All-or-nothing: a partially malformed list degrades to 'manifest' in read_rounds().
-        # Persisting the valid-looking subset here would leave metrics.db with contradictory
-        # round/run counts versus findings/provenance rows — the count mismatch this whole
-        # table exists to prevent, reintroduced by the reader.
-        if not all(isinstance(f, dict) for f in consolidated):
-            continue
+        consolidated, _counts = evidence
 
         for idx, finding in enumerate(consolidated):
             findings.append(
@@ -99,10 +128,7 @@ def read_findings(
                     round=round_index,
                     idx=idx,
                     severity=_text(finding.get("severity")),
-                    # `is True`, not truthiness: `dismissed="false"` is a TRUTHY string and
-                    # would mark an ACTIVE blocker dismissed, quietly shrinking every count
-                    # derived from it. Anything that is not a real boolean True is active.
-                    dismissed=1 if finding.get("dismissed") is True else 0,
+                    dismissed=1 if finding["dismissed"] else 0,
                     file=_text(finding.get("file")),
                     description=_text(finding.get("description")),
                 )
@@ -148,9 +174,9 @@ def _round_panel(loop_rounds: object, round_dir: Path, round_index: int) -> tupl
     like ``no_changes_to_review`` records ``reviewers: []``) and ``'unknown'`` when no
     manifest had the key and the panel composition cannot be determined.
 
-    Panel provenance is independent from blocker-count provenance: a manifest can carry an
+    Panel provenance is independent from finding-count provenance: a manifest can carry
     ``active_blocker_count`` without a ``reviewers`` list, giving
-    ``blockers_source='manifest'`` and ``panel_source='unknown'``.
+    ``counts_source='manifest'`` and ``panel_source='unknown'``.
     """
     names: set[str] = set()
     recorded = False
@@ -176,15 +202,27 @@ def _round_panel(loop_rounds: object, round_dir: Path, round_index: int) -> tupl
     return names, "recorded" if recorded else "unknown"
 
 
-def _synth_count(container: object) -> int | None:
-    """``synthesizer.active_blocker_count`` from a manifest-shaped dict, if it is a real int."""
+_COUNT_KEYS = (
+    "active_blocker_count",
+    "active_minor_count",
+    "active_nit_count",
+    "dismissed_count",
+)
+
+
+def _synth_counts(container: object) -> _CountVector | None:
+    """The complete synthesizer count vector from a manifest-shaped dict, if valid."""
     synth = container.get("synthesizer") if isinstance(container, dict) else None
-    count = synth.get("active_blocker_count") if isinstance(synth, dict) else None
-    return count if isinstance(count, int) and not isinstance(count, bool) else None
+    if not isinstance(synth, dict):
+        return None
+    values = tuple(synth.get(key) for key in _COUNT_KEYS)
+    if not all(type(value) is int and value >= 0 for value in values):
+        return None
+    return values
 
 
-def _manifest_blockers(round_dir: Path, loop_rounds: object, round_index: int) -> int | None:
-    """A manifest-recorded blocker count for this round, or ``None``.
+def _manifest_counts(round_dir: Path, loop_rounds: object, round_index: int) -> _CountVector | None:
+    """A complete manifest-recorded count vector for this round, or ``None``.
 
     BOTH manifests are consulted, in that order, for the same reason the round set is a union:
     either alone is incomplete. The round manifest exists for interrupted runs the loop manifest
@@ -196,24 +234,24 @@ def _manifest_blockers(round_dir: Path, loop_rounds: object, round_index: int) -
         data = json.loads((round_dir / _ROUND_MANIFEST).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = None
-    count = _synth_count(data)
-    if count is not None:
-        return count
+    counts = _synth_counts(data)
+    if counts is not None:
+        return counts
     if isinstance(loop_rounds, list) and round_index < len(loop_rounds):
-        return _synth_count(loop_rounds[round_index])
+        return _synth_counts(loop_rounds[round_index])
     return None
 
 
-def read_rounds(run_dir: Path | str, run_id: str) -> list[RoundRow]:
+def read_rounds(run_dir: Path | str, run_id: str, artifacts: _RoundArtifacts) -> list[RoundRow]:
     """One row per round that happened — THE authority, replacing three disagreeing derivations.
 
-    Precedence for the blocker count is explicit and recorded, never inferred:
+    Precedence for the complete finding-count vector is explicit and recorded, never inferred:
 
     1. ``artifacts`` — the synthesizer artifact parsed and every entry was well-formed.
-    2. ``manifest`` — the artifact is missing or malformed but a round manifest recorded a
-       count. The round ran and found something; only the evidence of WHAT is gone.
+    2. ``manifest`` — the artifact is missing or malformed but a manifest recorded all four
+       counts. The round ran and found something; only the evidence of WHAT is gone.
     3. ``unknown`` — the round ran and nothing credible says what it found. Counted as a round,
-       contributing zero blockers, because inventing either number is worse.
+       contributing zeroes by convention, because inventing counts is worse.
 
     A partially-malformed artifact degrades to ``manifest``/``unknown`` rather than silently
     reporting the entries that happened to parse: dropping three of five findings and calling
@@ -229,7 +267,7 @@ def read_rounds(run_dir: Path | str, run_id: str) -> list[RoundRow]:
     # The union of BOTH kinds of evidence, because either alone is incomplete: a directory can
     # exist for a round the manifest never summarised (interrupted), and a manifest can prove a
     # round ran whose directory is absent. Taking one source was the mistake this table replaces.
-    on_disk = dict(round_dirs(run_dir))
+    on_disk = {index: entry[0] for index, entry in artifacts.items()}
     indices = set(on_disk)
     if isinstance(loop_rounds, list):
         indices |= set(range(len(loop_rounds)))
@@ -238,13 +276,31 @@ def read_rounds(run_dir: Path | str, run_id: str) -> list[RoundRow]:
     for round_index in sorted(indices):
         round_dir = on_disk.get(round_index, run_dir / f"round-{round_index}")
         panel, panel_source = _round_panel(loop_rounds, round_dir, round_index)
-        blockers, source = _round_blockers(round_dir, loop_rounds, round_index)
+        known_no_dispatch = (
+            isinstance(loop_rounds, list)
+            and round_index == len(loop_rounds) - 1
+            and isinstance(loop, dict)
+            and loop.get("termination_reason") in _KNOWN_EMPTY_REASONS
+            and panel_source == "recorded"
+            and not panel
+        )
+        counts, source = _round_counts(
+            round_dir,
+            loop_rounds,
+            round_index,
+            artifacts.get(round_index, (round_dir, None))[1],
+            known_no_dispatch=known_no_dispatch,
+        )
+        blockers, minors, nits, dismissed = counts
         rows.append(
             RoundRow(
                 run_id=run_id,
                 round=round_index,
                 blockers=blockers,
-                blockers_source=source,
+                minors=minors,
+                nits=nits,
+                dismissed=dismissed,
+                counts_source=source,
                 panel_size=len(panel),
                 panel_source=panel_source,
             )
@@ -252,23 +308,22 @@ def read_rounds(run_dir: Path | str, run_id: str) -> list[RoundRow]:
     return rows
 
 
-def _round_blockers(round_dir: Path, loop_rounds: object, round_index: int) -> tuple[int, str]:
-    try:
-        data = json.loads((round_dir / _SYNTH_ARTIFACT).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        data = None
-    consolidated = data.get("consolidated_findings") if isinstance(data, dict) else None
-    if isinstance(consolidated, list) and all(isinstance(f, dict) for f in consolidated):
-        return (
-            sum(
-                1
-                for f in consolidated
-                if f.get("severity") == "blocker" and f.get("dismissed") is not True
-            ),
-            "artifacts",
-        )
-    fallback = _manifest_blockers(round_dir, loop_rounds, round_index)
-    return (fallback, "manifest") if fallback is not None else (0, "unknown")
+def _round_counts(
+    round_dir: Path,
+    loop_rounds: object,
+    round_index: int,
+    artifact: _ArtifactEvidence | None,
+    *,
+    known_no_dispatch: bool,
+) -> tuple[_CountVector, str]:
+    if artifact is not None:
+        return artifact[1], "artifacts"
+    fallback = _manifest_counts(round_dir, loop_rounds, round_index)
+    if fallback is not None:
+        return fallback, "manifest"
+    if known_no_dispatch:
+        return (0, 0, 0, 0), "manifest"
+    return (0, 0, 0, 0), "unknown"
 
 
 def active_blockers(findings: list[FindingRow]) -> int:
@@ -297,7 +352,7 @@ def consensus_stats(conn) -> tuple[int, int] | None:
         """
         WITH multi_rounds AS (
             SELECT run_id, round FROM rounds
-            WHERE panel_size > 1 AND blockers_source = 'artifacts'
+            WHERE panel_size > 1 AND counts_source = 'artifacts'
         ),
         active AS (
             SELECT f.run_id, f.round, f.idx FROM findings f
@@ -329,30 +384,33 @@ def blocker_curve(conn) -> list[tuple[int, int, int]]:
     convergence; it is SURVIVORSHIP, since fewer runs reach each round. Returning both forces a
     renderer to show density, which this repo published wrongly once already.
 
-    ``blockers_source='unknown'`` rounds are EXCLUDED. Their blocker count is 0 by convention
+    ``counts_source='unknown'`` rounds are EXCLUDED. Their blocker count is 0 by convention
     (no evidence either way), not by measurement — including them fabricates zeroes in the curve
     for killed/interrupted runs that left no manifest or artifact. Manifest-backed rounds ARE
     included: they have a measured count, just no per-finding provenance.
     """
     rows = conn.execute(
         "SELECT round, COALESCE(SUM(blockers), 0), COUNT(*) FROM rounds "
-        "WHERE blockers_source != 'unknown' "
+        "WHERE counts_source != 'unknown' AND NOT (panel_source = 'recorded' "
+        "AND panel_size = 0 AND blockers = 0 AND minors = 0 AND nits = 0 AND dismissed = 0) "
         "GROUP BY round ORDER BY round"
     ).fetchall()
     return [(int(r), int(n), int(d)) for r, n, d in rows]
 
 
 def incomplete_rounds(conn) -> int:
-    """Rounds whose blocker count is not artifact-backed — reported, never silently zeroed.
+    """Rounds whose finding counts are not artifact-backed — reported, never silently zeroed.
 
     Excludes deliberate no-dispatch rounds (panel explicitly recorded as empty with no blockers):
     those have no synthesizer by design, not because one is missing. The signature is
-    ``panel_source='recorded' AND panel_size=0 AND blockers=0`` — a round where a manifest
-    explicitly recorded zero reviewers and zero blockers, such as ``no_changes_to_review``.
+    ``panel_source='recorded' AND panel_size=0`` plus an all-zero vector — a round where a
+    manifest explicitly recorded zero reviewers and zero findings, such as
+    ``no_changes_to_review``.
     """
     return int(
         conn.execute(
-            "SELECT COUNT(*) FROM rounds WHERE blockers_source != 'artifacts' "
-            "AND NOT (panel_source = 'recorded' AND panel_size = 0 AND blockers = 0)"
+            "SELECT COUNT(*) FROM rounds WHERE counts_source != 'artifacts' "
+            "AND NOT (counts_source = 'manifest' AND panel_source = 'recorded' AND panel_size = 0 "
+            "AND blockers = 0 AND minors = 0 AND nits = 0 AND dismissed = 0)"
         ).fetchone()[0]
     )

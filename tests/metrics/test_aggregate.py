@@ -179,10 +179,18 @@ def test_backfill_upserts_all_runs_idempotently(tmp_path):
     _write_run(runs, "R2", exit_code=30, rounds=[_round(exit_code=30, blockers=3)])
     conn = open_db(tmp_path / "metrics.db")
     backfill(conn, runs)
+    first_runs = fetch_runs(conn)
+    first_rounds = [tuple(r) for r in conn.execute("SELECT * FROM rounds ORDER BY run_id, round")]
     backfill(conn, runs)  # second pass must not duplicate
     rows = fetch_runs(conn)
-    assert [r.run_id for r in rows] == ["R1", "R2"]
-    assert rows[1].blockers == 3
+    assert rows == first_runs
+    assert [tuple(r) for r in conn.execute("SELECT * FROM rounds ORDER BY run_id, round")] == (
+        first_rounds
+    )
+    assert [(r.run_id, r.blockers, r.minors, r.nits, r.dismissed) for r in rows] == [
+        ("R1", 0, 0, 0, 0),
+        ("R2", 3, 0, 0, 0),
+    ]
 
 
 def test_read_run_aggregates_reviewer_stats_blank_model_when_not_recorded(tmp_path):

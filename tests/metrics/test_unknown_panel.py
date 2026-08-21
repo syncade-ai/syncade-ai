@@ -41,7 +41,7 @@ def test_a_round_with_no_recorded_panel_is_counted_and_named(tmp_path: Path) -> 
     """Counted from `rounds`, the single authority — the accounting moved there in the dogfood
     fix, so a fixture of runs and reviewer_stats alone no longer exercises it."""
     conn = _db(tmp_path)
-    upsert_run(conn, RunRow(run_id="has-panel"))
+    upsert_run(conn, RunRow(run_id="has-panel", blockers=1, minors=2, nits=3, dismissed=4))
     upsert_run(conn, RunRow(run_id="interrupted"))
     upsert_reviewer_stat(
         conn, ReviewerStatRow(run_id="has-panel", name="r1", provider="openai", model="gpt-5.5")
@@ -51,8 +51,12 @@ def test_a_round_with_no_recorded_panel_is_counted_and_named(tmp_path: Path) -> 
         RoundRow(
             run_id="has-panel",
             round=0,
+            blockers=1,
+            minors=2,
+            nits=3,
+            dismissed=4,
             panel_size=2,
-            blockers_source="artifacts",
+            counts_source="artifacts",
             panel_source="recorded",
         ),
     )
@@ -62,7 +66,7 @@ def test_a_round_with_no_recorded_panel_is_counted_and_named(tmp_path: Path) -> 
             run_id="interrupted",
             round=0,
             panel_size=0,
-            blockers_source="unknown",
+            counts_source="unknown",
             panel_source="unknown",
         ),
     )
@@ -73,6 +77,8 @@ def test_a_round_with_no_recorded_panel_is_counted_and_named(tmp_path: Path) -> 
     assert "1 of 2 rounds record no reviewer panel" in report, (
         "an unrecorded panel must be counted in the report, not silently dropped from it"
     )
+    assert "findings:   1 blockers, 2 minors, 3 nits, 4 dismissed (lower bounds" in report
+    assert "no finding-count evidence" in report
 
 
 def test_known_empty_panel_is_not_counted_as_unknown(tmp_path: Path) -> None:
@@ -90,7 +96,7 @@ def test_known_empty_panel_is_not_counted_as_unknown(tmp_path: Path) -> None:
             run_id="no-dispatch",
             round=0,
             panel_size=0,
-            blockers_source="manifest",
+            counts_source="manifest",
             panel_source="recorded",
         ),
     )
@@ -98,16 +104,17 @@ def test_known_empty_panel_is_not_counted_as_unknown(tmp_path: Path) -> None:
     assert "record no reviewer panel" not in report, (
         "a known-empty panel (panel_source='recorded', 0 reviewers) must not be counted as unknown"
     )
+    assert "lower bounds" not in report
 
 
 def test_manifest_backed_round_with_unknown_panel_is_counted(tmp_path: Path) -> None:
-    """A round where a manifest recorded blocker counts but no reviewer list has unknown panel.
+    """A round where a manifest recorded finding counts but no reviewer list has unknown panel.
 
-    blockers_source='manifest' and panel_source='unknown' are independent: the manifest has a
+    counts_source='manifest' and panel_source='unknown' are independent: the manifest has a
     count but no reviewers key. This IS an unknown panel and must appear in the warning.
     """
     conn = _db(tmp_path)
-    upsert_run(conn, RunRow(run_id="partial"))
+    upsert_run(conn, RunRow(run_id="partial", blockers=3))
     upsert_round(
         conn,
         RoundRow(
@@ -115,7 +122,7 @@ def test_manifest_backed_round_with_unknown_panel_is_counted(tmp_path: Path) -> 
             round=0,
             panel_size=0,
             blockers=3,
-            blockers_source="manifest",
+            counts_source="manifest",
             panel_source="unknown",
         ),
     )
@@ -123,14 +130,15 @@ def test_manifest_backed_round_with_unknown_panel_is_counted(tmp_path: Path) -> 
     assert "1 of 1 rounds record no reviewer panel" in report, (
         "a manifest-backed round with no reviewer list must be counted as an unknown panel"
     )
+    assert "finding counts from manifests" in report
+    assert "no per-finding provenance" in report
 
 
 def test_no_dispatch_round_not_counted_in_incomplete_rounds(tmp_path: Path) -> None:
     """A no_changes_to_review round has no synthesizer by design, not because one is missing.
 
-    panel_source='recorded' + panel_size=0 + blockers=0 is the no-dispatch signature.
-    It must not appear in the incomplete-rounds warning that says 'blocker counts come from
-    round manifests and carry no provenance' — there are no provenance-carrying blockers here.
+    panel_source='recorded' + panel_size=0 + a zero vector is the no-dispatch signature.
+    It must not appear in either incomplete-evidence warning.
     """
     from syncade.metrics.findings import incomplete_rounds
 
@@ -143,7 +151,7 @@ def test_no_dispatch_round_not_counted_in_incomplete_rounds(tmp_path: Path) -> N
             round=0,
             panel_size=0,
             blockers=0,
-            blockers_source="manifest",
+            counts_source="manifest",
             panel_source="recorded",
         ),
     )
@@ -151,7 +159,59 @@ def test_no_dispatch_round_not_counted_in_incomplete_rounds(tmp_path: Path) -> N
         "a deliberate no-dispatch round must not be counted as missing a synthesizer artifact"
     )
     report = render_report(conn, last_n=None)
-    assert "no synthesizer artifact" not in report
+    assert "no usable synthesizer artifact evidence" not in report
+    assert "lower bounds" not in report
+
+
+def test_only_explicit_known_empty_terminal_is_a_manifest_backed_zero(tmp_path: Path) -> None:
+    """An empty reviewer list alone cannot turn a refusal into measured clean evidence."""
+    from syncade.metrics.aggregate import backfill
+    from syncade.metrics.findings import blocker_curve
+
+    runs = tmp_path / ".syncade" / "runs"
+    for run_id, reason, exit_code in (
+        ("known-empty", "no_changes_to_review", 0),
+        ("refused", "diff_malformed", 60),
+    ):
+        run = runs / run_id
+        round_dir = run / "round-0"
+        round_dir.mkdir(parents=True)
+        (run / "run-init.json").write_text("{}")
+        round_entry = {
+            "reviewers": [],
+            "synthesizer": None,
+            "round_exit_code": exit_code,
+        }
+        if reason == "diff_malformed":
+            round_entry["refusal_reason"] = reason
+            (round_dir / "synthesizer.parsed.json").write_text("{")
+        (round_dir / "manifest.json").write_text(json.dumps(round_entry))
+        (run / "loop-manifest.json").write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "final_exit_code": exit_code,
+                    "termination_reason": reason,
+                    "rounds": [round_entry],
+                }
+            )
+        )
+
+    conn = _db(tmp_path)
+    backfill(conn, runs)
+
+    rows = conn.execute(
+        "SELECT run_id, blockers, minors, nits, dismissed, counts_source "
+        "FROM rounds ORDER BY run_id"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("known-empty", 0, 0, 0, 0, "manifest"),
+        ("refused", 0, 0, 0, 0, "unknown"),
+    ]
+    assert blocker_curve(conn) == [], "neither no-dispatch shape reached model review"
+    report = render_report(conn, last_n=None)
+    assert "lower bounds: incomplete round evidence" in report
+    assert "1 of 2 rounds have no finding-count evidence" in report
 
 
 def test_real_manifest_round_still_counted_in_incomplete_rounds(tmp_path: Path) -> None:
@@ -167,7 +227,7 @@ def test_real_manifest_round_still_counted_in_incomplete_rounds(tmp_path: Path) 
             round=0,
             panel_size=2,
             blockers=3,
-            blockers_source="manifest",
+            counts_source="manifest",
             panel_source="recorded",
         ),
     )
@@ -188,7 +248,7 @@ def test_no_note_when_every_run_has_a_panel(tmp_path: Path) -> None:
             run_id="only",
             round=0,
             panel_size=1,
-            blockers_source="artifacts",
+            counts_source="artifacts",
             panel_source="recorded",
         ),
     )

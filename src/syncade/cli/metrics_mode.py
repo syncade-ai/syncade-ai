@@ -255,11 +255,21 @@ def render_report(conn: sqlite3.Connection, last_n: int | None = None) -> str:
     ).fetchone()
     actor_rows = _actor_spend_rows(conn)
     incomplete_tokens = _cost_incomplete_tokens(conn)
+    manifest_only, unknown_only = conn.execute(
+        "SELECT "
+        "COALESCE(SUM(CASE WHEN counts_source='manifest' THEN 1 ELSE 0 END), 0), "
+        "COALESCE(SUM(CASE WHEN counts_source='unknown' THEN 1 ELSE 0 END), 0) "
+        "FROM rounds "
+        "WHERE NOT (counts_source='manifest' AND panel_source='recorded' AND panel_size=0 "
+        "AND blockers=0 AND minors=0 AND nits=0 AND dismissed=0)"
+    ).fetchone()
+    finding_note = " (lower bounds: incomplete round evidence)" if unknown_only else ""
 
     lines = [
         f"syncade metrics — {runs} runs",
         f"  ship-rate:  {ship}/{runs} ({round(100 * ship / runs)}%)",
-        f"  findings:   {blockers} blockers, {minors} minors, {nits} nits, {dismissed} dismissed",
+        f"  findings:   {blockers} blockers, {minors} minors, {nits} nits, {dismissed} dismissed"
+        f"{finding_note}",
         f"  rounds:     {rounds} total",
         f"  handoffs:   {handoffs}    decisions: {decisions}",
         f"  producer:   committed={p_committed} stalled={p_stalled}"
@@ -322,7 +332,7 @@ def render_report(conn: sqlite3.Connection, last_n: int | None = None) -> str:
     # OUTSIDE the `if reviewer_rows` block on purpose. Nested inside it, a corpus where EVERY
     # panel is unknown printed no warning at all — the one corpus that most needs it, silent.
     # panel_source='unknown' means no manifest had a `reviewers` key for that round. This is
-    # independent of blockers_source: a manifest can record a blocker count without a reviewer
+    # independent of counts_source: a manifest can record finding counts without a reviewer
     # list, and a no-dispatch round (no_changes_to_review) has panel_source='recorded' and
     # panel_size=0 — explicitly empty, not unknown.
     unknown_rounds, total_rounds = conn.execute(
@@ -334,23 +344,17 @@ def render_report(conn: sqlite3.Connection, last_n: int | None = None) -> str:
             f"  {unknown_rounds} of {total_rounds} rounds record no reviewer panel "
             f"(no manifest evidence; excluded from consensus)"
         )
-    manifest_only, unknown_only = conn.execute(
-        "SELECT "
-        "COALESCE(SUM(CASE WHEN blockers_source='manifest' THEN 1 ELSE 0 END), 0), "
-        "COALESCE(SUM(CASE WHEN blockers_source='unknown' THEN 1 ELSE 0 END), 0) "
-        "FROM rounds "
-        "WHERE NOT (panel_source='recorded' AND panel_size=0 AND blockers=0)"
-    ).fetchone()
     if manifest_only:
         lines.append(
-            f"  {manifest_only} of {total_rounds} rounds have no synthesizer artifact; their "
-            f"blocker counts come from round manifests and carry no provenance"
+            f"  {manifest_only} of {total_rounds} rounds have finding counts from manifests "
+            f"but no usable synthesizer artifact evidence; no per-finding provenance is available"
         )
     if unknown_only:
         lines.append(
-            f"  {unknown_only} of {total_rounds} rounds have no blocker evidence "
-            f"(killed/interrupted before any artifact or manifest); "
-            f"excluded from the blocker curve"
+            f"  {unknown_only} of {total_rounds} rounds have no finding-count evidence "
+            f"(killed/interrupted before a usable artifact or complete manifest); "
+            f"top-line findings are lower bounds and these rounds are excluded from the "
+            f"blocker curve"
         )
 
     consensus = consensus_stats(conn)

@@ -3,13 +3,11 @@
 The question that justifies a second reviewer — *which reviewer found what, and would one alone
 have shipped?* — used to need a throwaway mining script over raw JSON. These tables make it SQL.
 
-**The count-agreement hazard is the item, not a footnote.** ``runs.blockers`` sums the LOOP
-manifest's embedded round summaries; these rows come from each round's synthesizer artifact. Two
-paths to one fact drift. Measured over 421 real runs before choosing what to do: 105 agree, 30
-disagree, and every one of the 30 lacks a ``loop-manifest.json`` — so its ``runs.blockers`` is 0
-because nothing summarised the run, not because it found nothing. Hence a warning scoped to
-COMPLETED runs rather than a hard failure, which would have let one interrupted run poison a
-whole backfill.
+**The count-agreement hazard is the item, not a footnote.** The original implementation read
+run totals from loop manifests and finding rows from synthesizer artifacts, so interrupted runs
+could split one fact across two authorities. PR-h-12.5 collapses every severity and dismissed
+count into one atomic per-round vector: complete artifacts win, complete manifests fall back,
+missing evidence stays unknown, and run totals sum those same round rows.
 """
 
 from __future__ import annotations
@@ -17,9 +15,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from syncade.cli.metrics_mode import render_report
 from syncade.metrics.aggregate import backfill
 from syncade.metrics.findings import active_blockers, blocker_curve, read_findings, read_rounds
+from syncade.metrics.findings import read_finding_artifacts as _read_artifacts
 from syncade.metrics.schema import open_db
+
+
+def _synth_counts(blockers=0, minors=0, nits=0, dismissed=0) -> dict[str, int]:
+    return {
+        "active_blocker_count": blockers,
+        "active_minor_count": minors,
+        "active_nit_count": nits,
+        "dismissed_count": dismissed,
+    }
 
 
 def _round(
@@ -31,9 +40,30 @@ def _round(
     active = (
         blocker_count
         if blocker_count is not None
-        else sum(1 for f in findings if f.get("severity") == "blocker" and not f.get("dismissed"))
+        else sum(
+            1 for f in findings if f.get("severity") == "blocker" and f.get("dismissed") is False
+        )
     )
-    (d / "manifest.json").write_text(json.dumps({"synthesizer": {"active_blocker_count": active}}))
+    (d / "manifest.json").write_text(
+        json.dumps(
+            {
+                "synthesizer": _synth_counts(
+                    active,
+                    sum(
+                        1
+                        for f in findings
+                        if f.get("severity") == "minor" and f.get("dismissed") is False
+                    ),
+                    sum(
+                        1
+                        for f in findings
+                        if f.get("severity") == "nit" and f.get("dismissed") is False
+                    ),
+                    sum(1 for f in findings if f.get("dismissed") is True),
+                )
+            }
+        )
+    )
 
 
 def _corpus(tmp_path: Path, *, complete: bool = True, blocker_count: int | None = None) -> Path:
@@ -64,12 +94,6 @@ def _corpus(tmp_path: Path, *, complete: bool = True, blocker_count: int | None 
                     {"reviewer_name": "r1", "original_severity": "blocker", "original_index": 1}
                 ],
             },
-        ],
-    )
-    _round(
-        run,
-        1,
-        [
             {
                 "severity": "blocker",
                 "dismissed": True,  # dismissed: must not count as active
@@ -80,7 +104,13 @@ def _corpus(tmp_path: Path, *, complete: bool = True, blocker_count: int | None 
                 ],
             },
             {"severity": "minor", "dismissed": False, "file": "d.py", "description": "a minor"},
+            {"severity": "nit", "dismissed": False, "file": "e.py", "description": "a nit"},
         ],
+    )
+    _round(
+        run,
+        1,
+        [],
         blocker_count=blocker_count,
     )
     (run / "run-init.json").write_text("{}")
@@ -110,8 +140,9 @@ def test_both_tables_are_populated_from_the_synthesizer_artifact(tmp_path: Path)
     assert [tuple(r) for r in rows] == [
         (0, 0, "blocker", 0, "a.py"),
         (0, 1, "blocker", 0, "b.py"),
-        (1, 0, "blocker", 1, "c.py"),
-        (1, 1, "minor", 0, "d.py"),
+        (0, 2, "blocker", 1, "c.py"),
+        (0, 3, "minor", 0, "d.py"),
+        (0, 4, "nit", 0, "e.py"),
     ]
     prov = conn.execute(
         "SELECT round, idx, reviewer_name, original_index FROM finding_provenance"
@@ -121,7 +152,33 @@ def test_both_tables_are_populated_from_the_synthesizer_artifact(tmp_path: Path)
         (0, 0, "r1", 0),
         (0, 0, "r2", 3),
         (0, 1, "r1", 1),
-        (1, 0, "r2", 0),
+        (0, 2, "r2", 0),
+    ]
+    assert tuple(conn.execute("SELECT blockers, minors, nits, dismissed FROM runs").fetchone()) == (
+        2,
+        1,
+        1,
+        1,
+    )
+
+
+def test_backfill_parses_each_synthesizer_artifact_once(tmp_path: Path, monkeypatch) -> None:
+    """Finding rows and round counts must consume the same parsed evidence."""
+    repo = _corpus(tmp_path)
+    original = Path.read_text
+    reads: list[Path] = []
+
+    def tracked(path: Path, *args, **kwargs):
+        if path.name == "synthesizer.parsed.json":
+            reads.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", tracked)
+    backfill(open_db(tmp_path / "m.db"), repo / ".syncade" / "runs")
+
+    assert reads == [
+        repo / ".syncade/runs/2026-01-01T00-00-00/round-0/synthesizer.parsed.json",
+        repo / ".syncade/runs/2026-01-01T00-00-00/round-1/synthesizer.parsed.json",
     ]
 
 
@@ -162,46 +219,52 @@ def test_the_count_agrees_with_runs_blockers(tmp_path: Path) -> None:
     assert stored == derived == 2
 
 
-def test_blockers_derived_from_findings_when_manifest_disagrees(tmp_path: Path) -> None:
-    """runs.blockers must reflect findings rows, not the loop-manifest count.
+def test_backfill_writes_one_final_round_derived_vector(tmp_path: Path) -> None:
+    """All four run totals come from rounds in one write, never a provisional mixed row."""
+    repo = _corpus(tmp_path)
+    run = repo / ".syncade/runs/2026-01-01T00-00-00"
+    loop_path = run / "loop-manifest.json"
+    loop = json.loads(loop_path.read_text())
+    for round_summary in loop["rounds"]:
+        round_summary["synthesizer"] = _synth_counts(9, 8, 7, 6)
+    loop_path.write_text(json.dumps(loop))
 
-    The loop-manifest's embedded active_blocker_count is a second path to the same fact and
-    will drift. backfill() now derives runs.blockers from the findings rows, making them the
-    authoritative source and eliminating the disagreement class.
-    """
-    repo = _corpus(tmp_path, blocker_count=99)  # loop manifest claims 99 in round 1
     conn = open_db(tmp_path / "m.db")
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
     backfill(conn, repo / ".syncade" / "runs")
+    conn.set_trace_callback(None)
 
-    stored = conn.execute("SELECT blockers FROM runs").fetchone()[0]
-    # findings rows say 2 active blockers; manifest says 0+99=101 — findings win
-    assert stored == 2, "runs.blockers must be derived from findings rows, not the loop-manifest"
+    stored = tuple(conn.execute("SELECT blockers, minors, nits, dismissed FROM runs").fetchone())
+    assert stored == (2, 1, 1, 1), "the normalized round vector must replace every manifest total"
+    run_writes = [
+        sql
+        for sql in statements
+        if sql.startswith("INSERT OR REPLACE INTO runs ") or sql.startswith("UPDATE runs ")
+    ]
+    assert len(run_writes) == 1, "runs must never expose a provisional or mixed count vector"
 
 
-def test_interrupted_run_blockers_derived_from_findings(tmp_path: Path) -> None:
-    """An interrupted run (no loop-manifest) gets its blocker count from findings rows.
+def test_interrupted_run_totals_are_derived_from_rounds(tmp_path: Path) -> None:
+    """An interrupted run gets its complete count vector from round artifacts.
 
-    Before this fix, runs.blockers came from the loop-manifest (_sum) and was 0 for any
-    interrupted run, while findings rows captured the real count. Now findings always win."""
+    Before this fix, the loop manifest left all four provisional totals at zero."""
     repo = _corpus(tmp_path, complete=False)
     conn = open_db(tmp_path / "m.db")
     backfill(conn, repo / ".syncade" / "runs")
 
-    stored = conn.execute("SELECT blockers FROM runs").fetchone()[0]
-    derived = conn.execute(
-        "SELECT COUNT(*) FROM findings WHERE severity='blocker' AND dismissed=0"
-    ).fetchone()[0]
-    assert stored == derived
+    stored = conn.execute("SELECT blockers, minors, nits, dismissed FROM runs").fetchone()
+    assert tuple(stored) == (2, 1, 1, 1)
+    report = render_report(conn, last_n=None)
+    assert "findings:   2 blockers, 1 minors, 1 nits, 1 dismissed" in report
+    assert "lower bounds" not in report
 
 
-def test_missing_synth_artifact_preserves_manifest_blocker_count(tmp_path: Path, capsys) -> None:
-    """A completed run whose synthesizer artifact is missing must not have blockers zeroed out.
+def test_missing_synth_artifact_uses_complete_manifest_vector(tmp_path: Path) -> None:
+    """A completed run whose synthesizer artifact is missing uses all four manifest counts.
 
-    When backfill() found no findings rows (because synthesizer.parsed.json is absent or corrupt),
-    active_blockers([]) returned 0 and overwrote runs.blockers unconditionally, silently converting
-    artifact loss into a clean-looking metrics report. The fix: if the derived count is lower than
-    the manifest count AND some round dirs lack parseable artifacts, preserve the manifest count
-    and emit a warning rather than overwriting with zero.
+    Artifact evidence is unavailable, so the round authority atomically uses the complete loop
+    manifest vector rather than converting the missing artifact into four clean-looking zeroes.
     """
     runs = tmp_path / ".syncade" / "runs"
     run = runs / "2026-06-06T00-00-00"
@@ -213,23 +276,19 @@ def test_missing_synth_artifact_preserves_manifest_blocker_count(tmp_path: Path,
             {
                 "run_id": run.name,
                 "final_exit_code": 30,
-                "rounds": [{"synthesizer": {"active_blocker_count": 2}}],
+                "rounds": [{"synthesizer": _synth_counts(2, 3, 4, 5)}],
             }
         )
     )
     conn = open_db(tmp_path / "m.db")
     backfill(conn, runs)
 
-    stored = conn.execute("SELECT blockers FROM runs").fetchone()[0]
-    assert stored == 2, (
-        "manifest-reported blockers must be preserved when synthesizer artifact is missing"
-    )
+    stored = conn.execute("SELECT blockers, minors, nits, dismissed FROM runs").fetchone()
+    assert tuple(stored) == (2, 3, 4, 5), "manifest fallback must preserve the complete vector"
     # Artifact loss is surfaced in the REPORT rather than on stderr during backfill: the
     # operator reads --metrics every time, and reads backfill stderr approximately never. Same
     # guarantee, a surface where it is actually seen.
-    from syncade.cli.metrics_mode import render_report
-
-    assert "no synthesizer artifact" in render_report(conn, last_n=None), (
+    assert "no usable synthesizer artifact evidence" in render_report(conn, last_n=None), (
         "artifact loss must be visible to the operator"
     )
 
@@ -241,7 +300,7 @@ def test_a_removed_run_takes_its_findings_with_it(tmp_path: Path) -> None:
     runs_root = repo / ".syncade" / "runs"
     conn = open_db(tmp_path / "m.db")
     backfill(conn, runs_root)
-    assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 4
+    assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 5
 
     import shutil
 
@@ -272,7 +331,7 @@ def test_a_duplicate_reviewer_on_one_finding_cannot_undercount(tmp_path: Path) -
             }
         ],
     )
-    findings, provenance = read_findings(run, run.name)
+    findings, provenance = read_findings(run, run.name, _read_artifacts(run))
     assert len(findings) == 1
     assert len(provenance) == 1, "a duplicate reviewer must not create a second row"
     assert provenance[0].original_index == 0, "the first entry wins, not the last"
@@ -292,7 +351,7 @@ def test_malformed_artifacts_never_abort_a_run(tmp_path: Path) -> None:
         run, 2, [{"severity": "blocker", "dismissed": False, "file": "z.py", "description": "ok"}]
     )
 
-    findings, _ = read_findings(run, run.name)
+    findings, _ = read_findings(run, run.name, _read_artifacts(run))
     assert [f.round for f in findings] == [2]
     assert active_blockers(findings) == 1
 
@@ -307,7 +366,7 @@ def test_rounds_past_nine_are_ordered_numerically(tmp_path: Path) -> None:
             i,
             [{"severity": "minor", "dismissed": False, "file": f"{i}.py", "description": "d"}],
         )
-    findings, _ = read_findings(run, run.name)
+    findings, _ = read_findings(run, run.name, _read_artifacts(run))
     assert [f.round for f in findings] == [2, 10]
 
 
@@ -333,7 +392,7 @@ def test_active_blockers_excludes_dismissed_and_non_blockers(tmp_path: Path) -> 
             },
         ],
     )
-    findings, _ = read_findings(run, run.name)
+    findings, _ = read_findings(run, run.name, _read_artifacts(run))
     assert len(findings) == 3
     assert active_blockers(findings) == 1, "only the active blocker counts"
 
@@ -353,9 +412,7 @@ def test_the_headline_and_the_curve_cannot_disagree(tmp_path: Path) -> None:
     (run / "round-0").mkdir(parents=True)
     (run / "run-init.json").write_text("{}")
     # The artifact is GONE; only the manifest proves what this round found.
-    (run / "round-0" / "manifest.json").write_text(
-        json.dumps({"synthesizer": {"active_blocker_count": 2}})
-    )
+    (run / "round-0" / "manifest.json").write_text(json.dumps({"synthesizer": _synth_counts(2)}))
     (run / "loop-manifest.json").write_text(
         json.dumps({"run_id": run.name, "final_exit_code": 30, "rounds": [{}]})
     )
@@ -366,21 +423,26 @@ def test_the_headline_and_the_curve_cannot_disagree(tmp_path: Path) -> None:
     curve = blocker_curve(conn)
     assert headline == 2
     assert curve == [(0, 2, 1)], "the curve must report the same 2, not a false zero"
-    assert conn.execute("SELECT blockers_source FROM rounds").fetchone()[0] == "manifest"
+    assert conn.execute("SELECT counts_source FROM rounds").fetchone()[0] == "manifest"
 
 
-def test_a_string_dismissed_value_does_not_dismiss_a_blocker(tmp_path: Path) -> None:
-    """`dismissed="false"` is a TRUTHY string. Truth-testing it marked an ACTIVE blocker
-    dismissed and quietly shrank every count derived from it."""
+def test_a_string_dismissed_value_rejects_the_artifact_atomically(tmp_path: Path) -> None:
+    """`dismissed="false"` is not a real boolean. The same malformed artifact must be rejected
+    by both readers rather than letting one consumer treat it as evidence."""
     run = tmp_path / ".syncade" / "runs" / "2026-02-02T00-00-00"
     _round(
         run,
         0,
         [{"severity": "blocker", "dismissed": "false", "file": "a.py", "description": "d"}],
     )
-    findings, _ = read_findings(run, run.name)
-    assert findings[0].dismissed == 0
-    assert active_blockers(findings) == 1
+    artifacts = _read_artifacts(run)
+    findings, provenance = read_findings(run, run.name, artifacts)
+    rows = read_rounds(run, run.name, artifacts)
+    assert findings == []
+    assert provenance == []
+    assert [(r.blockers, r.minors, r.nits, r.dismissed, r.counts_source) for r in rows] == [
+        (0, 0, 0, 0, "manifest")
+    ]
 
 
 def test_provenance_from_a_reviewer_outside_the_panel_is_dropped(tmp_path: Path) -> None:
@@ -406,16 +468,16 @@ def test_provenance_from_a_reviewer_outside_the_panel_is_dropped(tmp_path: Path)
     (run / "round-0" / "manifest.json").write_text(
         json.dumps({"reviewers": [{"name": "r1"}, {"name": "r2"}]})
     )
-    _, provenance = read_findings(run, run.name)
+    _, provenance = read_findings(run, run.name, _read_artifacts(run))
     assert [p.reviewer_name for p in provenance] == ["r1"]
 
 
-def test_a_partially_malformed_artifact_degrades_rather_than_undercounting(tmp_path: Path) -> None:
-    """Dropping three of five entries and reporting two is a FALSE count, not a partial one.
+def test_a_non_object_artifact_entry_degrades_rather_than_undercounting(tmp_path: Path) -> None:
+    """Dropping a non-object entry and reporting the rest is a false count, not a partial one.
 
-    The round falls back to its manifest and records `blockers_source='manifest'`, so the number
-    is honest about where it came from. BOTH read_rounds() and read_findings() must agree: the
-    latter must yield no rows for that round, not a partial subset that contradicts the former.
+    The round falls back to its manifest and records `counts_source='manifest'`, so the vector
+    is honest about where it came from. For this structural failure, BOTH read_rounds() and
+    read_findings() must reject the artifact rather than persisting a contradictory subset.
     """
     run = tmp_path / ".syncade" / "runs" / "2026-04-04T00-00-00"
     d = run / "round-0"
@@ -423,15 +485,84 @@ def test_a_partially_malformed_artifact_degrades_rather_than_undercounting(tmp_p
     (d / "synthesizer.parsed.json").write_text(
         json.dumps({"consolidated_findings": [{"severity": "blocker", "dismissed": False}, "junk"]})
     )
-    (d / "manifest.json").write_text(json.dumps({"synthesizer": {"active_blocker_count": 5}}))
+    (d / "manifest.json").write_text(json.dumps({"synthesizer": _synth_counts(5)}))
     (run / "run-init.json").write_text("{}")
 
-    rows = read_rounds(run, run.name)
-    assert [(r.blockers, r.blockers_source) for r in rows] == [(5, "manifest")]
+    artifacts = _read_artifacts(run)
+    rows = read_rounds(run, run.name, artifacts)
+    assert [(r.blockers, r.counts_source) for r in rows] == [(5, "manifest")]
 
     # read_findings() must yield nothing for this round: persisting the valid-looking subset
     # while read_rounds() reports manifest-backed counts leaves metrics.db internally
     # contradictory (rounds says 5 manifest-backed blockers; findings says 1 from the artifact).
-    findings, provenance = read_findings(run, run.name)
+    findings, provenance = read_findings(run, run.name, artifacts)
     assert findings == [], "partial artifact must not produce any finding rows"
     assert provenance == [], "partial artifact must not produce any provenance rows"
+
+
+def test_round_authority_carries_one_atomic_count_vector(tmp_path: Path) -> None:
+    """Every per-round count comes from the artifact when its finding list is complete."""
+    run = tmp_path / ".syncade" / "runs" / "2026-05-05T00-00-00"
+    round_dir = run / "round-0"
+    round_dir.mkdir(parents=True)
+    findings = [
+        {"severity": "blocker", "dismissed": False},
+        {"severity": "minor", "dismissed": False},
+        {"severity": "nit", "dismissed": False},
+        {"severity": "blocker", "dismissed": True},
+    ]
+    (round_dir / "synthesizer.parsed.json").write_text(
+        json.dumps({"consolidated_findings": findings})
+    )
+    (round_dir / "manifest.json").write_text(json.dumps({"synthesizer": _synth_counts(9, 8, 7, 6)}))
+
+    artifacts = _read_artifacts(run)
+    rows = read_rounds(run, run.name, artifacts)
+
+    assert [(r.blockers, r.minors, r.nits, r.dismissed, r.counts_source) for r in rows] == [
+        (1, 1, 1, 1, "artifacts")
+    ]
+
+
+def test_round_count_vector_falls_back_atomically_or_becomes_unknown(tmp_path: Path) -> None:
+    """A bad artifact uses all four manifest counts; a partial manifest proves none of them."""
+    run = tmp_path / ".syncade" / "runs" / "2026-06-06T00-00-00"
+    cases = (
+        ((4, 3, 2, 1), {"severity": "unknown", "dismissed": False}),
+        (None, {"severity": "blocker", "dismissed": "false"}),
+        ((4, True, 2, 1), {"severity": "unknown", "dismissed": False}),
+        ((4, 3, -2, 1), {"severity": "unknown", "dismissed": False}),
+        ((4, 3, 2, 1), {"severity": [], "dismissed": False}),
+    )
+    for index, (manifest_counts, invalid_finding) in enumerate(cases):
+        round_dir = run / f"round-{index}"
+        round_dir.mkdir(parents=True)
+        (round_dir / "synthesizer.parsed.json").write_text(
+            json.dumps(
+                {
+                    "consolidated_findings": [
+                        {"severity": "blocker", "dismissed": False},
+                        invalid_finding,
+                    ]
+                }
+            )
+        )
+        if manifest_counts is None:
+            synth = {"active_blocker_count": 99}
+        else:
+            synth = _synth_counts(*manifest_counts)
+        (round_dir / "manifest.json").write_text(json.dumps({"synthesizer": synth}))
+
+    artifacts = _read_artifacts(run)
+    rows = read_rounds(run, run.name, artifacts)
+    findings, provenance = read_findings(run, run.name, artifacts)
+
+    assert [(r.blockers, r.minors, r.nits, r.dismissed, r.counts_source) for r in rows] == [
+        (4, 3, 2, 1, "manifest"),
+        (0, 0, 0, 0, "unknown"),
+        (0, 0, 0, 0, "unknown"),
+        (0, 0, 0, 0, "unknown"),
+        (4, 3, 2, 1, "manifest"),
+    ]
+    assert findings == []
+    assert provenance == []
