@@ -22,7 +22,7 @@ it. 0.7.5 adds only a test-harness compatibility fix; runtime behaviour is uncha
   tests a version-independent seam without changing user-visible behaviour.
 
 
-## [0.7.4] — 2026-08-20
+## 0.7.4 (unpublished release rehearsal) — 2026-08-20
 
 > **Release rehearsal only; never published.** The oldest-supported-dependency CI job failed
 > before the public push, so there is no `0.7.4` on PyPI and no public GitHub Release or tag. The
@@ -665,7 +665,6 @@ Initial public release.
 
 [Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.5...HEAD
 [0.7.5]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.5
-[0.7.4]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.4
 [0.7.3]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.3
 [0.7.2]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.2
 [0.7.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.1
