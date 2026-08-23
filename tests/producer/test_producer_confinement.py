@@ -2,8 +2,8 @@
 absolute main-repo / run-artifact path, and every input it references must
 resolve INSIDE the producer worktree.
 
-Mirrors the reviewer worktree-escape hardening (``orchestrator/round.py``): a
-yolo producer handed an absolute path to the operator repo or a run artifact
+Mirrors the reviewer workspace-escape hardening (``orchestrator/round.py``): a
+producer handed an absolute path to the operator repo or a run artifact
 can be lured OUT of its isolated worktree to read or write the live repo. The
 fix stages every input inside the worktree and renders worktree-relative refs.
 """
@@ -12,10 +12,121 @@ from __future__ import annotations
 
 import subprocess
 
+from syncade.adapters.base import ReviewerInvocationError
 from syncade.adapters.fake import FakeProducerAdapter
 from syncade.config import ProducerConfig
+from syncade.env_scrub import value_references_repo_path
+from syncade.process import SubprocessResult
 from syncade.producer import run_producer
+from syncade.producer_workspace import ProducerWorkspaceManager
 from tests.producer._helpers import _git_required, _seed_repo
+
+
+def test_dispatched_producer_env_and_argv_name_only_actor_paths(tmp_path, monkeypatch):
+    _git_required()
+    repo_root = tmp_path / "operator-repo"
+    repo_root.mkdir()
+    starting_sha = _seed_repo(repo_root)
+    pr_doc = repo_root / "pr.md"
+    pr_doc.write_text("# PR\n", encoding="utf-8")
+    findings = repo_root / ".syncade" / "runs" / "r" / "round-0" / "findings.md"
+    findings.parent.mkdir(parents=True)
+    findings.write_text("# Findings\n", encoding="utf-8")
+    actor = ProducerWorkspaceManager(repo_root, "run", base_dir=tmp_path / "stores").create(
+        starting_sha
+    )
+    monkeypatch.setenv("OPERATOR_PATH", str(repo_root / "secret"))
+    monkeypatch.setenv("GIT_DIR", str(repo_root / ".git"))
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(repo_root))
+
+    captured = {}
+
+    def capture(argv, *, cwd, env, timeout, input_text, capture_prefix):
+        captured.update(argv=argv, cwd=cwd, env=env, input_text=input_text)
+        return SubprocessResult(0, "", "", 0.0)
+
+    monkeypatch.setattr("syncade.producer_attempt.run_subprocess", capture)
+    adapter = FakeProducerAdapter()
+    result = run_producer(
+        worktree_path=actor.path,
+        starting_sha=starting_sha,
+        pr_doc_path=pr_doc,
+        findings_md_path=findings,
+        test_run_stdout_path=None,
+        producer_config=ProducerConfig(),
+        timeout_seconds=30.0,
+        round_number=0,
+        max_rounds=2,
+        repo_root=repo_root,
+        adapter=adapter,
+    )
+
+    assert result.outcome == "stalled"
+    assert captured["cwd"] == actor.path
+    assert captured["env"]["PWD"] == str(actor.path.resolve())
+    assert captured["env"]["TMPDIR"].startswith(str((actor.path / ".git").resolve()))
+    assert captured["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert not any(
+        key.startswith("GIT_") for key in captured["env"] if key != "GIT_NO_REPLACE_OBJECTS"
+    )
+    assert not any(
+        value_references_repo_path(value, repo_root.resolve())
+        for value in (*captured["argv"], adapter.invocations[0][2], *captured["env"].values())
+    )
+
+
+def test_committed_after_error_stays_only_in_standalone_repository(tmp_path):
+    _git_required()
+    repo_root = tmp_path / "operator-repo"
+    repo_root.mkdir()
+    starting_sha = _seed_repo(repo_root)
+    pr_doc = repo_root / "pr.md"
+    pr_doc.write_text("# PR\n", encoding="utf-8")
+    findings = repo_root / ".syncade" / "runs" / "r" / "round-0" / "findings.md"
+    findings.parent.mkdir(parents=True)
+    findings.write_text("# Findings\n", encoding="utf-8")
+    actor = ProducerWorkspaceManager(repo_root, "run", base_dir=tmp_path / "stores").create(
+        starting_sha
+    )
+    session_error = ReviewerInvocationError(
+        "session ended after commit",
+        returncode=1,
+        stdout="",
+        stderr="",
+    )
+
+    result = run_producer(
+        worktree_path=actor.path,
+        starting_sha=starting_sha,
+        pr_doc_path=pr_doc,
+        findings_md_path=findings,
+        test_run_stdout_path=None,
+        producer_config=ProducerConfig(),
+        timeout_seconds=30.0,
+        round_number=0,
+        max_rounds=2,
+        repo_root=repo_root,
+        adapter=FakeProducerAdapter(
+            commit_message="fix: committed before session error",
+            canned_exception=session_error,
+        ),
+    )
+
+    assert result.outcome == "committed"
+    assert result.ending_sha != starting_sha
+    subprocess.run(
+        ["git", "cat-file", "-e", f"{result.ending_sha}^{{commit}}"],
+        cwd=actor.path,
+        check=True,
+    )
+    assert (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{result.ending_sha}^{{commit}}"],
+            cwd=repo_root,
+            capture_output=True,
+        ).returncode
+        != 0
+    )
 
 
 def test_producer_prompt_confines_inputs_to_worktree(tmp_path):
@@ -50,14 +161,8 @@ def test_producer_prompt_confines_inputs_to_worktree(tmp_path):
     test_stdout = round_dir / "test-run.stdout"
     test_stdout.write_text("FAIL: test_x\n", encoding="utf-8")
 
-    # Provision a real producer worktree at the seed SHA, OUTSIDE repo_root.
-    worktree = tmp_path / "producer-worktree"
-    subprocess.run(
-        ["git", "worktree", "add", str(worktree), starting_sha],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-    )
+    manager = ProducerWorkspaceManager(repo_root, "run", base_dir=tmp_path / "stores")
+    worktree = manager.create(starting_sha).path
 
     # No commit_message → no commit; we only inspect the rendered prompt,
     # which the fake records at build_invocation time.
@@ -125,13 +230,8 @@ def test_producer_stages_out_of_repo_pr_doc_into_worktree(tmp_path):
     findings = round_dir / "findings.md"
     findings.write_text("# Findings\n", encoding="utf-8")
 
-    worktree = tmp_path / "producer-worktree"
-    subprocess.run(
-        ["git", "worktree", "add", str(worktree), starting_sha],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-    )
+    manager = ProducerWorkspaceManager(repo_root, "run", base_dir=tmp_path / "stores")
+    worktree = manager.create(starting_sha).path
 
     fake = FakeProducerAdapter()
     run_producer(

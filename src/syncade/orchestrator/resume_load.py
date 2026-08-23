@@ -26,6 +26,39 @@ from .resume_types import (
 _REHYDRATED_DIFF_PRESENT_SENTINEL = "[syncade resume: persisted diff was present]\n"
 
 
+def _rehydrate_candidate_import(block: object):
+    """Rebuild the trusted-import outcome from a completed round's manifest block.
+
+    Every operator-facing surface that names a candidate's location — the loop summary, the
+    handoff, the next-steps block — renders it from ``ProducerResult.candidate_import``. Without
+    this, a resumed run told the operator a candidate had landed and gave them no ref to find it
+    with, which is exactly the disclosure PR-h-05 exists to make truthful.
+
+    VALIDATED, never trusted: an unknown status, a non-string ref, or a
+    status/recovery-ref/error combination the importer could not have produced is a malformed
+    manifest, not a value to carry forward. ``CandidateImportResult`` enforces the last of those
+    in ``__post_init__``, so this function only has to reject what would not reach it as a
+    ``ValueError`` — which the caller wraps with the manifest path.
+
+    The ref is NOT re-resolved against the object database. The manifest records what the import
+    CREATED; an operator who has since deleted or moved that ref has not made the record false.
+    """
+    from syncade.producer_import import CandidateImportResult
+
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise ValueError("candidate_import is not an object")
+    status = block.get("status")
+    if status not in ("imported", "invalid", "error"):
+        raise ValueError(f"candidate_import has unknown status {status!r}")
+    recovery_ref, error = block.get("recovery_ref"), block.get("error")
+    for name, value in (("recovery_ref", recovery_ref), ("error", error)):
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"candidate_import.{name} is not a string or null")
+    return CandidateImportResult(status=status, recovery_ref=recovery_ref, error=error)
+
+
 def _current_head_sha(repo_root: Path) -> str:
     """Return current HEAD as a full object ID. Wraps git rev-parse."""
     try:
@@ -436,6 +469,9 @@ def load_completed_round(round_dir: Path):
                 ),
                 provider=producer_provider,
                 model=producer_model,
+                candidate_import=_rehydrate_candidate_import(
+                    producer_block.get("candidate_import")
+                ),
             )
         except ResumeError:
             raise

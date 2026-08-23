@@ -21,6 +21,7 @@ from syncade.adapters.producer_openai import OpenAIProducerAdapter
 from syncade.config import ProducerConfig
 from syncade.findings import ReviewerOutputError
 from syncade.process import SubprocessResult
+from syncade.producer_workspace import ProducerWorkspaceManager
 from tests.test_worktree_env import make_worktree_src, resolve_syncade_in_child
 
 # ---------------------------------------------------------------------------
@@ -43,19 +44,27 @@ class TestOpenAIProducerBuildInvocation:
         with pytest.raises(ValueError, match="trusted"):
             adapter.build_invocation(config, tmp_path, "the prompt")
 
-    def test_yolo_permissions_use_bypass_flag(self, tmp_path):
+    def test_confined_permissions_use_workspace_write(self, tmp_path):
         adapter = OpenAIProducerAdapter()
         config = ProducerConfig(
             provider="openai",
             model="gpt-5.5",
             thinking="low",
-            permissions="yolo",
+            permissions="confined",
         )
         inv = adapter.build_invocation(config, tmp_path, "p")
-        assert "--dangerously-bypass-approvals-and-sandbox" in inv.argv
-        # yolo does not use the sandboxed -s/-c approval_policy pairing
-        assert "workspace-write" not in inv.argv
-        assert "approval_policy=never" not in inv.argv
+        assert "--dangerously-bypass-approvals-and-sandbox" not in inv.argv
+        assert "workspace-write" in inv.argv
+        assert "approval_policy=never" in inv.argv
+        assert "sandbox_workspace_write.exclude_slash_tmp=true" in inv.argv
+        assert "sandbox_workspace_write.exclude_tmpdir_env_var=true" in inv.argv
+        roots = next(
+            arg for arg in inv.argv if arg.startswith("sandbox_workspace_write.writable_roots=")
+        )
+        assert json.loads(roots.split("=", 1)[1]) == [str(tmp_path / ".git")]
+        assert "--ephemeral" in inv.argv
+        assert "--ignore-user-config" in inv.argv
+        assert "--ignore-rules" in inv.argv
 
     def test_safe_permissions_rejected_at_build_invocation(self, tmp_path):
         adapter = OpenAIProducerAdapter()
@@ -75,7 +84,7 @@ class TestOpenAIProducerBuildInvocation:
             provider="anthropic",
             model="x",
             thinking="high",
-            permissions="yolo",
+            permissions="confined",
         )
         with pytest.raises(ValueError) as exc_info:
             adapter.build_invocation(config, tmp_path, "p")
@@ -94,7 +103,7 @@ class TestOpenAIProducerBuildInvocation:
             provider="openai",
             model="gpt-5.5",
             thinking="xhigh",
-            permissions="yolo",
+            permissions="confined",
         )
         inv = adapter.build_invocation(config, tmp_path, "p")
         assert "model_reasoning_effort=xhigh" in inv.argv
@@ -105,7 +114,7 @@ class TestOpenAIProducerBuildInvocation:
         worktree = make_worktree_src(tmp_path / "wt")
         adapter = OpenAIProducerAdapter()
         config = ProducerConfig(
-            provider="openai", model="gpt-5.5", thinking="high", permissions="yolo"
+            provider="openai", model="gpt-5.5", thinking="high", permissions="confined"
         )
         inv = adapter.build_invocation(config, worktree, "p")
         resolved = resolve_syncade_in_child(inv.env, worktree)
@@ -392,3 +401,51 @@ class TestFakeProducerAdapter:
         assert mid_sha != end_sha
         # Three distinct SHAs across the chain
         assert len({start_sha, mid_sha, end_sha}) == 3
+
+    @pytest.mark.parametrize("parse_succeeds", [True, False])
+    def test_fixture_commit_never_reaches_the_operator_repository(self, tmp_path, parse_succeeds):
+        """The fake producer must leave the operator repository byte-identical (PR-h-05 Item 4).
+
+        The fake used to transfer its fixture commit into the operator object database on a
+        successful ``parse_output`` — a test-only seam that gave an actor direct write authority
+        over operator storage, which is precisely what this PR removes. Transfer is now the
+        trusted importer's alone. Asserted for BOTH parse outcomes so a re-added seam cannot hide
+        behind the success path.
+        """
+        operator = tmp_path / "operator"
+        operator.mkdir()
+        _init_git_worktree(operator)
+        starting_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=operator, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        actor = ProducerWorkspaceManager(operator, "run", base_dir=tmp_path / "stores").create(
+            starting_sha
+        )
+        refs_before = subprocess.run(
+            ["git", "show-ref"], cwd=operator, check=True, capture_output=True, text=True
+        ).stdout
+
+        failure = (
+            None
+            if parse_succeeds
+            else ReviewerInvocationError("f", returncode=1, stdout="", stderr="")
+        )
+        fake = FakeProducerAdapter(commit_message="fix: fixture", canned_exception=failure)
+        fake.build_invocation(ProducerConfig(), actor.path, "p")
+        ending_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=actor.path, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        assert ending_sha != starting_sha  # the fixture commit exists in the ACTOR store
+
+        if parse_succeeds:
+            fake.parse_output(SubprocessResult(0, "", "", 0.0))
+        else:
+            with pytest.raises(ReviewerInvocationError):
+                fake.parse_output(SubprocessResult(0, "", "", 0.0))
+
+        absent = subprocess.run(["git", "cat-file", "-e", f"{ending_sha}^{{commit}}"], cwd=operator)
+        assert absent.returncode != 0, "actor object reached the operator object database"
+        refs_after = subprocess.run(
+            ["git", "show-ref"], cwd=operator, check=True, capture_output=True, text=True
+        ).stdout
+        assert refs_after == refs_before

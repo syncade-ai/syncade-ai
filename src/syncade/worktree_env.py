@@ -4,7 +4,7 @@
 ``.pth`` (``__editable__.syncade-<version>.pth``) into the venv's site-packages
 containing a bare path to the operator's MAIN repo ``src``. A bare-path ``.pth``
 line is processed by :mod:`site` at interpreter startup and added to
-``sys.path`` — **cwd-independent**. So every worktree subprocess (reviewers,
+``sys.path`` — **cwd-independent**. So every actor-workspace subprocess (reviewers,
 producer, the authoritative test leg, the checks leg) that inherits the
 operator's environment resolves ``import syncade`` — and runs ``pytest`` — against
 MAIN's ``src``, not the worktree's snapshot. That is a correctness hole (the test
@@ -27,9 +27,9 @@ launches a real subprocess in *this* venv (whose ``.pth`` is live) and asserts
 injects a strict editable-style ``MetaPathFinder`` and verifies the startup shim
 neutralizes it before the first ``syncade`` import.
 
-One helper, all four legs — the two reviewer adapters, the two producer adapters,
-``test_runner.run_tests`` — including the mechanical-check leg —
-so no leg can drift back onto the inherited env.
+All four legs use :func:`worktree_scoped_env` for Python import fidelity. Reviewer
+dispatch then applies :func:`reviewer_scoped_env` to remove ambient Git routing and
+block upward repository discovery from its Git-less export.
 """
 
 from __future__ import annotations
@@ -37,6 +37,8 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+
+from syncade.env_scrub import path_is_relative_to, scrub_env_for_repo_paths
 
 _SHIM_DIRNAME = "syncade-worktree-env-shim-v1"
 _SHIM_SOURCE = """\
@@ -124,10 +126,74 @@ def worktree_scoped_env(worktree_path: Path) -> dict[str, str]:
     if existing:
         scoped_entries.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(scoped_entries)
-    # Any git command run inside a worktree subprocess must see the ORIGINAL
-    # object graph.  `refs/replace/*` lives in the shared common dir and is
-    # writable from a producer worktree, so without this flag a reviewer doing
-    # `git show HEAD:f.py` or a test doing `git diff HEAD` would silently read
+    # Any git command run inside a trusted linked-worktree subprocess must see
+    # the ORIGINAL object graph. Without this flag, `git diff HEAD` could read
     # replacement objects rather than the objects named by the snapshot OID.
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
+
+
+def reviewer_git_ceiling(workspace_path: Path) -> str:
+    """Return a safe Git discovery ceiling for a reviewer workspace."""
+    ceiling = str(workspace_path.parent.resolve())
+    if os.pathsep in ceiling:
+        raise ValueError(
+            "reviewer workspace parent contains the Git path-list separator "
+            f"{os.pathsep!r}: {ceiling}"
+        )
+    return ceiling
+
+
+def reviewer_scoped_env(
+    workspace_path: Path,
+    base_env: dict[str, str],
+    *,
+    repo_root: Path,
+) -> dict[str, str]:
+    """Remove Git discovery channels from a reviewer subprocess environment."""
+    workspace = workspace_path.resolve(strict=False)
+    if path_is_relative_to(workspace, repo_root):
+        raise ValueError("reviewer workspace must not be inside the operator repository")
+    env = {
+        key: value
+        for key, value in scrub_env_for_repo_paths(base_env, repo_root).items()
+        if not key.startswith("GIT_")
+    }
+    env["PWD"] = str(workspace)
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_DISCOVERY_ACROSS_FILESYSTEM"] = "0"
+    # Git still searches above a ceiling equal to the current directory.
+    # The workspace's parent is the first directory Git must not enter.
+    env["GIT_CEILING_DIRECTORIES"] = reviewer_git_ceiling(workspace_path)
+    return env
+
+
+def producer_scoped_env(
+    workspace_path: Path,
+    base_env: dict[str, str],
+    *,
+    repo_root: Path,
+) -> dict[str, str]:
+    """Constrain producer environment paths to its standalone repository."""
+    workspace = workspace_path.resolve(strict=True)
+    git_dir = workspace / ".git"
+    if not git_dir.is_dir() or git_dir.is_symlink():
+        raise ValueError("producer workspace requires a real .git directory")
+    tmp_dir = git_dir / "syncade-tmp"
+    tmp_dir.mkdir(exist_ok=True)
+
+    env = {
+        key: value
+        for key, value in scrub_env_for_repo_paths(base_env, repo_root).items()
+        if not key.startswith("GIT_")
+    }
+    env.update(
+        {
+            "PWD": str(workspace),
+            "TMPDIR": str(tmp_dir),
+            "TMP": str(tmp_dir),
+            "TEMP": str(tmp_dir),
+            "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+    )
     return env

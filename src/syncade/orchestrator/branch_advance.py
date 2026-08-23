@@ -1,12 +1,13 @@
 """Branch-advance helper + status Literal.
 
-Holds the fast-forward ``git update-ref`` discipline that promotes the
-producer's detached-HEAD commit to the operator's named branch, plus the
+Holds the fast-forward ``git update-ref`` discipline for a candidate already
+validated, imported, and recovery-anchored by the trusted importer, plus the
 categorical ``BranchAdvanceStatus`` type the loop terminator switches on.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -28,9 +29,9 @@ BranchAdvanceStatus = Literal[
   round's snapshot will pick up the new HEAD.
 - ``skipped_detached_head`` — the operator was on detached HEAD at
   invocation; no named branch to advance. The producer's commits
-  are in ``.git`` but unreachable from any branch. The orchestrator
-  MUST terminate the loop: the next round's snapshot would read the
-  same starting SHA again, so reviewers could SHIP stale code.
+  remain at their recovery ref. The
+  orchestrator MUST terminate the loop: the next round's snapshot
+  would read the same starting SHA again, so reviewers could SHIP stale code.
 - ``non_descendant`` — the producer's ending SHA is NOT a
   descendant of the starting SHA. The orchestrator MUST terminate the loop;
   continuing would dispatch the next round against the original
@@ -46,8 +47,11 @@ _GIT_TIMEOUT_SECONDS = 30.0
 
 
 def _run_git(argv: list[str], *, cwd: Path, logger: Logger) -> SubprocessResult | None:
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env["GIT_GRAFT_FILE"] = os.devnull
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
-        return run_subprocess(argv, cwd=cwd, timeout=_GIT_TIMEOUT_SECONDS)
+        return run_subprocess(argv, cwd=cwd, env=env, timeout=_GIT_TIMEOUT_SECONDS)
     except SubprocessError as exc:
         logger.safety(
             f"orchestrator: git command {argv[:2]!r} failed before completion: {exc}. "
@@ -84,19 +88,20 @@ def _advance_branch_ref(
     the orchestrator can't advance any named branch — emits a
     warning and returns ``skipped_detached_head``. The caller treats
     this as a terminal non-SHIP state so the next reviewers never
-    inspect stale input. The producer's commits are still in ``.git``
-    (worktrees share ``.git``), so the operator can manually advance
-    their branch via ``git log <producer-sha>`` + ``git update-ref``
-    if they want to keep the commits.
+    inspect stale input. Trusted import has already made the recovery ref durable.
     """
     if snapshot.branch is None:
+        recovery_ref = (
+            producer_result.candidate_import.recovery_ref
+            if producer_result.candidate_import is not None
+            else None
+        )
         logger.safety(
             f"orchestrator: producer committed {producer_result.ending_sha[:12]} "
             f"on a detached HEAD; the operator was on detached HEAD at "
             f"invocation, so no named branch ref to advance. The "
-            f"producer's commits are in .git — inspect with `git log "
-            f"{producer_result.ending_sha[:12]}` and manually advance "
-            f"the branch you want them on."
+            f"candidate is imported but no branch was moved. Recovery ref: "
+            f"{recovery_ref or '(missing)'}."
         )
         return "skipped_detached_head"
 
@@ -129,8 +134,9 @@ def _advance_branch_ref(
             f"of the round-start SHA ({producer_result.starting_sha[:12]}); "
             f"refusing to fast-forward {snapshot.branch}. The "
             f"producer may have done something unusual "
-            f"(git reset, force-update). The commits exist in .git "
-            f"under the producer's SHA — manual intervention required. "
+            f"(git reset, force-update), or the imported candidate became "
+            f"unreadable. Inspect its recovery ref and the preserved producer "
+            f"repository; the operator branch remains unchanged. "
             f"The loop will terminate as producer_stalled (per loop policy "
             f"brief: 'treats the round as a stall') to prevent the "
             f"next round from dispatching reviewers against stale "
@@ -154,8 +160,8 @@ def _advance_branch_ref(
     if update.returncode != 0:
         logger.safety(
             f"orchestrator: git update-ref refs/heads/{snapshot.branch} "
-            f"failed: {update.stderr.strip()[:200]!r}. The producer's "
-            f"commits are in .git but the branch ref wasn't advanced. "
+            f"failed: {update.stderr.strip()[:200]!r}. The branch ref was not "
+            f"advanced; inspect the candidate recovery ref and run artifacts. "
             f"The loop will terminate as producer_stalled to prevent "
             f"the next round from dispatching reviewers against stale "
             f"code at the unadvanced ref."

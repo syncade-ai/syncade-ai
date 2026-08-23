@@ -15,6 +15,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from syncade.producer_result import disposition_of
+
 from ._atomic import atomic_write_text
 from .checks import _LOOP_NEXT_STEPS_CHECK_FAILURE, _final_round_blocking_check_failure
 from .loop_summary_text import (
@@ -25,6 +27,7 @@ from .loop_summary_text import (
     _round_duration_seconds,
     _round_verdict_label,
     _run_usages,
+    candidate_location_note,
 )
 
 _TERMINATION_REASON_LABELS: dict[str, str] = {
@@ -76,8 +79,7 @@ def persist_loop_summary(
     summary.
 
     Top-level artifact alongside the per-round directories. Rolls
-    up every round + final verdict + the SHA series the loop's
-    producer commits produced. The operator reading
+    up every round + final verdict + the producer-candidate SHA series. The operator reading
     ``loop-summary.md`` sees the whole loop in one document
     without traversing N per-round `summary.md` files.
 
@@ -275,17 +277,17 @@ def persist_loop_summary(
         lines.append(f"- Per-round artifacts: [round-{r.round_idx}/](round-{r.round_idx}/)")
         lines.append("")
 
-    # --- Commit series produced by this loop ----------------------
-    lines.append("## Commit series produced by this loop")
+    # --- Operator start + candidate series ------------------------
+    lines.append("## Operator start and producer candidates")
     lines.append("")
     # one-line lead-in. The headline Round 0 SHA invites the
     # operator to look here for the rest of the SHAs; the lead-in
     # makes that link explicit instead of dumping the operator into a
     # bullet list with no framing.
     lines.append(
-        "Each entry is one git commit on the operator's branch, in "
-        "chronological order. The first entry is the pre-loop tree "
-        "state; subsequent entries are producer commits."
+        "The first entry is the operator's pre-loop commit. Subsequent entries "
+        "are producer candidate SHAs. A recovery ref proves trusted import; only "
+        "the run's branch-advance status proves that the operator branch moved."
     )
     lines.append("")
     if not rounds:
@@ -297,23 +299,35 @@ def persist_loop_summary(
         lines.append(f"- `{starting_sha[:12]}` — round 0 starting SHA (operator's commit)")
         any_commits = False
         for r in rounds:
-            if r.producer_result is None or r.producer_result.outcome != "committed":
+            if r.producer_result is None:
+                continue
+            # `committed` is not the only outcome that produced commits. A producer that
+            # commits and THEN times out or crashes lands as `subprocess_error` with a moved
+            # HEAD — real work, in the standalone repository that `_unlanded_candidate_exists`
+            # now preserves for exactly this case. Keying the series on the outcome LABEL made
+            # the summary say "no producer commits" about a repository the same run had just
+            # told the operator to go and inspect.
+            moved_head = r.producer_result.ending_sha != r.producer_result.starting_sha
+            if r.producer_result.outcome != "committed" and not moved_head:
                 continue
             any_commits = True
             ending = r.producer_result.ending_sha[:12]
-            # include the producer commit's
-            # subject line so the operator can scan the series
-            # without dropping to ``git log``. Looked up via
-            # ``git log -1 --pretty=format:'%s' <ending_sha>`` —
-            # wrapped in try/except so any git failure (missing
-            # repo_root, weird ref state) degrades to the
-            # subject-less form rather than crashing the summary
-            # write.
+            # Best-effort subject lookup succeeds only when the candidate is
+            # already operator-visible. Candidates not reachable in the operator
+            # repository render as SHA-only.
             subject = _producer_commit_subject(repo_root, r.producer_result.ending_sha)
             if subject:
                 lines.append(f'- `{ending}` — round {r.round_idx} producer ("{subject}")')
             else:
                 lines.append(f"- `{ending}` — round {r.round_idx} producer")
+            _disp = disposition_of(r.producer_result)
+            if _disp.reachable_ref is not None:
+                lines.append(f"  - Recovery ref: `{_disp.reachable_ref}`")
+            elif r.producer_result.outcome != "committed":
+                lines.append(
+                    "  - Committed before the subprocess failed; never trusted-imported, so it "
+                    "exists ONLY in the preserved standalone producer repository."
+                )
         if not any_commits:
             # phrasing branches on termination
             # reason so the empty-series wording matches what
@@ -345,6 +359,9 @@ def persist_loop_summary(
             "- See `manifest.json` and the per-round directories for details.",
         )
     lines.append(next_steps)
+    location = candidate_location_note(rounds, final_exit_code=final_exit_code)
+    if location is not None:
+        lines.append(location)
     lines.append("")
 
     summary_path = run_dir / "loop-summary.md"

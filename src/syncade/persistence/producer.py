@@ -42,6 +42,8 @@ class ProducerArtifactPaths:
     stderr: Path
     commit_sha: Path
     error: Path | None
+    recovery_ref: Path | None
+    import_error: Path | None
 
 
 def persist_producer_result(
@@ -160,11 +162,23 @@ def persist_producer_result(
             )
         atomic_write_text(error_path, "\n".join(lines))
 
+    candidate_import = producer_result.candidate_import
+    recovery_ref_path: Path | None = None
+    import_error_path: Path | None = None
+    if candidate_import is not None and candidate_import.recovery_ref is not None:
+        recovery_ref_path = round_dir / f"{PRODUCER_NAME}.recovery-ref.txt"
+        atomic_write_text(recovery_ref_path, f"{candidate_import.recovery_ref}\n")
+    if candidate_import is not None and candidate_import.error is not None:
+        import_error_path = round_dir / f"{PRODUCER_NAME}.import.error.txt"
+        atomic_write_text(import_error_path, f"{candidate_import.error}\n")
+
     return ProducerArtifactPaths(
         stdout=stdout_path,
         stderr=stderr_path,
         commit_sha=commit_sha_path,
         error=error_path,
+        recovery_ref=recovery_ref_path,
+        import_error=import_error_path,
     )
 
 
@@ -246,5 +260,20 @@ def _producer_manifest_entry(
             "decision": esc.decision,
             "options": list(esc.options),
             "rationale": esc.rationale,
+        }
+    if producer_result.candidate_import is not None:
+        candidate_import = producer_result.candidate_import
+        entry["candidate_import"] = {
+            "status": candidate_import.status,
+            "recovery_ref": candidate_import.recovery_ref,
+            "error": candidate_import.error,
+            "recovery_ref_path": (
+                f"{PRODUCER_NAME}.recovery-ref.txt"
+                if candidate_import.recovery_ref is not None
+                else None
+            ),
+            "error_path": (
+                f"{PRODUCER_NAME}.import.error.txt" if candidate_import.error is not None else None
+            ),
         }
     return entry

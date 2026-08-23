@@ -420,8 +420,8 @@ class TestRunSummaryProducerSection:
         commit instead of saying "hand to producer for fix"
         (which would be misleading — the producer ALREADY tried).
 
-        The committed-producer next-steps should reference the
-        commit SHA AND the producer.stdout artifact."""
+        The committed-producer next-steps should reference the isolated
+        candidate SHA and producer.stdout without claiming import or a next round."""
         round_dir = _make_round_dir(tmp_path)
         path = persist_run_summary(
             round_dir,
@@ -438,9 +438,13 @@ class TestRunSummaryProducerSection:
         )
         text = path.read_text()
         next_section = text[text.find("## Next steps") :]
-        assert "producer subprocess committed" in next_section
+        assert "producer subprocess created isolated candidate" in next_section
         assert "bbbbbbbbbbbb" in next_section
         assert "producer.stdout" in next_section
+        assert "isolated candidate" in next_section
+        assert "not imported" in next_section
+        assert "operator branch and working tree remain unchanged" in next_section
+        assert "next round of reviewers" not in next_section
         # The pre-R1.T4 misleading wording must be gone.
         assert "hand to producer" not in next_section.lower()
 

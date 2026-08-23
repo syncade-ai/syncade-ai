@@ -156,6 +156,8 @@ class CodexAdapter:
         the CLI output format:
 
         - ``codex exec``
+        - ``--skip-git-repo-check``: reviewer workspaces deliberately contain
+          no Git administrative data
         - ``--json``: emit JSONL events on stdout (cleanest parsing target)
         - ``--model <id>``: model from the reviewer config (full name
           like ``gpt-5.5``)
@@ -172,10 +174,10 @@ class CodexAdapter:
           config key is the documented exec-subcommand path).
           ``permissions="safe"`` is **rejected** —
           see :meth:`_validate_permissions`.
-        - ``-C <worktree>``: codex's working-root flag (analogous to
+        - ``-C <workspace>``: codex's working-root flag (analogous to
           claude's ``cwd`` behavior)
-        - ``--add-dir <worktree>``: grants the reviewer tool-access
-          to its worktree (explicit is safer than implicit, same as
+        - ``--add-dir <workspace>``: grants the reviewer tool-access
+          to its workspace (explicit is safer than implicit, same as
           AnthropicAdapter)
         - prompt on STDIN (PR-h-field-01 item 1): ``codex exec`` reads the prompt
           from stdin when no positional PROMPT is given; argv is flag-only
@@ -204,6 +206,7 @@ class CodexAdapter:
         argv: list[str] = [
             "codex",
             "exec",
+            "--skip-git-repo-check",
             "--json",
             "--model",
             reviewer_config.model,

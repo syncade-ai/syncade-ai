@@ -54,10 +54,10 @@ def run_preflight(
     )
 
     # --- Pre-flight dirty-tree refusal in loop mode -----------------
-    # max_rounds > 1 → the loop will run a producer that commits to
-    # the operator's branch. A tracked-modified WIP would race
-    # against the producer's writes (the operator's working tree
-    # would interleave with new commits in confusing ways).
+    # max_rounds > 1 → the loop reserves the current branch as the
+    # destination for accepted producer work. Trusted import keeps candidates
+    # isolated, but preserving this refusal keeps target selection and
+    # eventual trusted landing unambiguous.
     # Untracked-only is fine — those files don't enter any
     # worktree, so they're invisible to both reviewers and the
     # producer. The --force-dirty escape hatch is for operators
@@ -66,10 +66,9 @@ def run_preflight(
     # max_rounds == 1 is warning-only because it runs reviewers + synth and
     # exits; nothing writes to the operator branch.
     #
-    # Resumed loop-mode runs are refused on the same grounds: a resume
-    # still runs the producer and commits to the branch, so a dirty WIP
-    # races just as it would on a fresh run. --force-dirty is the only
-    # escape (resume does not exempt itself).
+    # Resumed loop-mode runs are refused on the same target-selection
+    # grounds. --force-dirty is the only escape (resume does not exempt
+    # itself).
     # The refusal must use the EFFECTIVE cap: a resume rehydrates
     # max_rounds to max(config, resume_plan.max_rounds) later (see
     # loop_resume._rehydrate_resume_state), so reading the un-bumped config
@@ -84,29 +83,30 @@ def run_preflight(
         raise WorktreeError(
             f"uncommitted tracked changes (dirty_state={state!r}); "
             f"loop mode (max_rounds={effective_max_rounds}) "
-            f"commits to your branch and would race against this "
-            f"WIP. Commit, stash, or pass --force-dirty to override. "
+            f"reserves this branch as the producer target, and tracked WIP "
+            f"makes eventual trusted landing ambiguous. Commit, stash, or "
+            f"pass --force-dirty to override. "
             f"To run single-pass with warning-only tracked changes, set max_rounds=1 in "
             f"[loop] or pass --max-rounds 1."
         )
 
-    # --- Default-branch commit guard (PR-v2-26) ---------------------
-    # A committing run (loop mode) fast-forwards the CURRENT branch, so refuse the
-    # default branch unless the operator opted in, and announce the target branch
+    # --- Default-branch target guard (PR-v2-26) ---------------------
+    # Loop mode declares the CURRENT branch as the destination for accepted producer
+    # work, so refuse the default branch unless the operator opted in and announce it
     # BEFORE any dispatch. Placed at the run-entry choke so a direct run_review call
     # and a --resume are covered too, not only the CLI wrapper.
     # will_commit is False when no dispatch will happen: no producer runs on a no-change
-    # or malformed-diff run, so the default-branch guard and commit announcement are moot.
+    # or malformed-diff run, so the default-branch guard and target announcement are moot.
     will_commit = _will_dispatch and effective_max_rounds > 1
     guard_default_branch(
         repo_root, snapshot.branch, allow=allow_default_branch, will_commit=will_commit
     )
     if will_commit:
         # Printed directly to stderr, NOT via logger.event, so it survives --quiet — the
-        # same reason the auth block bypasses quiet. Which branch receives commits is a
+        # same reason the auth block bypasses quiet. The selected producer target is a
         # safety disclosure, and it matters MOST under `--quiet --allow-default-branch`.
         print(
-            f"[syncade] producer commits will land on: {snapshot.branch or '(detached HEAD)'}",
+            f"[syncade] producer target branch: {snapshot.branch or '(detached HEAD)'}",
             file=sys.stderr,
         )
 

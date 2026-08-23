@@ -54,7 +54,6 @@ class ReadyToDispatch:
 
     prompt_arg: str | dict[str, str]
     pr_doc_ref: str
-    pr_doc_is_out_of_repo: bool
     filtered_for_check: str
 
 
@@ -161,7 +160,7 @@ def run_predispatch_gates(
     # round artifacts, and return a phase-failure RoundResult — rather than
     # letting the exception escape run_review with no manifest/summary written.
     try:
-        prompt_arg, pr_doc_ref, pr_doc_is_out_of_repo = build_prompt(
+        prompt_arg, pr_doc_ref = build_prompt(
             repo_root=repo_root,
             snapshot=snapshot,
             config=config,
@@ -207,6 +206,5 @@ def run_predispatch_gates(
     return ReadyToDispatch(
         prompt_arg=prompt_arg,
         pr_doc_ref=pr_doc_ref,
-        pr_doc_is_out_of_repo=pr_doc_is_out_of_repo,
         filtered_for_check=_filtered_for_check,
     )

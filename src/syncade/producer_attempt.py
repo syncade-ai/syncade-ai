@@ -11,6 +11,7 @@ Imported one-way — ``producer`` imports this; this must never import ``produce
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from pathlib import Path
 
@@ -48,9 +49,10 @@ from syncade.prompts import (
     render_producer_prompt,
 )
 from syncade.usage import _auth_mode, usage_for
+from syncade.worktree_env import producer_scoped_env
 
-# Errors that mean the producer's SESSION RAN but its output was the problem — so a commit may
-# have landed first (unlike a timeout/setup failure, where none could). Gates the C1 reconcile.
+# Errors that mean the producer's SESSION RAN but its output was the problem — so an isolated
+# commit may exist first (unlike a timeout/setup failure, where none could). Gates C1 reconcile.
 _SESSION_ERRORS = (ReviewerInvocationError, ReviewerOutputError)
 
 
@@ -96,7 +98,7 @@ def _run_producer_once(
        (:class:`ReviewerInvocationError`,
        :class:`ReviewerOutputError`) also yield
        ``outcome="subprocess_error"``.
-    6. Read the worktree's HEAD post-subprocess; if it equals
+    6. Read the standalone repository's HEAD post-subprocess; if it equals
        ``starting_sha`` → ``outcome="stalled"``, else
        ``outcome="committed"``.
 
@@ -108,13 +110,13 @@ def _run_producer_once(
     (see ``syncade/templates/producer.md``).
 
     Args:
-        worktree_path: The producer worktree's path. Provisioned by
+        worktree_path: The standalone producer repository path. Provisioned by
             the orchestrator at ``starting_sha`` (detached HEAD).
             This module does not create or destroy it; the
             orchestrator owns the lifecycle so a stalled producer's
-            worktree stays inspectable on disk.
-        starting_sha: The full object ID the worktree was checked out
-            at. Must match the worktree's HEAD at function entry —
+            repository stays inspectable on disk.
+        starting_sha: The full object ID the repository was checked out
+            at. Must match its HEAD at function entry —
             mismatch is treated as a subprocess-error outcome.
         pr_doc_path: Path to the PR spec the producer should
             implement against. Staged into the worktree and substituted
@@ -171,10 +173,10 @@ def _run_producer_once(
             ``round_number == 0`` callers work unchanged. Substituted into the
             template's
             ``{prior_round_output}`` placeholder.
-        prior_round_commits: cross-round context. The commit
-            subjects of the prior round's producer commits (derived
-            via ``git log -1 --format=%s`` in the operator's repo by
-            the orchestrator). Defaults to
+        prior_round_commits: cross-round context. The subjects of an
+            imported prior candidate (derived via ``git log -1 --format=%s``
+            in the operator's repo by the orchestrator).
+            Defaults to
             :data:`syncade.prompts._NO_PRIOR_COMMITS_SENTINEL` for
             ``round_number == 0``. Substituted into the template's
             ``{prior_round_commits}`` placeholder.
@@ -248,7 +250,7 @@ def _run_producer_once(
 
     # --- Render the prompt -------------------------------------------
     # Confinement (H4): stage every input INSIDE the worktree and render
-    # WORKTREE-RELATIVE refs. A yolo producer handed an absolute main-repo
+    # WORKSPACE-RELATIVE refs. A producer handed an absolute main-repo
     # or run-artifact path can be lured out of its isolated worktree to
     # touch the live repo (the reviewer analog is closed structurally in
     # round.py). ``worktree_path`` itself stays absolute — it is the
@@ -296,7 +298,19 @@ def _run_producer_once(
 
     # --- Build the invocation ----------------------------------------
     try:
-        invocation = adapter.build_invocation(producer_config, worktree_path, prompt)
+        invocation = adapter.build_invocation(
+            producer_config,
+            worktree_path,
+            prompt,
+        )
+        invocation = dataclasses.replace(
+            invocation,
+            env=producer_scoped_env(
+                worktree_path,
+                invocation.env,
+                repo_root=repo_root,
+            ),
+        )
     except ValueError as exc:
         # Same narrow catch as the synthesizer: only ValueError
         # legitimately comes out of build_invocation (provider /
@@ -424,8 +438,8 @@ def _run_producer_once(
         # move HEAD. if the producer emitted a well-formed
         # escalation block, this is a deliberate "operator decision
         # needed" signal (escalated), not a silent stall. A malformed /
-        # absent block parses to None → ordinary stall (next round would
-        # see identical input).
+        # absent block parses to None → ordinary stall; identical input is
+        # not reviewed again.
         escalation = parse_producer_escalation(producer_output.narrative_text)
         if escalation is not None:
             return _result(

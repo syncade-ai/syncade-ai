@@ -224,7 +224,7 @@ def test_the_reviewer_prompt_itself_contains_no_binary_bytes(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
 
-    prompts, _, _ = _build_reviewer_prompt(
+    prompts, _ = _build_reviewer_prompt(
         repo_root=tmp_path,
         snapshot=snapshot,
         config=config,

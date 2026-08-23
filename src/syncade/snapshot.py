@@ -1,8 +1,8 @@
 """Snapshot the git state at the start of a syncade run.
 
 A :class:`Snapshot` is a frozen value object that records exactly what
-:mod:`syncade.orchestrator` needs to reproduce the worktrees a reviewer sees:
-which commit they're checked out at, what branch (if any) the
+:mod:`syncade.orchestrator` needs to reproduce a reviewer's exported workspace:
+which commit it represents, what branch (if any) the
 run originated from, and — if the user supplied ``--base <ref>`` — the
 diff to render into the reviewer prompt.
 
@@ -49,9 +49,8 @@ _GIT_TIMEOUT_SECONDS: float = 30.0
 
 _NORMALIZED_DIFF_ARGS: Final[tuple[str, ...]] = (
     # Object resolution, BEFORE the subcommand. `refs/replace/*` silently
-    # substitutes one object for another at every lookup, and it lives in the
-    # shared common dir, so it is writable from a producer worktree. Without
-    # this the diff (and `git worktree add <sha>`) can describe an entirely
+    # substitutes one object for another at every lookup. Without this the
+    # diff (and trusted `git worktree add <sha>`) can describe an entirely
     # different commit than `Snapshot.commit_sha` — verified: a backdoored
     # commit reviewed as its benign replacement, while the SHA that lands
     # upstream still carries the backdoor.

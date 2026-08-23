@@ -389,7 +389,7 @@ def render_producer_prompt(
       failed; the literal string
       ``"(no test failure this round)"`` otherwise. The renderer
       accepts ``None`` directly and substitutes the sentinel itself.
-    - ``{worktree_path}``: the producer worktree on disk — the
+    - ``{worktree_path}``: the standalone producer repository on disk — the
       starting point for ``git log`` / ``git diff``, and where
       file edits should land
     - ``{round_number}``: 0-indexed round this producer is for
@@ -404,11 +404,9 @@ def render_producer_prompt(
       passes only the prior round's stdout within the SAME
       ``syncade <pr-doc>`` invocation; a new run starts with the
       sentinel again.
-    - ``{prior_round_commits}``: the commit subjects of
-      round-(N-1)'s producer commits, derived via ``git log -1
-      --format='%s' <sha>`` in the operator's repo (NOT the producer
-      worktree — branch advance has promoted the prior commits onto the
-      operator's branch by the time round-N producer runs). ``round_idx
+    - ``{prior_round_commits}``: the commit subjects of any imported
+      round-(N-1) candidate, derived via ``git log -1 --format='%s'
+      <sha>`` in the operator's repo after trusted import. ``round_idx
       == 0`` callers omit this kwarg and the renderer substitutes
       :data:`_NO_PRIOR_COMMITS_SENTINEL`.
 

@@ -60,6 +60,7 @@ def test_dispatch_populates_priced_usage_from_codex_stdout(tmp_path: Path):
     config = _config("cdx", provider="openai", model="gpt-5.5")
     result = dispatch_reviewers(
         [config],
+        repo_root=tmp_path / "repo",
         worktree_paths=_worktree_paths("cdx", tmp_path=tmp_path),
         prompt="x",
         adapter_factory=_factory_returning(_CodexStdoutAdapter(canned_output=_ship())),
@@ -78,6 +79,7 @@ def test_dispatch_without_pricing_leaves_usage_none(tmp_path: Path):
     config = _config("cdx", provider="openai", model="gpt-5.5")
     result = dispatch_reviewers(
         [config],
+        repo_root=tmp_path / "repo",
         worktree_paths=_worktree_paths("cdx", tmp_path=tmp_path),
         prompt="x",
         adapter_factory=_factory_returning(_CodexStdoutAdapter(canned_output=_ship())),
@@ -95,6 +97,7 @@ def test_dispatch_captures_usage_even_when_parse_fails(tmp_path: Path):
     fake = _CodexStdoutAdapter(canned_exception=ReviewerOutputError("unparseable"))
     result = dispatch_reviewers(
         [config],
+        repo_root=tmp_path / "repo",
         worktree_paths=_worktree_paths("cdx", tmp_path=tmp_path),
         prompt="x",
         adapter_factory=_factory_returning(fake),
@@ -110,6 +113,7 @@ def test_dispatch_accumulates_usage_from_transient_retry_attempts(tmp_path: Path
     fake = _FlakyCodexStdoutAdapter(fail_times=1, canned_output=_ship())
     result = dispatch_reviewers(
         [config],
+        repo_root=tmp_path / "repo",
         worktree_paths=_worktree_paths("cdx", tmp_path=tmp_path),
         prompt="x",
         adapter_factory=_factory_returning(fake),

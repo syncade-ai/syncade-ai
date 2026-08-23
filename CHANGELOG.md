@@ -8,6 +8,40 @@ include breaking changes.
 ## [Unreleased]
 
 
+## [0.8.0] — 2026-08-23
+
+### Changed
+
+- **Reviewers now receive a Git-less filesystem export instead of a linked worktree.** Removing
+  `CLAUDE.md` / `AGENTS.md` from a linked worktree removed the file but not the blob, so an
+  ordinary `git show HEAD:CLAUDE.md` recovered it. Reviewers are supplied no repository and no
+  history; the diff identifies the change under review. Trusted test and check legs keep their Git
+  worktrees.
+- **The producer now runs in a standalone repository with its own real `.git`,** with no shared
+  object store, alternates, remote, or gitfile pointing at yours. Its commits reach your branch
+  through exactly one path: a trusted importer validates the commit range in a quarantine, anchors
+  it at a durable `refs/syncade/...` recovery ref, and fast-forwards your branch with the existing
+  compare-and-swap. If that swap loses a race — or you are on a detached HEAD — your branch is
+  untouched and the run prints the ref the candidate is anchored at.
+- **`producer.permissions` gains `confined`, which is now the DEFAULT.** It runs each provider's
+  live-verified filesystem sandbox around the standalone repository, so writes outside it are
+  denied by enforcement rather than by prompt text. On the Anthropic path the sandbox can only
+  auto-approve sandboxed Bash, so a confined `claude` producer edits through the shell.
+  `permissions = "yolo"` remains supported and disables that sandbox; it is announced on every run
+  that can dispatch a producer, on a channel `--quiet` does not suppress. **Existing configs keep
+  working** — the standalone store and the importer are unconditional, so `yolo` gives up host
+  confinement, not the Git-domain boundary.
+
+### Fixed
+
+- **`syncade --config set` can now repair a configuration that fails to load.** It previously
+  validated the effective config and exited 50 *before* dispatching the verb, so the one command
+  documented to fix an invalid config was refused by the invalid config, and hand-editing TOML was
+  the only way out of any config-invalidating change. The merged global+repo check is now a
+  non-regression check — it rejects only errors an edit introduces — so a broken value in one layer
+  can no longer block repairing the other.
+
+
 ## [0.7.6] — 2026-08-21
 
 ### Fixed
@@ -675,7 +709,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.8.0
 [0.7.6]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.6
 [0.7.5]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.5
 [0.7.3]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.3

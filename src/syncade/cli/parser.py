@@ -107,8 +107,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--worktree-base",
         metavar="PATH",
         default=None,
-        help="Base directory under which per-run git worktrees are created "
-        "(overrides [worktree_base] in config; default /tmp/syncade). Use a "
+        help="Base directory under which per-run reviewer exports and linked git "
+        "worktrees are created (overrides [worktree_base] in config; default /tmp/syncade). Use a "
         "fast local disk when /tmp is small or slow. Applies to review runs, "
         "--gc, --resume, and --doctor's writability preview.",
     )
@@ -235,20 +235,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow loop mode (max_rounds > 1) to start even when "
         "the working tree has tracked-modified files. WARNING: the "
-        "producer will commit on top of the operator's WIP, which "
-        "may interleave with their uncommitted edits in confusing "
-        "ways. Use only when you understand the consequences. The "
-        "same refusal applies to a resumed loop-mode run (--resume), "
-        "where --force-dirty is likewise the only escape. "
+        "loop mode reserves the current branch as the producer target, and "
+        "tracked WIP makes eventual trusted landing ambiguous. Use only when "
+        "you understand the consequences. The "
+        "same refusal applies to a resumed loop-mode run (--resume). "
+        "--force-dirty is likewise the only escape. "
         "max_rounds=1 (single-pass) bypasses this guard entirely.",
     )
     parser.add_argument(
         "--allow-default-branch",
         action="store_true",
         help="Allow loop mode (max_rounds > 1) to run while HEAD is the repo's "
-        "default branch. By default syncade REFUSES this, because the producer "
-        "fast-forwards the current branch and would land commits directly on "
-        "your default branch. Pass this to commit there deliberately. "
+        "default branch. By default syncade REFUSES to select the default branch "
+        "as the destination for accepted producer work. Pass this to select it "
+        "deliberately. "
         "Single-pass (max_rounds=1) commits nothing and bypasses the guard.",
     )
     parser.add_argument(
@@ -385,19 +385,19 @@ def build_parser() -> argparse.ArgumentParser:
         "history is kept FOREVER (loop-manifest.json, findings.md, run-init.json, "
         "round manifests, summaries); transcripts (round-*/*.stdout, *.stderr - "
         "90%% of the corpus) are pruned beyond --gc-keep and any --gc-max-age-days "
-        "floor; worktrees are removed once a run can no longer plausibly be resumed "
-        "(worktrees are reconstructible from the recorded SHA, so removing one "
-        "costs a git worktree add, never history) — resume-eligible runs keep their "
-        "worktree while younger than gc.worktree_max_age_days (default 14 days, "
+        "floor; actor workspaces are removed once a run can no longer plausibly be resumed "
+        "(reviewer exports and linked worktrees are reconstructible from recorded "
+        "snapshot state, so removing one never removes run history) — resume-eligible runs keep "
+        "their workspace while younger than gc.worktree_max_age_days (default 14 days, "
         "set via syncade --config set gc.worktree_max_age_days N); "
         "and metrics.db is a droppable derived view. NO run directory is ever "
         "deleted: .syncade/metrics.db is a derived view over .syncade/runs/, so "
         "deleting a run would destroy its history the next time that view rebuilds. "
-        "Also removes matching <worktree_base>/<run-id>/ worktree leftovers whose "
+        "Also removes matching <worktree_base>/<run-id>/ workspace leftovers whose "
         "directory identity still matches the GC plan, and safely reaps orphaned "
-        "reviewer/producer subprocesses whose working dir is INSIDE a worktree "
+        "reviewer/producer subprocesses whose working dir is INSIDE a workspace "
         "being removed. Runs also auto-prune their transcripts at the start of "
-        "every fresh loop, so --gc is for worktree/process cleanup and one-off "
+        "every fresh loop, so --gc is for workspace/process cleanup and one-off "
         "maintenance rather than routine disk hygiene. Non-run state "
         "(config.toml, last-reviewed.json, draft-spec-*.md) is never touched. "
         "Mutually exclusive with PR_DOC, --selfcheck, --auth-check, "

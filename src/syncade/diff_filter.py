@@ -1,29 +1,29 @@
 """Reviewer-facing diff filtering.
 
-Reviewer worktrees have ``CLAUDE.md`` / ``AGENTS.md`` removed (the
+Reviewer workspaces have ``CLAUDE.md`` / ``AGENTS.md`` removed (the
 architectural invariant that reviewers must not see project memory).
 But ``git diff <base>..HEAD`` — captured in the operator's repo, where
 those files still exist — contains hunks for them. A reviewer whose
-worktree lacks ``CLAUDE.md`` but whose diff shows it changed will flag
+workspace lacks ``CLAUDE.md`` but whose diff shows it changed will flag
 a "tracked deletion" / missing-file finding. That false positive
 persisted across all three rounds of the validation and drove the
 loop to exit 20.
 
 :func:`filter_diff_for_reviewer` removes those hunks at the orchestrator
 boundary, before the diff reaches ``render_reviewer_prompt``. The
-worktree strip is unchanged; the diff strip complements it so the file
+workspace strip is unchanged; the diff strip complements it so the file
 is invisible across BOTH surfaces.
 
 :data:`REVIEWER_STRIP_FILES` is the single source of truth for which
 files are stripped: it feeds the default of
 :attr:`syncade.config.ReviewConfig.strip_repo_context_files`, which the
-orchestrator passes to BOTH the worktree-create call AND this filter, so a
+orchestrator passes to BOTH the workspace-export call AND this filter, so a
 customized ``strip_repo_context_files`` reaches both.
 
 The two surfaces share the LIST but not the MATCHING, and that gap is real:
 this filter compares BASENAMES, while ``worktree_paths._strip_files`` REFUSES
 any entry containing ``/`` as a path-escape guard. So ``docs/CLAUDE.md``
-strips the diff hunk here and leaves the file readable in the worktree — a
+strips the diff hunk here and leaves the file readable in the workspace — a
 leak through the surface the other one covers. Bare basenames are the only
 shape both handle identically. (An earlier version of this docstring claimed
 the two "can never diverge"; that was false — corrected in PR-h-03.)
@@ -38,11 +38,11 @@ from collections.abc import Iterable
 _log = logging.getLogger(__name__)
 
 REVIEWER_STRIP_FILES: tuple[str, ...] = ("CLAUDE.md", "AGENTS.md")
-"""Files removed from reviewer worktrees AND from the reviewer-facing
+"""Files removed from reviewer workspaces AND from the reviewer-facing
 diff. Single source of truth: the default of
 :attr:`syncade.config.ReviewConfig.strip_repo_context_files` is
 ``list(REVIEWER_STRIP_FILES)``, and the orchestrator passes that config
-value to both the worktree strip and :func:`filter_diff_for_reviewer`."""
+value to both the workspace strip and :func:`filter_diff_for_reviewer`."""
 
 # The canonical per-file boundary in a unified diff: git emits a
 # ``diff --git a/<path> b/<path>`` line for every file — including binary
@@ -223,7 +223,7 @@ def filter_diff_for_reviewer(diff_text: str, strip_files: Iterable[str]) -> str:
 
     Used by the orchestrator before calling ``render_reviewer_prompt`` so
     reviewers don't see edits to files that are stripped from their
-    worktrees. ``snapshot.diff_text`` itself is never modified — callers
+    workspaces. ``snapshot.diff_text`` itself is never modified — callers
     rebind the filtered result locally.
 
     Matching is by basename on EITHER side of the ``diff --git`` header,
@@ -281,7 +281,7 @@ def _redacted_boundary_rename(header_line: str, strip_basenames: set[str]) -> st
     ``memory line`` context rows.
 
     So the body is not redacted, it is DISCARDED, and the destination is announced
-    instead. The file is present in the reviewer's worktree (the strip matches basenames,
+    instead. The file is present in the reviewer workspace (the strip matches basenames,
     and the destination is not one), so pointing at it costs the reviewer nothing and
     leaks nothing. That reviewers cannot see repo-context files is already stated in
     their prompt, so naming the fact of a rename discloses nothing new -- only the source
@@ -299,7 +299,7 @@ def _redacted_boundary_rename(header_line: str, strip_basenames: set[str]) -> st
         f"diff --git a/(stripped repo-context file) b/{b_path}\n"
         f"rename to {b_path}\n"
         f"(body withheld: renamed out of a stripped repo-context file. "
-        f"Review {b_path} directly in your worktree.)\n"
+        f"Review {b_path} directly in your workspace.)\n"
     )
 
 
@@ -373,12 +373,12 @@ def concealed_destinations(diff_text: str, strip_files: Iterable[str]) -> list[s
     look. It is wrong when only the SOURCE was: ``git mv CLAUDE.md app.py`` drops the
     section, so the reviewer is never told ``app.py`` came into existence.
 
-    Alone that is a blind spot (the file is still in the reviewer's worktree, and a rename
+    Alone that is a blind spot (the file is still in the reviewer workspace, and a rename
     with a large rewrite falls below git's similarity threshold and is emitted as
     delete+add, which survives). It becomes a FALSE SHIP in composition with PR-h-02d: if
     such a rename is the only change, the filtered diff is empty, the run terminates
     ``no_changes_to_review`` at exit 0, and zero reviewers are dispatched — so nothing
-    reads that worktree, because nothing runs.
+    reads that workspace, because nothing runs.
 
     Callers use a non-empty result to refuse the known-empty conclusion. Note this is
     deliberately NOT "the unfiltered diff was non-empty": that would revert PR-h-02d's D3,

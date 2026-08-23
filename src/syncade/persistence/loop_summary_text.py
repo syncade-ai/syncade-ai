@@ -12,15 +12,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from syncade.exit_codes import WORKSPACE_PRESERVING_EXITS
+from syncade.producer_result import candidate_disposition
+
 _LOOP_NEXT_STEPS: dict[str, str] = {
     "ship": (
-        "- Loop terminated SHIP — the operator's branch has been "
-        "advanced to the latest producer commit (if any). Inspect "
-        "`loop-summary.md`'s commit series above to see what landed "
-        "on your branch; the operator's branch is at the SHIP "
-        "round's snapshot SHA. `findings.md` in the SHIP round's "
-        "directory carries the consolidated review (zero "
-        "blockers); the operator's repo is ready to push."
+        "- Loop terminated SHIP at the reviewed snapshot. The accepted "
+        "producer candidate was validated, recovery-anchored at "
+        "`refs/syncade/recovery/...`, and fast-forwarded onto your branch "
+        "through the trusted importer's compare-and-swap. "
+        "`findings.md` in the SHIP round's directory carries "
+        "the consolidated review (zero blockers)."
     ),
     "no_changes_to_review": (
         "- The diff resolved to empty before any reviewer was dispatched: "
@@ -32,12 +34,8 @@ _LOOP_NEXT_STEPS: dict[str, str] = {
         "not all listed in `strip_repo_context_files`."
     ),
     "producer_emptied_diff": (
-        "- The producer's commits in a prior round removed all reviewable "
-        "changes: the diff from the original base to the current HEAD is now "
-        "empty (all sections were either legitimate repo-context files or the "
-        "producer reverted the reviewable changes). Prior rounds DID spend "
-        "model work. If this is unexpected, inspect the per-round commit series "
-        "in `loop-summary.md` and the producer's commits on your branch."
+        "- An accepted and imported producer candidate removed all reviewable "
+        "changes. Prior rounds DID spend model work."
     ),
     "findings_present": (
         "- The single-pass run found remaining work. Read the round's "
@@ -52,9 +50,9 @@ _LOOP_NEXT_STEPS: dict[str, str] = {
         "in `.syncade/config.toml`, (b) addressing the findings "
         "manually and re-running, or (c) inspecting the per-round "
         "directories to see what the producer attempted at each "
-        "step. The producer's commits ARE on your branch — if you "
-        "want to roll them back, use `git reset --hard "
-        "<round-0-starting-sha>` (see the commit series above)."
+        "step. Producer candidates from rounds where the branch did not "
+        "advance remain reachable at their `refs/syncade/recovery/...` "
+        "recovery refs in the operator repository."
     ),
     "provider_usage_limit": (
         "- The loop stopped because the PROVIDER refused on an exhausted usage limit — not "
@@ -62,8 +60,7 @@ _LOOP_NEXT_STEPS: dict[str, str] = {
         "phase boundary, so completed rounds and their artifacts are intact. Retrying "
         "immediately would fail the same way: the window has not moved. Next: consume a reset "
         "(`codex` → `/usage`) or wait for the window, then `syncade --resume <run-id>` to "
-        "continue from the completed rounds rather than paying for them twice. Any producer "
-        "commits so far ARE on your branch."
+        "continue from the completed rounds rather than paying for them twice."
     ),
     "budget_exceeded": (
         "- The loop stopped because the running token or cost tally crossed your "
@@ -74,13 +71,12 @@ _LOOP_NEXT_STEPS: dict[str, str] = {
         "VALUATION of the work, not billed money (PR-v2-24), and a LOWER BOUND "
         "if any actor's cost was unpriced. Next: raise the budget in "
         "`.syncade/config.toml` (or via the flag) and re-run, or address the "
-        "round's findings manually. Any producer commits so far ARE on your "
-        "branch."
+        "round's findings manually."
     ),
     "producer_stalled": (
-        "- The producer subprocess exited cleanly but didn't commit "
-        "— either it made no edits, or it made edits without "
-        "committing. Read the producer's `producer.stdout` in the "
+        "- No operator-side candidate could advance. The producer may have "
+        "made no commit, or its committed candidate did not pass import "
+        "validation. Read the producer's `producer.stdout` in the "
         "round directory to see what the producer was trying to "
         "do; common causes are under-specified findings ('this is "
         "wrong but the spec doesn't say what's right') or the "
@@ -89,12 +85,12 @@ _LOOP_NEXT_STEPS: dict[str, str] = {
         "finding manually and re-run."
     ),
     "producer_subprocess_error": (
-        "- The producer subprocess failed before it could attempt "
-        "the fix. Read `producer.stderr` and `producer.error.txt` "
+        "- The producer subprocess failed. It may have committed before failing — the "
+        "candidate note below says which. Read `producer.stderr` and `producer.error.txt` "
         "in the round directory for the failure shape; common "
         "causes are auth (run `claude login` / `codex login`), "
         "network errors (retry), or a missing CLI binary. The "
-        "operator's branch was NOT advanced for this round."
+        "operator's branch was not changed by the isolated producer."
     ),
     "reviewer_failure": (
         "- A reviewer subprocess failed before the loop could even "
@@ -154,9 +150,13 @@ _LOOP_NEXT_STEPS: dict[str, str] = {
         "fix, so `decision.txt` and `--resume` do not apply here."
     ),
     "worktree_error": (
-        "- A worktree could not be provisioned. Common cause: "
-        "stale `<worktree_base>/<run-id>/` from a prior interrupted "
-        "run. The loop did not advance any branch."
+        "- The loop stopped on a worktree or trusted-import failure. Two distinct shapes: "
+        "(a) **Worktree provisioning failure** — a reviewer or test worktree could not be "
+        "created; common cause is a stale `<worktree_base>/<run-id>/` from a prior "
+        "interrupted run. (b) **Trusted-import failure** — the producer committed a "
+        "candidate but the trusted importer could not bring it into the operator repository. "
+        "The candidate note below says where that candidate actually is. "
+        "The loop did not advance the operator branch."
     ),
     "diff_too_large": (
         "- The reviewer-facing diff exceeded `[loop] max_diff_bytes`, so syncade refused "
@@ -214,14 +214,12 @@ def _round_verdict_label(round_result) -> str:
 
 
 def _producer_commit_subject(repo_root: Path | None, ending_sha: str) -> str:
-    """look up the commit subject for the
-    producer's commit so the loop-summary commit series can render
-    it inline.
+    """Look up an operator-visible candidate subject for the summary.
 
     Returns the commit's subject line on success, or an empty
     string on any failure (missing repo_root, git not on PATH,
-    ref not found, etc.). Failures degrade the rendering to the
-    subject-less form rather than crashing the summary write —
+    ref not found, or a candidate not yet imported into the operator repo). Failures
+    degrade the rendering to the subject-less form rather than crashing —
     the loop-summary.md is operator-facing and best-effort is
     appropriate for the subject lookup.
 
@@ -260,7 +258,7 @@ _EMPTY_SERIES_REASON_NOTES: dict[str, str] = {
     ),
     "findings_present": "- (no producer commits — single-pass run ended with findings present)",
     "max_rounds_reached": (
-        "- (no producer commits landed — every producer round stalled or errored before committing)"
+        "- (no producer candidates recorded — every producer round stalled or errored)"
     ),
     "budget_exceeded": (
         "- (no producer commits — the budget was crossed before a producer round committed)"
@@ -426,3 +424,34 @@ def _budget_section(
     lines += billing.render(billing.from_usages(usages), bullet=True)
     lines.append("")
     return lines
+
+
+def candidate_location_note(rounds, *, final_exit_code: int = 0) -> str | None:
+    """One sentence saying where the producer's work is, from the SHARED disposition.
+
+    This used to walk the rounds itself, with rules that differed from the preservation decision
+    in `loop_finalize` — so the summary promised a repository that got deleted, and described the
+    wrong round on a multi-round run. It now reads `candidate_disposition`, the same object
+    preservation reads, and the preserve-exit list from `exit_codes` rather than a retyped copy.
+    There is nothing left here that can disagree.
+    """
+    disposition = candidate_disposition(rounds)
+    if disposition.ending_sha is None:
+        return None
+    if disposition.reachable_ref is not None:
+        ref = disposition.reachable_ref
+        also = (
+            f" The actor workspace is ALSO preserved (exit {final_exit_code} keeps them for "
+            "inspection)."
+            if final_exit_code in WORKSPACE_PRESERVING_EXITS
+            else " The actor workspace is reconstructible from it and is not preserved."
+        )
+        return (
+            f"- The producer's candidate IS in this repository, anchored at `{ref}`. "
+            f"Read it with `git log {ref}`.{also}"
+        )
+    return (
+        "- The producer committed work that never reached this repository, so the preserved "
+        "standalone producer repository is the ONLY copy. Its path is named in the terminal "
+        "notice above."
+    )

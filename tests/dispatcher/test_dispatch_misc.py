@@ -24,6 +24,7 @@ from syncade.dispatcher import (
     ReviewerRunResult,
     dispatch_reviewers,
 )
+from syncade.process import SubprocessResult
 from tests.dispatcher._helpers import (
     _config,
     _factory_returning,
@@ -75,6 +76,7 @@ class TestBinaryNotFound:
         adapters = [_MissingBinaryAdapter()]
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(*adapters),
@@ -85,6 +87,52 @@ class TestBinaryNotFound:
         # No subprocess ran -> nothing to preserve -> None (NOT a
         # synthesized SubprocessResult like the timeout path produces).
         assert failure.raw_subprocess_result is None
+
+
+class TestReviewerEnvironmentBoundary:
+    def test_dispatcher_scrubs_adapter_supplied_git_routing(self, tmp_path, monkeypatch):
+        workspace = tmp_path / "rv1"
+        workspace.mkdir()
+        captured: dict[str, str] = {}
+
+        class PoisonedAdapter(FakeAdapter):
+            def build_invocation(self, reviewer_config, worktree_path, prompt):
+                invocation = super().build_invocation(reviewer_config, worktree_path, prompt)
+                return Invocation(
+                    argv=invocation.argv,
+                    cwd=invocation.cwd,
+                    env={
+                        **invocation.env,
+                        "BOUNDARY_SENTINEL": "kept",
+                        "GIT_DIR": "/operator/.git",
+                        "GIT_WORK_TREE": "/operator",
+                        "GIT_INDEX_FILE": "/operator/.git/index",
+                        "GIT_ALTERNATE_OBJECT_DIRECTORIES": "/operator/.git/objects",
+                    },
+                    stdin_text=invocation.stdin_text,
+                )
+
+        def fake_run_subprocess(argv, **kwargs):
+            del argv
+            captured.update(kwargs["env"])
+            return SubprocessResult(0, "", "", 0.0)
+
+        monkeypatch.setattr("syncade.dispatcher.run_subprocess", fake_run_subprocess)
+        result = dispatch_reviewers(
+            [_config("rv1")],
+            repo_root=tmp_path / "repo",
+            worktree_paths={"rv1": workspace},
+            prompt="x",
+            adapter_factory=_factory_returning(PoisonedAdapter(canned_output=_ship())),
+        )
+
+        assert result.all_succeeded
+        assert captured["BOUNDARY_SENTINEL"] == "kept"
+        assert "GIT_DIR" not in captured
+        assert "GIT_WORK_TREE" not in captured
+        assert "GIT_INDEX_FILE" not in captured
+        assert "GIT_ALTERNATE_OBJECT_DIRECTORIES" not in captured
+        assert captured["GIT_CEILING_DIRECTORIES"] == str(workspace.parent.resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +154,7 @@ class TestUnknownProvider:
         # config's bad provider aborts the whole batch.
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", "rv2", tmp_path=tmp_path),
             prompt="x",
         )
@@ -153,6 +202,7 @@ class TestParallelism:
         start = time.monotonic()
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", "rv2", tmp_path=tmp_path),
             prompt="x",
             skip_auth_check=True,  # keep this test focused
@@ -258,6 +308,7 @@ class TestMissingWorktreePath:
         rv1_worktree.mkdir()
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths={"rv1": rv1_worktree},
             prompt="x",
             adapter_factory=_factory_returning(*adapters),
@@ -287,6 +338,7 @@ class TestMissingPromptKey:
         with pytest.raises(KeyError) as exc_info:
             dispatch_reviewers(
                 configs,
+                repo_root=tmp_path / "repo",
                 worktree_paths=_worktree_paths("rv1", "rv2", tmp_path=tmp_path),
                 prompt={"rv1": "prompt"},
                 adapter_factory=fail_if_called,
@@ -312,12 +364,13 @@ class TestNoneInputs:
     rather than returning a DispatchResult full of None-related
     errors. These tests pin that contract."""
 
-    def test_none_reviewer_configs_raises_type_error(self):
+    def test_none_reviewer_configs_raises_type_error(self, tmp_path: Path):
         import pytest
 
         with pytest.raises(TypeError) as exc_info:
             dispatch_reviewers(
                 None,  # type: ignore[arg-type]
+                repo_root=Path.cwd(),
                 worktree_paths={},
                 prompt="x",
             )
@@ -326,12 +379,13 @@ class TestNoneInputs:
         # Message points at the fix (use [] if no reviewers)
         assert "[]" in msg
 
-    def test_none_worktree_paths_raises_type_error(self):
+    def test_none_worktree_paths_raises_type_error(self, tmp_path: Path):
         import pytest
 
         with pytest.raises(TypeError) as exc_info:
             dispatch_reviewers(
                 [],
+                repo_root=Path.cwd(),
                 worktree_paths=None,  # type: ignore[arg-type]
                 prompt="x",
             )
@@ -339,12 +393,13 @@ class TestNoneInputs:
         assert "worktree_paths" in msg
         assert "{}" in msg
 
-    def test_empty_lists_return_empty_dispatch_result(self):
+    def test_empty_lists_return_empty_dispatch_result(self, tmp_path: Path):
         """The orchestrator might legitimately pass an empty configs
         list after future filtering or config resolution. That should
         not raise — it returns an empty DispatchResult."""
         result = dispatch_reviewers(
             [],
+            repo_root=Path.cwd(),
             worktree_paths={},
             prompt="x",
         )
@@ -367,6 +422,7 @@ class TestInvalidCapturePrefix:
         capture_dir.mkdir(exist_ok=True)
         result = dispatch_reviewers(
             [_config(name=name)],
+            repo_root=tmp_path / "repo",
             worktree_paths={name: wt},
             prompt="test",
             capture_dir=capture_dir,

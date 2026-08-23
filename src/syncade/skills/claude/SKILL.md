@@ -405,7 +405,9 @@ Auth + selfcheck both green. Print to chat:
 
 Ready to run: <RESOLVED_COMMAND>
 Expected timing: 15-45 minutes depending on findings + producer rounds.
-The producer may commit directly to the current branch.
+The producer commits inside its own standalone repository (sandboxed by default; `permissions = "yolo"` in your config disables the host-confinement sandbox).
+Accepted candidates are validated and imported through syncade's trusted importer;
+your branch advances only if validation and recovery-anchoring both succeed.
 
 Reply 'go' to proceed, 'cancel' to abort.
 ```
@@ -444,7 +446,8 @@ Wait for the operator's reply.
 
 This gate is load-bearing. Without it, invoking `syncade <pr-doc>`
 immediately commits to ~15–45 minutes of wall-clock and a
-producer that may modify their branch.
+producer (sandboxed by default) that may create a candidate. Accepted candidates are
+imported and recovery-anchored before your branch advances.
 
 ### Step 5 — Invoke the resolved command and stream output
 
@@ -564,31 +567,51 @@ don't paste it whole); present the verdict + a plain-language why + a clickable 
 
   If `handoff.md` is absent, the `findings.md` pointer above is the entry point — never invent a path.
 
-### Step 7 — If producer ran, surface every commit
+### Step 7 — If producer ran, surface every committed candidate
 
 When `loop-manifest.json` shows any round's `producer.outcome ==
-"committed"`, list each commit explicitly:
+"committed"`, surface those commits. The presentation depends on the
+overall run outcome (from `loop-summary.md`):
+
+**If the run SHIPped (exit 0):** the accepted candidate was imported,
+recovery-anchored, and fast-forwarded onto the operator branch. The
+producer repository was cleaned up on exit. Surface it as:
 
 ```
-[syncade] Producer commits on this branch:
+[syncade] Producer candidate accepted and landed:
+
+  Round N: <sha-short> "<commit-subject>"
+    recovery ref: refs/syncade/recovery/<run-id>/round-N/<sha>
+    inspect: git show refs/syncade/recovery/<run-id>/round-N/<sha>
+
+Your branch was fast-forwarded. Your working tree is NOT updated
+automatically; sync with:
+  git stash && git reset --hard HEAD && git stash pop
+```
+
+**If the run did NOT ship (exit 20/30):** producer workspaces are preserved on
+disk for inspection. Candidates that were successfully imported are already in
+the operator repository under a recovery ref; any that failed to import remain
+only in the preserved standalone repository. If earlier rounds produced accepted
+candidates, the branch may already have advanced. Surface it as:
+
+```
+[syncade] Producer candidates preserved for inspection (run did not ship):
 
   Round 1: <sha-short> "<commit-subject>"
+    repository: <preserved-producer-repo>
   Round 2: <sha-short> "<commit-subject>"
+    repository: <preserved-producer-repo>
   ...
 
-These commits are on the current branch. To inspect:
-  git show <sha>
-
-To roll back ALL producer commits, reset to the round-0 starting SHA:
-  git reset --hard <round-0-starting-sha>
-
-To roll back a specific commit, use `git revert <sha>` (creates an
-inverting commit; preserves history).
+To inspect a candidate, look for its `refs/syncade/recovery/...` ref in
+the operator repository first; if absent, use:
+  git -C <preserved-producer-repo> show <sha>
 ```
 
-The round-0 starting SHA is in `loop-manifest.json` at
-`rounds[0].snapshot.commit_sha`. Don't auto-revert anything — the
-operator decides what to keep.
+Use the preserved repository path printed by the loop's
+`producer repository ready:` event. If it is unavailable, say so rather
+than inventing a path.
 
 If the producer ran but every round's `producer.outcome != "committed"`
 (stall or subprocess_error every time), say so explicitly:
@@ -624,8 +647,12 @@ failure mode.
   syncade's `claude -p` / `codex exec` subprocesses. The interactive
   agent is the operator's UI; it never feeds findings into the
   reviewer or synthesizer phase.
-- **No auto-revert of producer commits.** Step 7 surfaces them; the
-  operator decides.
+- **Correct branch state per run outcome.** Step 7 states that the branch
+  advanced on SHIP (the accepted candidate was imported). For NO-SHIP, no
+  advance comes from the terminal outcome, but earlier rounds may have already
+  advanced the branch via accepted candidates. Never claim the branch is
+  unchanged when loop-summary shows prior imports, and never claim the producer
+  repo is preserved after a clean SHIP exit (it was cleaned up).
 - **No skipping the confirmation gate in step 4.** Even after the
   safety check passes, the expensive subprocess fires only on explicit
   operator consent.

@@ -30,7 +30,10 @@ class _CodexStdoutProducer(FakeProducerAdapter):
     """FakeProducerAdapter whose subprocess emits a codex JSONL envelope so the
     producer's usage extraction has a real payload to parse."""
 
-    def build_invocation(self, producer_config, worktree_path, prompt) -> Invocation:
+    def build_invocation(
+        self, producer_config, worktree_path, prompt, *, repo_root=None
+    ) -> Invocation:
+        del repo_root
         return Invocation(
             argv=["/bin/sh", "-c", 'printf "%s" "$1"', "sh", _CODEX_JSONL],
             cwd=worktree_path,

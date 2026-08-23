@@ -60,6 +60,7 @@ _FOREIGN = {
     "--no-replace-objects": "git",
     "--pretty": "git log",
     "--resolution": "uv pip install --resolution lowest-direct (the PR-h-10 floor leg)",
+    "--safe-mode": "claude",
     "--text": "git diff --text (forces binary content out as text)",
     "--seed": "uv venv",
     "--verify": "git rev-parse --verify",

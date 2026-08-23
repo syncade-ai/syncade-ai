@@ -16,22 +16,36 @@ Syncade spawns the provider CLIs you already have installed (`claude`, `codex`) 
 background subprocesses**. There are three roles, at three trust levels:
 
 - **Reviewers** run headless with tool access — they read, grep, and run shell commands to
-  investigate your code. Each runs inside a **throwaway git worktree**: a copy under
-  `<worktree_base>/<run-id>/` (default `/tmp/syncade/<run-id>/`), *not* your working tree,
-  with `CLAUDE.md` / `AGENTS.md` stripped so the review stays blind to project memory. At the **default**
+  investigate your code. Each receives a **Git-less filesystem export** of the pinned
+  snapshot under `<worktree_base>/<run-id>/` (default `/tmp/syncade/<run-id>/`), *not*
+  your working tree. `CLAUDE.md` / `AGENTS.md` are stripped, no repository or Git history
+  is supplied, and the supplied diff identifies the change under review. At the **default**
   `permissions = "trusted-execute"`, Codex reviewers are additionally **sandboxed**
-  (`codex -s workspace-write`), which scopes writes to that worktree. Two caveats: setting
+  (`codex -s workspace-write`), which scopes writes to that export. Two caveats: setting
   a reviewer to `permissions = "yolo"` **disables that sandbox**
   (`--dangerously-bypass-approvals-and-sandbox`) — supported but discouraged; and on
-  Anthropic, `claude` has no equivalent sandbox flag, so an anthropic reviewer's
-  confinement is the throwaway worktree copy alone. The shipped default roster is Codex on
+  Anthropic, reviewer `claude` runs with `--safe-mode` so CLAUDE.md discovery,
+  skills, plugins, hooks, MCP servers, and other customizations are disabled, but
+  `claude` has no equivalent OS sandbox flag. Its current working directory is not
+  host confinement. An Anthropic or `yolo` reviewer could deliberately inspect or
+  modify paths elsewhere as the operator. The shipped default roster is Codex on
   `trusted-execute` (sandboxed).
-- **The producer** runs **fully unsandboxed** — `bypassPermissions` on `claude`,
-  `--dangerously-bypass-approvals-and-sandbox` on `codex` — **by necessity**: a sandbox
-  cannot write `.git/index.lock`, so a sandboxed producer cannot commit, which is its
-  whole job. It **commits to your current branch.** Syncade refuses to run the committing
-  loop on your repo's *default* branch unless you pass `--allow-default-branch`, and it
-  announces which branch will receive commits before dispatching anything.
+- **The producer** runs inside a **standalone repository** with its own real `.git`, which has
+  no shared object store, alternates, remote, or gitfile pointing at your repository. At the
+  default `permissions = "confined"` it is additionally **sandboxed by the provider**: Codex uses
+  `workspace-write` with only that in-root `.git` as an extra writable root, and Claude uses its
+  native sandbox with fail-closed availability, only sandboxed Bash auto-approved, and
+  unsandboxed commands disallowed. Writes outside the repository are denied by *enforcement*, not
+  by prompt text. Setting `permissions = "yolo"` **disables that sandbox** (`bypassPermissions` /
+  `--dangerously-bypass-approvals-and-sandbox`) — supported, because confinement restricts the
+  Anthropic producer to Bash-only editing and that trade is yours to make, but syncade then
+  prints an unsuppressible notice naming what it granted on every run that can dispatch a
+  producer. **Its commits reach your branch through exactly one path:** a trusted importer
+  validates the commit range in a quarantine, anchors it at a durable `refs/syncade/...` recovery
+  ref, and fast-forwards your branch with a compare-and-swap. It **commits to your current
+  branch.** Syncade refuses to run the committing loop on your repo's *default* branch unless you
+  pass `--allow-default-branch`, and it announces which branch will receive commits before
+  dispatching anything.
 - **The cold actors** run sandboxed (`trusted-execute`) in an isolated tempdir, but what
   each receives differs — do not assume none of them sees your code:
   - the **synthesizer** (the judge, every round) gets only the reviewers' *structured
@@ -43,17 +57,31 @@ background subprocesses**. There are three roles, at three trust levels:
 
 What bounds this:
 
-- **Worktrees under `<worktree_base>/` (default `/tmp/syncade/`).** Reviewers operate on a
-  *copy*, not your working tree. The copy is removed after a clean run, but is **preserved for
-  inspection** when a run ends NO-SHIP / max-rounds / decision-needed (exits 30/20/10) — so a
+- **Actor workspaces under `<worktree_base>/` (default `/tmp/syncade/`).**
+  Reviewers operate on a Git-less *copy*, not your working tree; producers use
+  standalone repositories, while trusted test/check legs retain linked Git
+  worktrees. The actor state is removed after a clean run, but is
+  **preserved for inspection** when a run ends NO-SHIP / max-rounds / decision-needed
+  (exits 30/20/10) — so a
   full copy of your repo can remain under `<worktree_base>/<run-id>/`. `syncade --gc` removes
-  these worktrees after `gc.worktree_max_age_days` (default 14 days), including runs that are
-  still resume-eligible. With the default `/tmp/syncade` base the worktrees live outside your
+  these workspaces after `gc.worktree_max_age_days` (default 14 days), including runs that are
+  still resume-eligible. With the default `/tmp/syncade` base they live outside your
   repo and are not committed or pushed. Configure `worktree_base` in `.syncade/config.toml` or
-  `--worktree-base` to change the location; keep it **outside** your repository (or
-  `.gitignore` it). Pointing `worktree_base` inside the repo makes each preserved copy an
-  embedded, untracked git worktree that `git add` / `git status` will surface.
-- **A sandbox wherever the CLI supports one** (Codex `workspace-write`).
+  `--worktree-base` to change the location; keep it **outside** your repository. Reviewer
+  provisioning refuses a location that would put its export inside the operator repository.
+- **Producer confinement by default** (Codex `workspace-write`; Claude's native sandbox with
+  fail-closed availability), plus sandboxed default Codex reviewers. `permissions = "yolo"` turns
+  the producer's sandbox off; that is announced on every run that can dispatch a producer, never silent. A single-pass
+  review (`max_rounds = 1`) dispatches no producer and is not warned about one.
+- **One validated path into your object database — in BOTH modes.** The producer works in a
+  standalone repository with no shared object store, alternates, remote, or gitfile pointing at
+  yours, so its ordinary Git commands cannot reach your refs at all; only a validated, linear,
+  ancestry-checked commit range crosses, through the recovery ref and compare-and-swap above.
+  Neither the standalone store nor the importer is conditioned on `permissions`. What
+  `permissions = "yolo"` removes is *host confinement* — the OS sandbox that also stops a
+  producer which goes looking for your repository by path rather than using Git normally. That
+  is a real reduction and it is announced on every run that can dispatch a producer, but it does not hand the producer
+  your refs back.
 - **The default-branch commit guard** (above) and **the auth gate** — syncade refuses to
   run rather than silently bill an account you did not intend (see the README's auth
   section).

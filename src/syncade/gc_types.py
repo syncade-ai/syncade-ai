@@ -20,11 +20,11 @@ cleanup: ``.syncade/metrics.db`` is a *derived, rebuildable view* over
 ``.syncade/runs/`` — it drop-and-recreates itself on schema drift — so deleting a run
 directory destroys that run's history permanently the next time the view rebuilds.
 Retention is therefore **four-tier**: run history (``runs/``) kept forever; transcripts
-disposable beyond the configured keep window; worktrees removed once a run can no longer
+disposable beyond the configured keep window; actor workspaces removed once a run can no longer
 plausibly be resumed (age-bounded by ``gc.worktree_max_age_days``, default 14 days);
 and ``metrics.db`` is a droppable derived view. The asymmetry between tiers 1 and 3 is
-intentional: a worktree is reconstructible from the run's recorded SHA (costs a
-``git worktree add``, never history), so GC can safely remove it; a run directory is
+intentional: reviewer exports and linked worktrees are reconstructible from recorded snapshot
+state, so GC can safely remove them without removing history; a run directory is
 not reconstructible, so it is never deleted."""
 
 

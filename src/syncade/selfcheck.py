@@ -6,16 +6,14 @@ configured producer adapter against the stub, and verifies that
 HEAD moved AND the requested marker text is present in the seed
 file.
 
-Motivation: sandboxed producer modes cannot headless-commit reliably. The fix
-was to make ``"yolo"`` the only supported producer permission. Provider
-semantics can still evolve, and a real loop
+Motivation: provider confinement behavior can drift across CLI versions even
+though ``"confined"`` is the default producer policy. A real loop
 would only surface that as a stall at the end of round 0. ``syncade
 --selfcheck`` runs in ~30 seconds and surfaces drift before the next loop
 hits it.
 
-The selfcheck verifies whatever permission level the operator's
-``[producer]`` block configures. If ``permissions="yolo"`` is what
-works on their machine, that's what gets verified.
+The selfcheck verifies the exact mode selected by the operator's
+``[producer]`` block.
 """
 
 from __future__ import annotations
@@ -37,13 +35,14 @@ from syncade.exit_codes import (
 from syncade.persistence import persist_findings_md, persist_producer_result
 from syncade.process import SubprocessError, SubprocessResult, run_subprocess
 from syncade.producer import run_producer
+from syncade.producer_workspace import ProducerWorkspaceManager
 from syncade.synthesis import (
     ConsolidatedFinding,
     FindingProvenance,
     SynthesizerOutput,
 )
 from syncade.synthesizer import SynthesizerResult
-from syncade.worktree import WorktreeError, WorktreeManager
+from syncade.worktree import WorktreeError
 
 SELFCHECK_MARKER = "# Selfcheck PASSED"
 """The literal marker text the producer must add to the seed file.
@@ -207,13 +206,12 @@ def run_selfcheck(
        risk diverging from the real findings.md schema and the
        selfcheck would stop catching real producer failures if
        findings.md format ever changes.
-    3. Provision a producer worktree at the seed commit
-       (``strip_files=[]`` — same asymmetry as the real producer
-       path).
+    3. Provision a standalone producer repository at the seed commit,
+       using the same topology as the real producer path.
     4. Call :func:`syncade.producer.run_producer` once with the
        operator's ``[producer]`` config and the stub findings.md.
     5. Verify ``outcome == "committed"``, HEAD moved, and the marker
-       text is present in the worktree's copy of ``selfcheck.py``.
+       text is present in the producer repository's copy of ``selfcheck.py``.
     6. Persist the producer's artifacts via
        :func:`persist_producer_result` into ``<workspace>/round-0/``
        (``producer.stdout``, ``producer.stderr``,
@@ -256,7 +254,7 @@ def run_selfcheck(
         instruction.
 
         ``WORKTREE_ERROR`` (60) for producer subprocess error,
-        producer stall, or worktree provisioning failure — any
+        producer stall, or repository provisioning failure — any
         path where the producer couldn't make a verifiable commit.
     """
 
@@ -348,12 +346,12 @@ def run_selfcheck(
             datetime.now(UTC),
         )
 
-        # 4. Provision the producer worktree. defer_cleanup=True
-        # so the with-exit doesn't try to remove worktrees we'll
+        # 4. Provision the standalone producer repository. defer_cleanup=True
+        # so the with-exit doesn't try to remove state we'll
         # rmtree along with the workspace anyway; the workspace's
         # finally branch is the single cleanup point.
         worktree_base = workspace / "worktrees"
-        producer_manager = WorktreeManager(
+        producer_manager = ProducerWorkspaceManager(
             repo_root,
             "selfcheck",
             base_dir=worktree_base,
@@ -362,23 +360,19 @@ def run_selfcheck(
         resolved_timeout = _resolve_timeout(config, timeout_seconds)
 
         _info(
-            f"[syncade] selfcheck: provisioning producer worktree "
+            f"[syncade] selfcheck: provisioning producer repository "
             f"({config.producer.provider}, model={config.producer.model}, "
             f"permissions={config.producer.permissions})"
         )
 
         try:
             with producer_manager as mgr:
-                producer_worktree = mgr.create(
-                    reviewer_name="producer",
-                    commit_sha=starting_sha,
-                    strip_files=[],
-                )
+                producer_workspace = mgr.create(starting_sha)
 
                 # 5. Run the producer once.
                 _info(f"[syncade] selfcheck: dispatching producer (timeout {resolved_timeout:g}s)")
                 producer_result = run_producer(
-                    worktree_path=producer_worktree.path,
+                    worktree_path=producer_workspace.path,
                     starting_sha=starting_sha,
                     pr_doc_path=pr_doc,
                     findings_md_path=findings_md_path,
@@ -431,16 +425,15 @@ def run_selfcheck(
                         f"[syncade] your `{config.producer.provider}` "
                         f"producer with permissions="
                         f"{config.producer.permissions!r} is in a state "
-                        "where it cannot commit headlessly. Common "
-                        "causes: claude prompts for bash (use "
-                        'permissions="yolo") or codex sandbox blocks '
-                        '`.git/index.lock` writes (use permissions="yolo").'
+                        "where it cannot commit headlessly. Check the "
+                        "provider CLI version and inspect its preserved "
+                        "sandbox diagnostics below."
                     )
                     return WORKTREE_ERROR
 
                 # outcome == "committed" — but did the producer add
                 # the marker the instruction asked for?
-                seed_in_worktree = producer_worktree.path / SELFCHECK_SEED_BASENAME
+                seed_in_worktree = producer_workspace.path / SELFCHECK_SEED_BASENAME
                 content = seed_in_worktree.read_text(encoding="utf-8")
                 if SELFCHECK_MARKER not in content:
                     preserve_on_failure = True

@@ -456,29 +456,26 @@ class TestLoadTemplate:
         # Must NOT relax the reproduction bar into guessing other sites.
         assert "reproduction bar is unchanged" in template
 
-    def test_reviewer_template_has_worktree_confinement_rule(self, tmp_path: Path):
-        """Worktree-escape fix: the reviewer template instructs the reviewer to
-        review ONLY within its worktree (cwd) and NOT to cd to / read the
-        operator's main repository, even if it discovers the path via the
-        worktree's `.git` file.
+    def test_reviewer_template_has_workspace_boundary_rule(self, tmp_path: Path):
+        """The reviewer template identifies its Git-less workspace and diff.
 
         Empirically motivated by run ``2026-05-30T21-22-19``: claude-reviewer
         followed the absolute MAIN pr_doc path, cd'd into the operator's repo
         for 25/32 shell commands, and read only main-repo files — reviewing a
         different (un-stripped) tree than the snapshot it was asked to judge.
-        The orchestrator fix (worktree-local pr_doc reference) removes the lure;
-        this prompt rule is the behavioral guard since `.git` still reveals the
-        main path. Reviewer behavior is verified via the dogfood, not unit
-        tests on the model — this is the same cheap structural rule-text pin.
+        The workspace-local PR-doc reference removes the lure and the filesystem
+        export removes the supplied Git recovery path. Reviewer behavior is
+        verified via dogfood; this is the structural rule-text pin.
         """
         template = load_reviewer_template(tmp_path)
-        assert "Your worktree is the only tree to review" in template, (
-            "worktree-confinement rule missing from reviewer.md — the reviewer "
-            "must be told to operate only within its worktree."
+        assert "Your workspace is the only tree to review" in template, (
+            "workspace-boundary rule missing from reviewer.md — the reviewer "
+            "must be told to operate only within its supplied workspace."
         )
-        # The don't-touch-main instruction + the .git escape-route it must resist.
+        assert "deliberately contains no `.git`" in template
+        assert "Git history, status, and `rev-parse` are unavailable" in template
+        assert "supplied diff" in template
         assert "main repository" in template
-        assert ".git" in template
         # Empirical anchor (same "run <id>" citation style as the other pins).
         assert "2026-05-30T21-22-19" in template
 

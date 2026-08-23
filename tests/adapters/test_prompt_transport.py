@@ -55,14 +55,20 @@ def _producer_cases():
             "anthropic",
             AnthropicProducerAdapter(),
             ProducerConfig(
-                provider="anthropic", model="claude-opus-4-7", thinking="medium", permissions="yolo"
+                provider="anthropic",
+                model="claude-opus-4-7",
+                thinking="medium",
+                permissions="confined",
             ),
         ),
         (
             "openai",
             OpenAIProducerAdapter(),
             ProducerConfig(
-                provider="openai", model="gpt-5.6-terra", thinking="medium", permissions="yolo"
+                provider="openai",
+                model="gpt-5.6-terra",
+                thinking="medium",
+                permissions="confined",
             ),
         ),
     ]

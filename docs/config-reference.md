@@ -100,7 +100,7 @@ below; `worktree_base` is the one top-level scalar.
 | `retry` | `[retry]` table | — | Transient-error retry bound. See [`[retry]`](#retry--retryconfig). |
 | `gc` | `[gc]` table | — | Run-artifact retention. See [`[gc]`](#gc--gcconfig). |
 | `update` | `[update]` table | — | Background update check and opt-out. See [`[update]`](#update--updateconfig). |
-| `worktree_base` | path | `/tmp/syncade` | Base dir for per-run git worktrees. Overridable with `--worktree-base`; point it at a fast local disk if `/tmp` is small or slow. |
+| `worktree_base` | path | `/tmp/syncade` | Base dir for per-run Git-less reviewer exports, standalone producer repositories, and linked test/check worktrees. Overridable with `--worktree-base`; point it at a fast local disk if `/tmp` is small or slow. |
 | `checks` | `[[checks]]` list | none | Mechanical exit-code gates. See [`[[checks]]`](#checks--checkconfig). |
 | `pricing` | `[pricing]` table | packaged price table | Per-model token pricing for cost estimation. See [`[pricing]`](#pricing--pricingconfig). |
 | `synthesizer` | `[synthesizer]` table | `openai`/`gpt-5.5` | The cold judge. See [cold actors](#synthesizer--drafter--auditor-cold-actors). |
@@ -125,7 +125,7 @@ below; `worktree_base` is the one top-level scalar.
 <!-- config-fields: ReviewConfig -->
 | Field | Type | Default | What it does |
 |---|---|---|---|
-| `strip_repo_context_files` | list of bare filenames (**not globs**) | repo-context set (`CLAUDE.md`, `AGENTS.md`, …) | Files removed from each reviewer worktree AND stripped from the reviewer-facing diff, so repo instructions don't leak. Matched by **basename equality** — `*.md` matches nothing. An entry containing `/` (e.g. `docs/CLAUDE.md`) strips the diff hunk but is REFUSED by the worktree strip, leaving the file readable; use bare basenames. |
+| `strip_repo_context_files` | list of bare filenames (**not globs**) | repo-context set (`CLAUDE.md`, `AGENTS.md`, …) | Files removed from each Git-less reviewer export AND stripped from the reviewer-facing diff, so Syncade does not supply repo instructions. Matched by **basename equality** — `*.md` matches nothing. An entry containing `/` (e.g. `docs/CLAUDE.md`) strips the diff hunk but is REFUSED by the workspace strip, leaving the file readable; use bare basenames. |
 
 ## `[[reviewers]]` — `ReviewerConfig`
 
@@ -140,7 +140,7 @@ rest default. Overridable per-run by name: `--reviewer-model NAME=…`, `--revie
 | `provider` | string | required | Model provider (`openai`, `anthropic`, …); resolved against the adapter registry at dispatch. |
 | `model` | string | required | Model identifier within the provider. |
 | `thinking` | `low`/`medium`/`high`/`xhigh`/`max` | `high` | Reasoning-effort tier. Drives audit rigor — do not lower it for cost. |
-| `permissions` | `trusted-execute`/`yolo` | `trusted-execute` | Tool-permission tier. `trusted-execute` runs unattended but keeps the OS sandbox scoped to the worktree. `safe` is rejected — it prompts and would hang a headless reviewer. |
+| `permissions` | `trusted-execute`/`yolo` | `trusted-execute` | Tool-permission tier. `trusted-execute` runs unattended but keeps Codex's sandbox scoped to the Git-less reviewer workspace. Anthropic reviewers also run with `--safe-mode` to disable auto-loaded customizations, but that is not host confinement. `yolo` is not host-confined. `safe` is rejected — it prompts and would hang a headless reviewer. |
 | `adversarial_lens` | bool | `false` | When true, the reviewer's prompt carries the enumerate-then-attack edge-case block. |
 | `bug_class_sweep` | bool | `false` | When true, the reviewer's prompt carries a directed bug-class sweep — a short set of recurring correctness angles (removed-behavior audit, cross-file/caller-callee trace, language pitfalls, wrapper/proxy fidelity) the reviewer must run and name before any SHIP. Opt-in while an ablation measures its effect; set it on one reviewer and off on another to run that comparison yourself. Severity keys off verification state, so it does not manufacture blockers: a reproduced defect stays a blocker, an unreproduced candidate is `minor`/`coverage_gaps`. A per-repo `reviewer*.md` override that drops the `{bug_class_block}` placeholder disables it regardless of this flag. |
 | `template` | basename or unset | unset | Optional prompt template basename overriding provider-based selection. |
@@ -159,7 +159,7 @@ move as a pair (setting `provider` alone re-derives `model`).
 | `provider` | `anthropic`/`openai` | harness-aware (`anthropic` under Claude Code, else `openai`) | Producer model provider. |
 | `model` | string | harness-aware (`claude-sonnet-4-6` / `gpt-5.6-terra`) | Producer model; re-derived if `provider` is set alone. |
 | `thinking` | `low`/`medium`/`high`/`xhigh`/`max` | `medium` | Producer reasoning-effort tier. |
-| `permissions` | `yolo` | `yolo` | Producer tool-permission tier. `yolo`-only — a sandboxed producer cannot write `.git/index.lock` to commit. |
+| `permissions` | `confined`/`yolo` | `confined` | Producer confinement policy. `confined` runs the provider's live-verified filesystem sandbox around the standalone producer repository; exterior writes are denied by enforcement, and on the Anthropic path the producer is Bash-only (the sandbox can auto-approve sandboxed Bash and nothing else, so it edits through the shell). `yolo` disables that sandbox. The producer still operates in its own standalone repository and all candidate delivery still goes through the trusted importer, so the producer's ORDINARY Git commands cannot reach operator refs under either setting — the standalone store and trusted importer are unconditional. What `yolo` removes is host confinement, so a producer that addresses the operator repository by filesystem path is no longer stopped. Supported, announced on every run that can dispatch a producer, never the default. Neither mode prompts; both run unattended. |
 | `auth` | `auto`/`subscription`/`api` | `auto` | Which account pays. See [auth](#authentication-fields). |
 | `api_key_env` | env var name or unset | unset | For `auth = "api"`: the env var holding the key. |
 | `timeout_seconds` | float > 0 or unset | unset | Producer wall-clock cap; unset reuses the loop/CLI global. |
@@ -223,9 +223,9 @@ any spend.
 
 Governs both the per-loop auto-prune and an explicit `syncade --gc`. Run directories are never
 deleted. `keep` / `max_age_days` prune bulky subprocess transcripts; `worktree_max_age_days`
-removes stale worktrees under `worktree_base`, which is a separate retention tier because a
-worktree is reconstructible from a recorded SHA. CLI `--gc-keep` / `--gc-max-age-days` override
-the first two; the worktree bound is config-only (set it with
+removes stale reviewer exports and linked worktrees under `worktree_base`, a separate retention
+tier because actor workspaces can be reconstructed from recorded snapshot state. CLI `--gc-keep`
+/ `--gc-max-age-days` override the first two; the workspace bound is config-only (set it with
 `syncade --config set gc.worktree_max_age_days N`).
 
 <!-- config-fields: GcConfig -->
@@ -233,7 +233,7 @@ the first two; the worktree bound is config-only (set it with
 |---|---|---|---|
 | `keep` | int ≥ 0 | `20` | Newest N runs whose transcripts are always kept. |
 | `max_age_days` | int ≥ 0 | `0` | Additional age floor: a beyond-`keep` run is pruned only if also older than this. `0` disables the age floor. |
-| `worktree_max_age_days` | int ≥ 0 | `14` | Days a run's **worktree** is kept, after which it is removed — including while the run is still resume-eligible. This is the ONLY rule that selects a worktree: one is never removed because its transcripts became prunable, so a young worktree you are still inspecting survives a busy week of runs. Separate from `max_age_days`, which gates transcripts only — a worktree is reconstructible from the SHA the run records, so removing one costs a `git worktree add` and never history. `0` disables the bound and restores the previous never-ending protection. |
+| `worktree_max_age_days` | int ≥ 0 | `14` | Days a run's **actor workspaces** are kept, after which they are removed — including while the run is still resume-eligible. This is the ONLY rule that selects a workspace: one is never removed because its transcripts became prunable, so a young export/worktree you are still inspecting survives a busy week of runs. Separate from `max_age_days`, which gates transcripts only; reviewer exports and linked worktrees are reconstructible from recorded snapshot state. `0` disables the bound and restores the previous never-ending protection. |
 
 ## `[update]` — `UpdateConfig`
 

@@ -252,6 +252,18 @@ def test_selfcheck_preserved_workspace_path_printed_on_failure(capsys, tmp_path)
         assert (round_dir / "producer.stdout").exists()
         assert (round_dir / "producer.stderr").exists()
         assert (round_dir / "producer.commit.txt").exists()
+        producer_repo = workspace / "worktrees" / "selfcheck" / "producer"
+        assert (producer_repo / ".git").is_dir()
+        assert (
+            subprocess.run(
+                ["git", "remote"],
+                cwd=producer_repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            == ""
+        )
         # Stall path: commit.txt holds starting_sha (no commit made).
         commit_sha = (round_dir / "producer.commit.txt").read_text().strip()
         assert len(commit_sha) == 40

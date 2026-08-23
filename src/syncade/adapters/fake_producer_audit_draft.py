@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from syncade.adapters.base import Invocation
 from syncade.adapters.producer import ProducerOutput
 from syncade.config import ProducerConfig, ReviewerConfig
-from syncade.process import SubprocessResult
+from syncade.process import SubprocessResult, run_subprocess
 from syncade.worktree_env import worktree_scoped_env
 
 from .fake_common import _noop_argv
@@ -37,6 +37,13 @@ def _default_canned_producer_output() -> ProducerOutput:
     move on the worktree but can leave the narrative spartan.
     """
     return ProducerOutput(narrative_text="fake producer canned: addressed the findings")
+
+
+def _fixture_git(argv: list[str], cwd: Path) -> str:
+    result = run_subprocess(["git", *argv], cwd=cwd, timeout=10.0)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"fixture git {argv[0]} failed")
+    return result.stdout.strip()
 
 
 class FakeProducerAdapter:
@@ -165,7 +172,7 @@ class FakeProducerAdapter:
             timeout_seconds=None,
         )
 
-    def _write_fixture_commit(self, worktree_path: Path) -> None:
+    def _write_fixture_commit(self, worktree_path: Path) -> str:
         """Write a fixture commit on top of the worktree's current HEAD.
 
         Used to simulate a real producer making a commit during its
@@ -175,8 +182,6 @@ class FakeProducerAdapter:
         commits (the multi-commit producer scenario described in
         the producer prompt template).
         """
-        import subprocess
-
         with self._lock:
             idx = self._fixture_commit_index
             self._fixture_commit_index += 1
@@ -185,19 +190,7 @@ class FakeProducerAdapter:
             f"FakeProducerAdapter fixture commit {idx} — produced by tests\n",
             encoding="utf-8",
         )
-        # The fake's two git invocations bypass syncade.process so the
-        # test double stays out of the production subprocess machinery.
-        # Failures bubble as CalledProcessError, which the test surface
-        # treats as a broken fixture (see docstring).
-        subprocess.run(
-            ["git", "add", fixture_file.name],
-            cwd=worktree_path,
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        _fixture_git(["add", fixture_file.name], worktree_path)
         # Allow the test's commit to land regardless of the
         # repo-level user.email/user.name config (which may be
         # absent in CI containers); --author embeds the metadata
@@ -205,9 +198,8 @@ class FakeProducerAdapter:
         # real-producer convention so commit-history inspection in
         # tests reads naturally.
         commit_msg = self.commit_message or "fix: fake producer commit"
-        subprocess.run(
+        _fixture_git(
             [
-                "git",
                 "-c",
                 "user.email=fake-producer@syncade.test",
                 "-c",
@@ -216,13 +208,9 @@ class FakeProducerAdapter:
                 "-m",
                 commit_msg,
             ],
-            cwd=worktree_path,
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            worktree_path,
         )
+        return _fixture_git(["rev-parse", "HEAD"], worktree_path)
 
     def parse_output(self, result: SubprocessResult) -> ProducerOutput:
         """Return the canned output, or raise the canned exception.

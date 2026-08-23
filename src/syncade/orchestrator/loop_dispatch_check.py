@@ -6,7 +6,6 @@ re-exported from there so existing imports remain stable.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,6 +16,7 @@ from syncade.diff_filter import (
     filter_diff_for_reviewer,
     unidentifiable_sections,
 )
+from syncade.reviewer_workspace import reviewer_input_ref
 
 if TYPE_CHECKING:
     from syncade.snapshot import Snapshot
@@ -43,7 +43,7 @@ def _diff_will_dispatch(
     the reviewer templates. When repo_root is None the check is skipped and the exact check
     inside _run_one_round catches it instead (though only after commit-safety guards have
     already run). pr_doc_path is the resolved PR doc path; when provided it is converted to
-    the worktree-local reference the real reviewer sees (relative path inside the repo, or a
+    the workspace-local reference the real reviewer sees (relative path inside the repo, or a
     collision-free .syncade-inputs/ path for out-of-repo docs). When omitted the placeholder
     "<pr-doc>" is used, which can undercount prompt size if the template repeats {pr_doc_path}.
     """
@@ -77,16 +77,14 @@ def _diff_will_dispatch(
         from syncade.orchestrator.round_no_changes import _CODEX_CHAR_CEILING
         from syncade.prompts import load_reviewer_template_for, render_reviewer_prompt
 
-        # Compute the worktree-local PR doc reference the same way _build_reviewer_prompt
+        # Compute the workspace-local PR doc reference the same way _build_reviewer_prompt
         # does. Using the real path matters when the template repeats {pr_doc_path} — with
         # the placeholder "<pr-doc>" (8 chars) the rendered size is always lower than the
         # real prompt, so the guard can false-green for a prompt that later refuses.
         if pr_doc_path is not None:
-            try:
-                _pr_doc_ref = str(pr_doc_path.relative_to(repo_root))
-            except ValueError:
-                _digest = hashlib.sha256(str(pr_doc_path).encode("utf-8")).hexdigest()[:16]
-                _pr_doc_ref = f".syncade-inputs/pr-doc-{_digest}-{pr_doc_path.name}"
+            _pr_doc_ref = reviewer_input_ref(
+                repo_root, pr_doc_path, config.review.strip_repo_context_files
+            )
         else:
             _pr_doc_ref = "<pr-doc>"
         _diff_text = filtered_elided if filtered_elided else _NO_DIFF_SENTINEL

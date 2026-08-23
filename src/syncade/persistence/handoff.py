@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from syncade.producer_result import disposition_of
 from syncade.synthesis import ConsolidatedFinding
 
 from ._atomic import atomic_write_text
@@ -47,7 +48,7 @@ _HANDOFF_TERMINATION_REASON_LABELS: dict[str, str] = {
 
 
 def _handoff_producer_commit_subject(repo_root: Path | None, ending_sha: str) -> str:
-    """Look up the producer commit subject without importing loop_summary.
+    """Look up an operator-visible candidate subject without importing loop_summary.
 
     Handoff and loop_summary are peers in the top persistence layer, so
     handoff keeps this small best-effort helper local to preserve the
@@ -120,9 +121,10 @@ def persist_handoff(
             IS the PR brief" → category ``"P"``. ``None`` skips the
             path-based check (phrase-based classification still
             runs).
-        repo_root: Repo root, used for ``git log`` lookups when
-            rendering producer commit subjects. Optional — falls
-            back to the SHA-only form when missing.
+        repo_root: Repo root, used for best-effort ``git log`` lookups when
+            a candidate is already operator-visible. Optional; a candidate
+            with no recovery ref in the operator repository falls back to
+            the SHA-only form.
 
     Returns:
         Path of the written ``handoff.md`` on the write path;
@@ -251,10 +253,13 @@ def persist_handoff(
                 subject = _handoff_producer_commit_subject(repo_root, pr.ending_sha)
                 if subject:
                     lines.append(
-                        f'- **Round {r.round_idx} producer commit:** `{short_sha}` ("{subject}")'
+                        f'- **Round {r.round_idx} producer candidate:** `{short_sha}` ("{subject}")'
                     )
                 else:
-                    lines.append(f"- **Round {r.round_idx} producer commit:** `{short_sha}`")
+                    lines.append(f"- **Round {r.round_idx} producer candidate:** `{short_sha}`")
+                _disp = disposition_of(pr)
+                if _disp.reachable_ref is not None:
+                    lines.append(f"- **Recovery ref:** `{_disp.reachable_ref}`")
                 # Heuristic rollup: compare this round's synth blocker
                 # count to the next round's to approximate how many the
                 # producer addressed. "Heuristic" is surfaced explicitly

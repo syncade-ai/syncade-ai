@@ -16,10 +16,10 @@ from pathlib import Path
 
 from syncade import run_status as _run_status
 from syncade.exit_codes import (
-    CLARIFICATION_NEEDED,
     FINDINGS_PRESENT,
     MAX_ROUNDS_REACHED,
     SUCCESS,
+    WORKSPACE_PRESERVING_EXITS,
 )
 from syncade.git_object_id import is_full_git_object_id
 from syncade.persistence import (
@@ -28,6 +28,7 @@ from syncade.persistence import (
     persist_loop_manifest,
     persist_loop_summary,
 )
+from syncade.producer_result import candidate_disposition
 
 from .results import RunArtifacts, RunResult
 
@@ -57,12 +58,12 @@ def _warn_branch_advanced(*, branch: str, repo_root, logger) -> None:
 
 
 def _cleanup_prior_round_managers(managers, *, current_round_dir) -> None:
-    """Best-effort ``cleanup_all`` of every manager whose worktrees are NOT
+    """Best-effort ``cleanup_all`` of every manager whose workspaces are NOT
     under ``current_round_dir`` (N4).
 
-    The current round's worktrees are deliberately preserved for diagnostics
+    The current round's workspaces are deliberately preserved for diagnostics
     on the ``test_worktree_error`` early-raise path; only the now-superseded
-    prior-round reviewer/producer worktrees are reclaimed.
+    prior-round reviewer/producer workspaces are reclaimed.
     """
     for manager in managers:
         run_dir = manager.run_dir
@@ -127,9 +128,7 @@ def _finalize_run(
             max_rounds=config.loop.max_rounds,
             started_at=started_at,
             completed_at=completed_at,
-            # pass repo_root so the loop-summary
-            # commit series can look up producer commit subjects via
-            # ``git log -1 --pretty=format:%s <ending_sha>``.
+            # Pass repo_root for best-effort subject lookup of imported candidates.
             repo_root=repo_root,
             # PR-v2-11: the configured ceiling(s), so the Budget section on a
             # budget_exceeded run can name them alongside the tally.
@@ -231,13 +230,13 @@ def _finalize_run(
     if last_round.test_worktree_error is not None:
         # The branch-advance warning and the prior-round cleanup both live
         # BELOW this raise, so replay the parts that still apply here:
-        # N3 — an earlier round's producer may have advanced the branch; the
+        # N3 — an earlier imported candidate may have advanced the branch; the
         # operator must hear that even on this exit-60 path.
         if snapshot.branch is not None and branch_advanced_during_run:
             _warn_branch_advanced(branch=snapshot.branch, repo_root=repo_root, logger=logger)
         # N4 — the terminal cleanup below would otherwise reclaim every prior
-        # round's reviewer/producer worktrees. Do that here, preserving only
-        # the current (failed) round's worktrees for diagnostics.
+        # round's reviewer/producer workspaces. Do that here, preserving only
+        # the current (failed) round's workspaces for diagnostics.
         _cleanup_prior_round_managers(
             managers_to_cleanup,
             current_round_dir=effective_worktree_base / run_id / f"round-{final_round_idx}",
@@ -272,7 +271,7 @@ def _finalize_run(
         # Re-reading `refs/heads/<branch>` returned whatever the ref pointed at when the
         # run ended, which is the reviewed SHA only because the TERMINAL round never runs a
         # producer (loop_round_step.py special-cases `round_idx == max_rounds - 1`). When
-        # the ref moved anyway — a `producer_stalled` run whose fast-forward was refused, or
+        # the ref moved anyway — an imported candidate whose fast-forward was refused, or
         # an external commit landing mid-run — it recorded a SHA nobody reviewed, and
         # `--scope since-last-review` then SKIPS that unreviewed work. Reading the value
         # already in hand cannot drift.
@@ -305,36 +304,22 @@ def _finalize_run(
                 )
 
     # --- Do NOT touch the operator's working tree -----
-    # The design is explicit ("Notes for the implementing agent"):
-    #
-    #   > do not use `git checkout` in the user's working tree
-    #   > (don't touch their checkout). The worktree's shared
-    #   > `.git` is the contract surface.
-    #
-    # Branch advance moves the ref; the operator syncs their working tree
-    # themselves using the documented command in the loop summary.
-    #
-    # The remaining UX gap (operator runs ``cat foo.py`` post-loop
-    # and sees old content) is addressed via documentation:
-    # loop-summary.md's "Next steps" block names the sync command
-    # explicitly on every SHIP termination. Operators handle the
-    # checkout themselves — same contract as a remote ``git push``
-    # to their branch from elsewhere.
+    # Producer repositories have independent Git storage and cannot move the
+    # operator ref through ordinary actor Git. The warning below is emitted only
+    # when trusted import was followed by a successful operator-branch CAS.
     if snapshot.branch is not None and branch_advanced_during_run:
         _warn_branch_advanced(branch=snapshot.branch, repo_root=repo_root, logger=logger)
 
     # terminal cleanup decision. Per the PRD,
-    # exits 10/20/30 keep worktrees for inspection; exit 0 +
+    # exits 10/20/30 keep actor workspaces for inspection; exit 0 +
     # environmental failures (40/50/60/70) clean up. Each
     # WorktreeManager was constructed with defer_cleanup=True so
     # the per-round + per-producer ``with`` blocks didn't
     # auto-clean; the orchestrator now decides based on
     # final_exit_code.
-    preserve_worktrees = final_exit_code in (
-        CLARIFICATION_NEEDED,
-        MAX_ROUNDS_REACHED,
-        FINDINGS_PRESENT,
-    )
+    # ONE authority, shared with every renderer — see `producer_result.candidate_disposition`.
+    unlanded_candidate = candidate_disposition(round_results).workspace_is_only_copy
+    preserve_worktrees = final_exit_code in WORKSPACE_PRESERVING_EXITS or unlanded_candidate
     if not preserve_worktrees:
         for manager in managers_to_cleanup:
             try:
@@ -351,14 +336,23 @@ def _finalize_run(
         # Surface the preservation in the operator's terminal
         # log so they know where to look.
         if managers_to_cleanup:
-            logger.warning(
-                f"orchestrator: worktrees PRESERVED on disk for "
-                f"inspection (exit {final_exit_code} keeps them per "
-                f"PRD). Inspect at {effective_worktree_base / run_id}/."
-            )
+            if unlanded_candidate:
+                # Not a verbosity preference: this names the ONLY surviving copy of committed
+                # producer work, which is the `Logger.safety` class exactly.
+                logger.safety(
+                    f"orchestrator: a producer candidate was committed but did NOT reach this "
+                    f"repository, so its standalone producer repository is PRESERVED as the only "
+                    f"copy of that work. Inspect at {effective_worktree_base / run_id}/."
+                )
+            else:
+                logger.warning(
+                    f"orchestrator: actor workspaces PRESERVED on disk for "
+                    f"inspection (exit {final_exit_code} keeps them per "
+                    f"PRD). Inspect at {effective_worktree_base / run_id}/."
+                )
 
-    # final cleanup of the per-run worktree-base parent. The
-    # per-round WorktreeManagers each cleaned up their round-N
+    # Final cleanup of the per-run workspace-base parent. The
+    # per-round managers each cleaned up their round-N
     # subdirs, but the shared ``<worktree_base>/<run_id>/`` parent
     # they were nested under is still on disk.
     #

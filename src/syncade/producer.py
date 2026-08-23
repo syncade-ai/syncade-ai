@@ -15,10 +15,10 @@ duration_seconds, one-shot __post_init__ discipline).
 
 **Architectural invariants this module enforces (vs. relies on):**
 
-- *Producer worktree is provisioned by the orchestrator.* This
+- *Producer repository is provisioned by the orchestrator.* This
   module reads the SHA at start + end to detect commits but never
-  creates/destroys the worktree; the orchestrator owns lifecycle, so
-  a round-N stall leaves the worktree for round N+1 (or inspection).
+  creates/destroys the repository; the orchestrator owns lifecycle, so
+  a round-N stall leaves the standalone repository for inspection.
 
 - *No structured-output parse.* Producers emit free-form narrative,
   not JSON. The adapter's ``parse_output`` extracts the narrative
@@ -27,12 +27,12 @@ duration_seconds, one-shot __post_init__ discipline).
   of :func:`syncade.synthesis.parse_synthesizer_output` here.
 
 - *Stall detection compares SHAs only.* Uncommitted edits are
-  invisible to git history and thus to the next round's reviewers —
-  they didn't happen for the loop. The prompt tells the model to
+  invisible to git history and cannot become an importable candidate.
+  The prompt tells the model to
   commit; the orchestrator never auto-commits (that would forge a
   commit even with no edits, obscuring the stall signal).
 
-- *The orchestrator passes ``starting_sha`` explicitly.* The worktree
+- *The orchestrator passes ``starting_sha`` explicitly.* The repository
   is provisioned at the round-start ``commit_sha`` (detached HEAD);
   this module verifies HEAD matches it at entry, then re-reads HEAD at
   exit to derive ``ending_sha``.
@@ -81,8 +81,8 @@ from syncade.prompts import (
 )
 from syncade.usage import Usage, _add_usage
 
-# Errors that mean the producer's SESSION RAN but its output was the problem — so a commit may
-# have landed first (unlike a timeout/setup failure, where none could). Gates the C1 reconcile.
+# Errors that mean the producer's SESSION RAN but its output was the problem — so an isolated
+# commit may exist first (unlike a timeout/setup failure, where none could). Gates C1 reconcile.
 _SESSION_ERRORS = (ReviewerInvocationError, ReviewerOutputError)
 
 from syncade.producer_attempt import _run_producer_once  # noqa: E402

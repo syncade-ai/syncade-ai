@@ -23,6 +23,11 @@ def _init_git_repo(repo: Path) -> None:
     _fake_origin_head(repo, "main")
 
 
+def _outside_worktree_base(repo: Path) -> Path:
+    """Return a test worktree base outside ``repo``."""
+    return repo.parent / f"{repo.name}-syncade-worktrees"
+
+
 def _fake_origin_head(repo: Path, branch: str) -> None:
     """Authoritative origin/HEAD -> <branch> without a real remote (see the orchestrator
     helper of the same name): satisfies the default-branch guard cheaply."""

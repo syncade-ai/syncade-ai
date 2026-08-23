@@ -246,12 +246,12 @@ def load_prior_producer_commit_subjects(
     prior_round_dir: Path,
     repo_root: Path,
 ) -> str:
-    """Load the commit subjects of the prior round's producer commits.
+    """Load subjects for prior candidates present in the operator repository.
 
     Reads two artifacts the orchestrator persists for the prior round:
 
     - ``<prior_round_dir>/manifest.json``'s ``snapshot.commit_sha`` —
-      the SHA the prior round's producer worktree was provisioned at
+      the SHA the prior round's producer repository was provisioned at
       (the producer's STARTING sha).
     - ``<prior_round_dir>/producer.commit.txt`` — the SHA the prior
       producer left HEAD at (the producer's ENDING sha; written by
@@ -259,13 +259,12 @@ def load_prior_producer_commit_subjects(
 
     With both SHAs in hand, runs ``git log --pretty=format:%s
     <starting>..<ending>`` in the operator's repo to get every commit
-    subject the producer landed last round.
+    subject from the prior candidate range.
 
-    The lookup runs in the OPERATOR'S REPO, not the producer worktree.
-    By the time round-N producer runs, branch-advance has promoted the
-    prior commits onto the operator's branch, so ``git log`` against
-    ``repo_root`` sees them. The producer worktree is fresh per round
-    and wouldn't have history before its own provisioning SHA.
+    The lookup runs in the OPERATOR'S REPO, not the producer repository.
+    Reaching round N requires trusted import and branch advance of the prior
+    candidate. Each producer
+    repository is fresh and lacks history before its provisioning SHA.
 
     Reading the starting SHA from the prior round's manifest (rather
     than threading it through ``_run_producer_phase`` from the loop

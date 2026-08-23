@@ -355,3 +355,66 @@ class TestNextStepsTestLegSplits:
         # Synth- and reviewer-variant signals must not appear
         assert "synthesizer subprocess failed" not in ns.lower()
         assert "a reviewer subprocess failed" not in ns.lower()
+
+
+class TestProducerNextStepsCandidateLocation:
+    """Per-round next-steps for committed+non-imported outcomes must derive
+    location from candidate_import.recovery_ref, not assume preserved standalone."""
+
+    def test_committed_error_without_recovery_ref_says_preserved_standalone(self):
+        """When trusted import returned error WITHOUT a recovery_ref, the candidate
+        is only in the preserved standalone repository — the pre-existing behavior."""
+        from syncade.adapters.producer import ProducerOutput
+        from syncade.persistence.run_summary_next_steps import _resolve_next_steps_with_producer
+        from syncade.producer import ProducerResult
+        from syncade.producer_import import CandidateImportResult
+
+        producer = ProducerResult(
+            outcome="committed",
+            starting_sha="a" * 40,
+            ending_sha="b" * 40,
+            duration_seconds=5.0,
+            output=ProducerOutput(narrative_text="fix applied"),
+            error=None,
+            candidate_import=CandidateImportResult(
+                status="error",
+                recovery_ref=None,
+                error="trusted import failed",
+            ),
+        )
+        text = _resolve_next_steps_with_producer(exit_code=60, producer_result=producer)
+        assert "preserved standalone" in text
+        assert "NOT the only copy" not in text
+
+    def test_committed_error_with_recovery_ref_says_anchored_not_preserved_standalone(self):
+        """When trusted import returned error WITH a recovery_ref, the candidate IS
+        in the operator repository; the standalone workspace was deleted.
+
+        Before the fix, the per-round next-steps said 'preserved standalone repository'
+        regardless of recovery_ref, pointing the operator to a deleted workspace.
+        """
+        from syncade.adapters.producer import ProducerOutput
+        from syncade.persistence.run_summary_next_steps import _resolve_next_steps_with_producer
+        from syncade.producer import ProducerResult
+        from syncade.producer_import import CandidateImportResult
+
+        recovery = "refs/syncade/recovery/run-1/round-0/" + "b" * 40
+        producer = ProducerResult(
+            outcome="committed",
+            starting_sha="a" * 40,
+            ending_sha="b" * 40,
+            duration_seconds=5.0,
+            output=ProducerOutput(narrative_text="fix applied"),
+            error=None,
+            candidate_import=CandidateImportResult(
+                status="error",
+                recovery_ref=recovery,
+                error="quarantine cleanup failed",
+            ),
+        )
+        text = _resolve_next_steps_with_producer(exit_code=60, producer_result=producer)
+        assert "preserved standalone" not in text, (
+            "must not send operator to a workspace that was deleted"
+        )
+        assert recovery in text, "must name the ref the operator can actually read"
+        assert "NOT the only copy" in text or "not preserved" in text

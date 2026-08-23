@@ -1,9 +1,7 @@
 """Producer adapter for the OpenAI ``codex`` CLI.
 
 Symmetric to :class:`syncade.adapters.openai.CodexAdapter` but for
-the fix-it subprocess. Real headless producer runs use ``yolo`` to
-create git commits because the ``workspace-write`` sandbox blocks
-``.git/index.lock`` writes. The output type is
+the fix-it subprocess (confined or yolo, per config). The output type is
 :class:`syncade.adapters.producer.ProducerOutput` (just the narrative text),
 not a structured
 :class:`syncade.findings.ReviewerOutput`.
@@ -18,14 +16,11 @@ extractor with a different no-agent-message exception class).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from syncade.adapters.base import Invocation
-from syncade.adapters.openai import (
-    _YOLO_FLAG,
-    CodexAdapter,
-    _check_codex_auth,
-)
+from syncade.adapters.openai import _YOLO_FLAG, CodexAdapter, _check_codex_auth
 from syncade.adapters.producer import ProducerOutput
 from syncade.auth_preflight import assert_codex_reality_honours_declaration
 from syncade.config import ProducerConfig
@@ -34,7 +29,7 @@ from syncade.findings import ReviewerOutputError
 from syncade.process import SubprocessResult
 from syncade.worktree_env import worktree_scoped_env
 
-_PRODUCER_PERMISSION_VALUES: tuple[str, ...] = ("yolo",)
+_PRODUCER_PERMISSION_VALUES: tuple[str, ...] = ("confined", "yolo")
 
 
 class OpenAIProducerAdapter:
@@ -46,10 +41,10 @@ class OpenAIProducerAdapter:
     - sets reasoning effort via ``-c model_reasoning_effort=<level>``
       (codex has no dedicated ``--effort`` flag — same discovery-doc
       finding the reviewer adapter relies on)
-    - maps permissions: ``yolo`` →
-      ``--dangerously-bypass-approvals-and-sandbox``; stale/sandboxed values
-      rejected at build time
-    - scopes file access to the producer worktree via ``-C`` and
+    - uses ``workspace-write`` with only the actor repository and its real
+      ``.git`` directory writable when ``permissions == "confined"``; for
+      ``permissions == "yolo"`` the sandbox is disabled entirely
+    - scopes file access to the standalone producer repository via ``-C`` and
       ``--add-dir``
 
     ``parse_output`` extracts the final ``agent_message`` text via
@@ -92,7 +87,7 @@ class OpenAIProducerAdapter:
 
         Same argv shape as :meth:`CodexAdapter.build_invocation` (per
         the codex CLI output notes) with the
-        :data:`syncade.config.ProducerPermissions` value-set (``yolo``).
+        :data:`syncade.config.ProducerPermissions` value-set (``confined`` | ``yolo``).
 
         Raises:
             ValueError: If ``producer_config.provider`` is not
@@ -118,7 +113,33 @@ class OpenAIProducerAdapter:
             "-c",
             f"model_reasoning_effort={producer_config.thinking}",
         ]
-        argv.append(_YOLO_FLAG)
+        if producer_config.permissions == "confined":
+            # The actor's own `.git` is named as an ADDITIONAL writable root. Under the old
+            # linked-worktree topology it could not be: the real gitdir lived in the operator
+            # repository, outside any workspace root, which is why `workspace-write` could not
+            # write `.git/index.lock` and why `yolo` used to be mandatory (PR-8 R2.T7). Item 3's
+            # standalone repository is what makes this shape possible at all.
+            # `/tmp` and `$TMPDIR` are excluded as IMPLICIT writable roots so the sandbox does
+            # not silently grant a shared scratch path outside the actor's store.
+            argv += [
+                "-s",
+                "workspace-write",
+                "-c",
+                "approval_policy=never",
+                "-c",
+                "sandbox_workspace_write.writable_roots="
+                f"{json.dumps([str(worktree_path / '.git')])}",
+                "-c",
+                "sandbox_workspace_write.exclude_slash_tmp=true",
+                "-c",
+                "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+                "--ephemeral",
+                "--ignore-user-config",
+                "--ignore-rules",
+            ]
+        else:
+            # `yolo`: no sandbox, no approvals. The operator's disclosed opt-out.
+            argv.append(_YOLO_FLAG)
         # The prompt goes on STDIN, never argv — see AnthropicAdapter.build_invocation.
         # `codex exec` reads instructions from stdin when no positional PROMPT is given.
         argv.extend(
@@ -166,14 +187,6 @@ class OpenAIProducerAdapter:
         constructs a :class:`ProducerConfig` programmatically and
         bypasses the schema (typically in unit tests).
         """
-        if permissions == "safe":
-            raise ValueError(
-                "OpenAIProducerAdapter cannot run a producer with "
-                "permissions='safe' headlessly: the corresponding "
-                "`approval_policy=untrusted` mode prompts for tool use "
-                "and `codex exec` cannot answer prompts. Use 'yolo' for "
-                "headless producer commits."
-            )
         if permissions not in _PRODUCER_PERMISSION_VALUES:
             valid = "', '".join(_PRODUCER_PERMISSION_VALUES)
             raise ValueError(

@@ -71,9 +71,9 @@ TerminationReason = Literal[
   callers can tell "reviewed and approved" from "nothing to approve".
 - ``producer_emptied_diff`` — same empty-diff condition as
   ``no_changes_to_review``, but fired in a later round (round 1+) after
-  prior rounds already dispatched reviewers and a producer. The producer's
-  commits reduced all reviewable changes to nothing. Loop terminates with
-  SUCCESS (exit 0). Distinct from ``no_changes_to_review`` because model
+  prior rounds already dispatched reviewers and an imported candidate reduced
+  all reviewable changes to nothing. Loop terminates with SUCCESS (exit 0).
+  Distinct from ``no_changes_to_review`` because model
   work WAS spent in prior rounds.
 - ``findings_present`` — a single-pass run produced NO-SHIP. The loop ends with
   exit 30 without implying a retry budget was exhausted.
@@ -82,9 +82,10 @@ TerminationReason = Literal[
 - ``budget_exceeded`` — the running token/dollar tally crossed a configured
   ``[loop]`` budget at a phase boundary (before starting the next round, or
   before a NO-SHIP round's producer). Loop ends with exit 25 (PR-v2-11).
-- ``producer_stalled`` — a NO-SHIP round's producer subprocess
-  exited cleanly but didn't move HEAD. The next round would see
-  identical input. Loop ends with exit 30 + this reason. Since
+- ``producer_stalled`` — a NO-SHIP round produced no operator-side candidate
+  that can advance: HEAD did not move, trusted import rejected the range, or
+  the old-value branch CAS lost a race. Loop ends with exit 30 +
+  this reason. Since
   this also covers a producer escalation that was NOT honored
   (its ``finding_indices`` left an active blocker uncovered, or
   referenced a non-blocker / out-of-range index) — a rejected

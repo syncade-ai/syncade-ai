@@ -45,6 +45,7 @@ class TestBuildInvocation:
         assert inv.argv[1] == "exec"
         # Output is JSON for clean parsing
         assert "--json" in inv.argv
+        assert "--skip-git-repo-check" in inv.argv
         # Model + effort + worktree paths
         assert "--model" in inv.argv
         assert "gpt-5-codex" in inv.argv

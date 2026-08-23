@@ -30,9 +30,8 @@ def _rehydrate_resume_state(
     When resuming, pre-populate ``round_results`` with each completed
     round's RoundResult so downstream consumers (loop-summary rendering,
     handoff rendering, cross-round context disk reads) see a
-    consistent picture. ``branch_advanced_during_run`` is set to True if
-    ANY rehydrated round had a committed producer — that's a load-bearing
-    signal for the post-loop "your branch has been advanced" warning.
+    consistent picture. ``branch_advanced_during_run`` reflects a committed,
+    imported prior candidate whose completed round advanced the branch.
     """
     round_results: list[RoundResult] = []
     round_artifacts_list: list[RoundArtifacts] = []

@@ -182,12 +182,12 @@ class TestGuardViaRunReview:
             logger=Logger(level="normal"),
         )
         assert result.exit_code == 0
-        assert "commits will land on: feature" in capsys.readouterr().err
+        assert "producer target branch: feature" in capsys.readouterr().err
 
     def test_announcement_survives_quiet(self, tmp_path, capsys):
         # The branch target is a safety disclosure — it must print even under --quiet
         # (like the auth block), so a `--quiet --allow-default-branch` run still says where
-        # commits go.
+        # producer work is targeted.
         repo = _repo_on(tmp_path, "feature", with_main=True, remote_default="main")
         pr_doc = tmp_path / "pr.md"
         pr_doc.write_text("# PR\n")
@@ -198,7 +198,7 @@ class TestGuardViaRunReview:
             adapter_factory=_factory_returning(FakeAdapter(_ship()), FakeAdapter(_ship())),
             logger=Logger(level="quiet"),
         )
-        assert "commits will land on: feature" in capsys.readouterr().err
+        assert "producer target branch: feature" in capsys.readouterr().err
 
 
 class TestCliRefusesBeforeAuthProbe:

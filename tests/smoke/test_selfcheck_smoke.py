@@ -3,9 +3,7 @@
 
 Exercises :func:`syncade.selfcheck.run_selfcheck` against the actual
 producer CLIs to confirm the selfcheck's marker-add-and-commit flow
-composes end-to-end. The selfcheck would have caught PR-8's
-deviation #1 (producer ``permissions="yolo"`` discovery) if it had
-existed; these tests prove it would.
+composes end-to-end in the confined standalone-repository topology.
 
 Gated behind ``@pytest.mark.smoke``. Default ``pytest`` runs
 deselect via ``addopts = "-m 'not smoke'"``. Tests skip cleanly
@@ -39,10 +37,9 @@ def _selfcheck_config(provider: str, model: str) -> SyncadeConfig:
     routes to a real producer adapter.
 
     Mirrors the smoke fixture in ``test_producer_smoke.py``: the
-    ``permissions="yolo"`` default is the only mode where real
-    headless ``claude -p`` / ``codex exec`` reliably commit; the
-    selfcheck verifies whatever the operator configured, but the
-    smoke test runs the default which is what most operators use.
+    ``permissions="confined"`` is the live-verified mode where both
+    headless providers commit inside the standalone repository while
+    their filesystem sandboxes deny exterior writes.
     """
     return SyncadeConfig(
         loop=LoopConfig(timeout_seconds=180.0),
@@ -57,7 +54,7 @@ def _selfcheck_config(provider: str, model: str) -> SyncadeConfig:
             provider=provider,
             model=model,
             thinking="low",
-            permissions="yolo",
+            permissions="confined",
         ),
     )
 

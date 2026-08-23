@@ -292,7 +292,7 @@ class TestPersistLoopSummary:
         the rest.
 
         Also pins the one-line lead-in immediately after the
-        ``## Commit series produced by this loop`` header, since the
+        ``## Operator start and producer candidates`` header, since the
         headline SHA invites the operator to look there for the rest.
         """
         from syncade.persistence import persist_loop_summary
@@ -316,10 +316,10 @@ class TestPersistLoopSummary:
         expected_short = "a" * 12
         expected_full = "a" * 40
         assert f"**Round 0 starting SHA:** `{expected_short}` (full: `{expected_full}`)" in text
-        # Lead-in after the commit-series header makes the link from
+        # Lead-in after the candidate-series header makes the link from
         # headline SHA → series explicit.
-        series_idx = text.find("## Commit series produced by this loop")
-        leadin_idx = text.find("Each entry is one git commit on the operator's branch")
+        series_idx = text.find("## Operator start and producer candidates")
+        leadin_idx = text.find("Subsequent entries are producer candidate SHAs")
         assert series_idx != -1
         assert leadin_idx != -1
         assert series_idx < leadin_idx

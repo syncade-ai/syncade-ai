@@ -243,10 +243,14 @@ class TestMultiRoundLoop:
         assert (round0 / "producer.error.txt").exists()
 
     def test_branch_advance_lands_on_named_branch(self, repo_with_pr_doc):
-        """The producer commits on the worktree's detached HEAD; the
-        orchestrator runs ``git update-ref refs/heads/<branch>
-        <ending_sha>`` from repo_root. Verify the operator's branch
-        moved to the producer's commit."""
+        """The producer commits on its STANDALONE repository's detached HEAD; the trusted
+        importer then moves that commit range into the operator object database and the
+        orchestrator runs ``git update-ref refs/heads/<branch> <ending> <starting>`` from
+        repo_root. Verify the operator's branch moved to the producer's commit.
+
+        This is the end-to-end proof that the whole landing path works: an actor store with no
+        relationship to the operator repository, one validated import, one compare-and-swap.
+        """
         from syncade.adapters.fake import FakeProducerAdapter
 
         repo, pr_doc = repo_with_pr_doc

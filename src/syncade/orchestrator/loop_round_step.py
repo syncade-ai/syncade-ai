@@ -1,8 +1,8 @@
 """One iteration of the multi-round review loop.
 
 ``_run_round_step`` runs a single round — snapshot refresh → ``_run_one_round`` →
-terminator decision → (if NO-SHIP and rounds remain) producer phase → escalation
-honoring → branch advance — and returns a :class:`_RoundStep` signal telling
+terminator decision → (if NO-SHIP and rounds remain) producer phase → trusted import →
+escalation honoring → attempted branch advance — and returns a :class:`_RoundStep` signal telling
 ``run_review`` whether to ``continue`` to the next round or ``break`` out, with
 the final exit code / termination reason set on a break.
 
@@ -16,7 +16,7 @@ per-round ``branch_advanced`` flag are returned so the caller can thread them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from syncade import run_status
 from syncade.adapters.base import ReviewerAdapter
@@ -36,6 +36,8 @@ from syncade.persistence import (
     persist_round_manifest,
     persist_run_summary,
 )
+from syncade.producer_import import import_producer_candidate
+from syncade.producer_result import disposition_of
 from syncade.snapshot import take_snapshot
 
 from .branch_advance import _advance_branch_ref
@@ -103,9 +105,10 @@ def _run_round_step(
     after the step returns — so a round whose reviewers already crossed the ceiling skips the
     expensive producer leg instead of spending it and aborting one round later.
 
-    ``branch_advanced_during_run`` is the CUMULATIVE flag from all prior rounds — True when any
-    earlier round fast-forwarded the branch. The local ``branch_advanced`` variable tracks only
-    THIS round; the cumulative flag is what exit-10 documents must report.
+    ``branch_advanced_during_run`` is the CUMULATIVE flag from all prior rounds — True when an
+    imported candidate advanced the branch. The local
+    ``branch_advanced`` variable tracks only THIS round; the cumulative flag is what exit-10
+    documents must report.
     """
     branch_advanced = False
     round_dir = run_dir / f"round-{round_idx}"
@@ -130,10 +133,9 @@ def _run_round_step(
         # tree messaging already fired). For resume, the initial
         # snapshot reflects the resumed round's expected SHA
         # (validated by check_tree_drift unless --force-drift).
-        # Subsequent iterations: take a fresh snapshot (HEAD has
-        # moved thanks to the previous round's producer commits +
-        # branch advance). No new dirty-tree warnings — the new
-        # commits are intentional and produce a clean tree.
+        # Subsequent iterations require a prior operator-side candidate and branch
+        # advance. No new dirty-tree warnings — an advanced
+        # candidate is intentional and produces a clean tree.
         if round_idx > resumed_round_start:
             run_status.update_phase(f"round-{round_idx}: snapshotting", round_idx)
             # Use the immutable OID from the round-0 snapshot rather than
@@ -342,7 +344,7 @@ def _run_round_step(
         else None
     )
     run_status.update_phase(f"round-{round_idx}: producer", round_idx)
-    producer_result = _run_producer_phase(
+    producer_result, producer_repo = _run_producer_phase(
         round_idx=round_idx,
         round_result=round_result,
         run_id=run_id,
@@ -359,6 +361,19 @@ def _run_round_step(
         managers_to_cleanup=managers_to_cleanup,
         operator_decision=round_operator_decision,
     )
+    if producer_result.outcome == "committed":
+        run_status.update_phase(f"round-{round_idx}: candidate importing", round_idx)
+        producer_result = replace(
+            producer_result,
+            candidate_import=import_producer_candidate(
+                repo_root=repo_root,
+                producer_repo=producer_repo,
+                starting_sha=producer_result.starting_sha,
+                ending_sha=producer_result.ending_sha,
+                run_id=run_id,
+                round_idx=round_idx,
+            ),
+        )
 
     # the escalation honor decision is mechanical set-containment
     # over the synth's own active-blocker set (escalation_coverage). Compute
@@ -539,6 +554,40 @@ def _run_round_step(
         raise RuntimeError(
             "loop round step reached branch-advance path with unexpected "
             f"producer outcome={producer_result.outcome!r}"
+        )
+    candidate_import = producer_result.candidate_import
+    if candidate_import is None:
+        raise RuntimeError("committed producer result has no trusted import result")
+    if candidate_import.status == "invalid":
+        logger.safety(
+            f"orchestrator: producer candidate rejected by trusted import: "
+            f"{candidate_import.error}. Treating the round as producer_stalled; "
+            f"the operator branch remains unchanged."
+        )
+        return _RoundStep(
+            action="break",
+            current_snapshot=current_snapshot,
+            branch_advanced=branch_advanced,
+            final_exit_code=FINDINGS_PRESENT,
+            termination_reason="producer_stalled",
+        )
+    if candidate_import.status == "error":
+        _disp = disposition_of(producer_result)
+        anchor = (
+            f" Recovery ref {_disp.reachable_ref} remains inspectable."
+            if _disp.reachable_ref is not None
+            else " No recovery ref was created."
+        )
+        logger.safety(
+            f"orchestrator: trusted producer import failed: {candidate_import.error}."
+            f"{anchor} The operator branch remains unchanged."
+        )
+        return _RoundStep(
+            action="break",
+            current_snapshot=current_snapshot,
+            branch_advanced=branch_advanced,
+            final_exit_code=WORKTREE_ERROR,
+            termination_reason="worktree_error",
         )
     run_status.update_phase(f"round-{round_idx}: branch advancing", round_idx)
     advance_status = _advance_branch_ref(

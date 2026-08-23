@@ -3,9 +3,9 @@
 subprocess that runs after a NO-SHIP round.
 
 The producer adapter builds an :class:`~syncade.adapters.base.Invocation`
-that runs a fresh ``claude -p`` (or ``codex exec``) inside the producer
-worktree. The producer is expected to make file edits AND commit them.
-The orchestrator checks the worktree's HEAD after the subprocess
+that runs a fresh ``claude -p`` (or ``codex exec``) inside the standalone
+producer repository. The producer is expected to make file edits AND commit
+them. The orchestrator checks the repository's HEAD after the subprocess
 returns to distinguish "committed" from "stalled"; the adapter is NOT
 responsible for that check — it only owns argv construction and
 output text extraction.
@@ -14,13 +14,13 @@ The producer is asymmetric to the reviewers in two ways that ARE the
 producer's responsibility surface:
 
 1. **Different default disposition.** The producer is writing code
-   and must create git commits from a headless subprocess. Its default
-   permission mode is ``yolo`` because sandboxed modes do not let both
-   real producer CLIs complete the commit step unattended.
+   and must create git commits from a headless subprocess. Its permission
+   policy is ``confined`` (default, provider's live-verified sandbox) or
+   ``yolo`` (sandbox disabled, operator opt-in).
 2. **Different output shape.** Producers don't emit structured JSON
    like reviewers do. They emit free-form narrative + make file
    edits + commit. The orchestrator's real source of truth for "did
-   the producer do anything" is the worktree's git HEAD after the
+   the producer do anything" is the repository's git HEAD after the
    subprocess returns, NOT the parsed narrative. The narrative is
    preserved for operator inspection (especially on stall or
    next-round-regression paths) but it's not part of the verdict.
@@ -52,7 +52,7 @@ class ProducerOutput:
     Producers don't emit structured JSON like reviewers do — they
     emit free-form narrative + make file edits + commit. The
     orchestrator's real source of truth for "did the producer do
-    anything" is the worktree's git HEAD after the subprocess
+    anything" is the repository's git HEAD after the subprocess
     returns, not this dataclass. The narrative is preserved here
     for persistence into ``producer.stdout`` — operators read it to
     understand what the producer was trying to do, especially when

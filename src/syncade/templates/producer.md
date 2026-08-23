@@ -7,12 +7,12 @@ minimum change that addresses each non-dismissed blocker in
 
 ## Inputs
 
-Every input path below is relative to your worktree root
+Every input path below is relative to your standalone repository root
 (`{worktree_path}`) — resolve it from there. All inputs are staged
-inside your worktree; there are no paths to other checkouts to follow.
+inside that repository; there are no paths to other checkouts to follow.
 
 - **PR spec:** `{pr_doc_path}` — the contract you are implementing.
-- **Worktree:** `{worktree_path}` — your starting point. `git log`
+- **Repository:** `{worktree_path}` — your starting point. `git log`
   and `git diff` are available; use them to see what's been done
   so far.
 - **Consolidated findings:** `{findings_md_path}` — the synthesizer's
@@ -34,7 +34,7 @@ inside your worktree; there are no paths to other checkouts to follow.
   `{worktree_path}`.
 - **Do not edit or commit the input files** at `{findings_md_path}`,
   `{pr_doc_path}`, or the test trace — they are read-only copies staged
-  inside your worktree (the findings and trace under `.syncade/`), not
+  inside your repository (the findings and trace under `.syncade/`), not
   code you implement. Never commit anything under `.syncade/`.
 
 ## Your prior round's attempt
@@ -75,7 +75,7 @@ see the "(no operator decision …)" sentinel — there is nothing to apply.
 ## Output discipline
 
 - **You must commit your changes.** The orchestrator detects "you
-  made a fix" by observing the worktree's HEAD move. If you make
+  made a fix" by observing the repository's HEAD move. If you make
   file edits without committing, the orchestrator treats your run
   as a stall and the loop terminates.
 - **Commit subject is a code-focused description.** Example:
@@ -93,7 +93,7 @@ see the "(no operator decision …)" sentinel — there is nothing to apply.
 - **Make ONE commit per logical change.** If you address three
   independent blockers, make three commits. If you address one
   blocker that requires changes in two files, make one commit.
-- **Do not amend or rebase.** Your worktree may have producer
+- **Do not amend or rebase.** Your repository may have producer
   commits from a previous round of this same loop; do not rewrite
   them. Add your new commits on top.
 - **Choose the smallest-blast-radius fix for nit-severity findings.**

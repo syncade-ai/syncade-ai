@@ -336,10 +336,9 @@ def _read_streamed(prefix: Path) -> tuple[str, str]:
 def _git_hardened_env(argv: list[str], env: dict[str, str] | None) -> dict[str, str] | None:
     """Force ``GIT_NO_REPLACE_OBJECTS=1`` on every ``git`` child.
 
-    ``refs/replace/*`` lives in the shared ``.git`` common dir and is
-    PRODUCER-WRITABLE, so a replacement object silently substitutes itself in
-    any git command that READS a commit. Reproduced, each against plain git
-    first so the fixture was known-sensitive:
+    A ``refs/replace/*`` entry silently substitutes an object in any git command
+    that READS a commit. Reproduced, each against plain git first so the fixture
+    was known-sensitive:
 
     - ``git merge-base --is-ancestor`` returned 0 for a non-descendant, which
       bypassed the fast-forward-only branch-advance invariant and landed the
@@ -351,6 +350,14 @@ def _git_hardened_env(argv: list[str], env: dict[str, str] | None) -> dict[str, 
 
     (``git rev-parse HEAD`` is NOT affected — it resolves a ref name without
     reading the object. Measured, not assumed.)
+
+    The original vector was a producer writing the OPERATOR's ``refs/replace/*``
+    through a shared ``.git`` common dir; PR-h-05 closed that structurally by
+    giving the producer a standalone repository. This stays, and is still
+    load-bearing: an actor can write replacement refs in its OWN store, and
+    ``producer_import`` reads that store to validate a candidate. It ignores actor
+    refs entirely and sets this variable itself, so a replacement cannot decide
+    what crosses — two independent defenses over the same object read.
 
     Pinning ``--no-replace-objects`` per call site failed three dogfood rounds
     running: each round the blind panel found the next unflagged invocation,

@@ -63,10 +63,9 @@ def persist_decision_needed(
         escalation: The structured :class:`ProducerEscalation` the
             producer emitted.
         run_id: The run-id, for the heading + the resume command.
-        branch_advanced: Whether an EARLIER round in this run already
-            fast-forwarded the branch. Passed in from the loop's cumulative
-            state rather than assumed: a multi-round run can reach this
-            state after a prior producer round landed commits.
+        branch_advanced: Whether an EARLIER imported candidate already
+            fast-forwarded the branch, through the trusted importer and the
+            compare-and-swap advance.
         check_results: The mechanical-check results from this round, if any.
             Failing blocking checks are listed in the document so the operator
             knows that resuming addresses the producer question but the checks
@@ -213,11 +212,10 @@ def persist_deactivated_blockers_decision_needed(
         deactivated: ``(reviewer_name, verbatim_finding_text, disposition)``
             per deactivated source blocker, where ``disposition`` describes how
             the synthesizer removed it (e.g. ``dismissed: <rationale>``).
-        branch_advanced: Whether an EARLIER round in this run already
-            fast-forwarded the branch. Passed in rather than assumed: a
-            multi-round run can reach this state after a producer round
-            landed commits, and telling an operator their branch is untouched
-            when it is not is exactly the kind of wrong that gets acted on.
+        branch_advanced: Whether an EARLIER imported candidate already
+            fast-forwarded the branch. Passed in rather than assumed because
+            telling an operator their branch is untouched when it is not is
+            exactly the kind of wrong that gets acted on.
 
     Returns:
         Path of the written ``decision-needed.md``.

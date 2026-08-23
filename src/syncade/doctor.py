@@ -59,9 +59,9 @@ from syncade.selfcheck import run_selfcheck
 from syncade.snapshot import SnapshotError, take_snapshot
 from syncade.worktree import WorktreeError
 
-# Danger floor for free disk on the worktree filesystem. Conservative on purpose: every
-# reviewer/producer/test leg checks out a full worktree under DEFAULT_WORKTREE_BASE, and a
-# machine under ~1 GiB free is at real risk of a mid-run `git worktree add` failure. Small
+# Danger floor for free disk on the workspace filesystem. Conservative on purpose: every
+# reviewer/producer/test leg materializes a full tree under DEFAULT_WORKTREE_BASE, and a
+# machine under ~1 GiB free is at real risk of a mid-run provisioning failure. Small
 # enough that any healthy dev box clears it, so a red here means genuinely low, not tight.
 
 
@@ -240,13 +240,13 @@ def _check_branch(
             "branch", _OK, "based/scoped diff is known-empty; no producers fire — guard N/A"
         )
 
-    # Loop mode on detached HEAD: the guard exempts it, but the producer's commits would be
-    # unreachable and dropped (branch_advance -> skipped_detached_head). A doomed run, so red.
+    # Loop mode on detached HEAD: there is no named landing target. The standalone
+    # candidate is preserved, but the loop cannot continue. A doomed run, so red.
     if branch is None:
         return DoctorCheck(
             "branch",
             _RED,
-            "HEAD is detached; a loop run would drop the producer's commits (no branch to advance)",
+            "HEAD is detached; the producer target has no named branch",
             fix="check out a branch before running a committing loop",
         )
 
@@ -269,9 +269,7 @@ def _check_branch(
             f"loop mode refuses a tracked-dirty tree (dirty_state={state!r})",
             fix="commit or stash your changes, or pass --force-dirty to run over your WIP",
         )
-    return DoctorCheck(
-        "branch", _OK, f"commits would fast-forward {branch!r}; tree dirty_state={state!r}"
-    )
+    return DoctorCheck("branch", _OK, f"producer target is {branch!r}; tree dirty_state={state!r}")
 
 
 _LIVE_ANNOUNCE = (

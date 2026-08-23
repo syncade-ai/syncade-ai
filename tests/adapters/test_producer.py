@@ -100,7 +100,7 @@ def test_get_producer_adapter_unknown_provider_raises():
 class TestAnthropicProducerBuildInvocation:
     """Argv-shape tests against the CLI output format's
     documented flag set. The producer's permission mapping is
-    distinct from the reviewer adapter's: only yolo can commit headlessly."""
+    distinct from the reviewer adapter's: both `confined` and `yolo` policies are supported."""
 
     def test_trusted_permissions_rejected_when_schema_bypassed(self, tmp_path):
         adapter = AnthropicProducerAdapter()
@@ -113,18 +113,34 @@ class TestAnthropicProducerBuildInvocation:
         with pytest.raises(ValueError, match="trusted"):
             adapter.build_invocation(config, tmp_path, "the prompt")
 
-    def test_yolo_permissions_use_bypass_permissions(self, tmp_path):
+    def test_confined_permissions_use_native_sandbox(self, tmp_path):
         adapter = AnthropicProducerAdapter()
         config = ProducerConfig(
             provider="anthropic",
             model="claude-opus-4-7",
             thinking="medium",
-            permissions="yolo",
+            permissions="confined",
         )
         inv = adapter.build_invocation(config, tmp_path, "prompt")
-        # yolo → bypassPermissions (full bypass)
-        assert "bypassPermissions" in inv.argv
+        assert "dontAsk" in inv.argv
+        assert "bypassPermissions" not in inv.argv
         assert "acceptEdits" not in inv.argv
+        assert "--safe-mode" in inv.argv
+        assert "--no-session-persistence" in inv.argv
+        assert "--disable-slash-commands" in inv.argv
+        assert "--strict-mcp-config" in inv.argv
+        assert '{"mcpServers":{}}' in inv.argv
+        assert inv.argv[inv.argv.index("--tools") + 1] == "Bash"
+        assert inv.argv[inv.argv.index("--allowedTools") + 1] == "Bash"
+        settings = json.loads(inv.argv[inv.argv.index("--settings") + 1])
+        assert settings == {
+            "sandbox": {
+                "enabled": True,
+                "failIfUnavailable": True,
+                "autoAllowBashIfSandboxed": True,
+                "allowUnsandboxedCommands": False,
+            }
+        }
         assert "claude-opus-4-7" in inv.argv
         assert "medium" in inv.argv
 
@@ -149,7 +165,7 @@ class TestAnthropicProducerBuildInvocation:
             adapter.build_invocation(config, tmp_path, "prompt")
         msg = str(exc_info.value)
         assert "safe" in msg
-        assert "headlessly" in msg or "prompts" in msg
+        assert "confined" in msg
 
     def test_invalid_permissions_rejected_before_mapping_lookup(self, tmp_path):
         adapter = AnthropicProducerAdapter()
@@ -170,7 +186,7 @@ class TestAnthropicProducerBuildInvocation:
             provider="openai",  # wrong provider for this adapter
             model="x",
             thinking="high",
-            permissions="yolo",
+            permissions="confined",
         )
         with pytest.raises(ValueError) as exc_info:
             adapter.build_invocation(config, tmp_path, "prompt")
@@ -190,7 +206,7 @@ class TestAnthropicProducerBuildInvocation:
             provider="anthropic",
             model="sonnet",
             thinking="xhigh",
-            permissions="yolo",
+            permissions="confined",
         )
         inv = adapter.build_invocation(config, tmp_path, "prompt")
         idx = inv.argv.index("--effort")
@@ -202,7 +218,7 @@ class TestAnthropicProducerBuildInvocation:
         worktree = make_worktree_src(tmp_path / "wt")
         adapter = AnthropicProducerAdapter()
         config = ProducerConfig(
-            provider="anthropic", model="sonnet", thinking="high", permissions="yolo"
+            provider="anthropic", model="sonnet", thinking="high", permissions="confined"
         )
         inv = adapter.build_invocation(config, worktree, "prompt")
         resolved = resolve_syncade_in_child(inv.env, worktree)

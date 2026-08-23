@@ -28,12 +28,12 @@ Those two decide more about your result than any config knob.
 You give syncade **a spec and a branch**. Each round:
 
 ```
-your diff ──▶ reviewer 1 (blind, isolated worktree) ─┐
-         └──▶ reviewer 2 (blind, isolated worktree) ─┴─▶ cold judge ─▶ findings.md + exit code
+your diff ──▶ reviewer 1 (blind, Git-less export) ─┐
+         └──▶ reviewer 2 (blind, Git-less export) ─┴─▶ cold judge ─▶ findings.md + exit code
                                                                             │
                                   optional: your test command + checks ─────┤
                                                                             │
-                                             NO-SHIP ──▶ producer fixes & commits ──▶ next round
+                                             NO-SHIP ──▶ producer commits in isolated repository
 ```
 
 Four things about that picture matter, and they're the whole product:
@@ -47,8 +47,9 @@ Four things about that picture matter, and they're the whole product:
 - **The verdict is mechanical.** Ship / no-ship is an exit code computed from the consolidated
   blockers plus your own test and check results. No LLM decides it. Unanimous blockers cannot be
   dismissed.
-- **It fixes, not just reviews and reports.** On NO-SHIP a producer subprocess attempts the fix and **commits
-  to your current branch**, the branch fast-forwards, and the panel reviews again.
+- **It fixes, not just reviews and reports.** On NO-SHIP a producer subprocess attempts the fix
+  and commits in its own standalone repository. That commit range is then validated, anchored at
+  a recovery ref, and fast-forwarded onto your branch, and the next round begins.
 
 Everything below is about feeding that loop well.
 
@@ -146,7 +147,7 @@ Why smallness pays:
   hard 1,048,576-character input limit, so syncade's message fires before the provider's does. For
   calibration: across measured rounds on this codebase the *largest* reviewer-facing diff was
   **147 KB**, median **77 KB**. If you are anywhere near the cap, the PR is far too big.
-- **Cost scales with rounds.** Measured across 102 priced runs: median **$4.07**, p90 **$14.90**,
+- **Cost scales with rounds.** Measured across 125 priced runs: median **$4.89**, p90 **$15.75**,
   worst **$35.50**. The expensive tail is multi-round loops where the producer rewrites code every
   round — which is what a sprawling PR guarantees.
 
@@ -214,7 +215,7 @@ build — not as a substitute for one.
 
 ```bash
 cd your-git-repo
-git checkout -b my-change            # NOT your default branch — the producer commits here
+git checkout -b my-change            # NOT your default branch — accepted work targets it
 
 syncade --doctor --quick             # $0 readiness check: CLIs, worktree, repo state
 syncade specs/my-change.md        # the review loop
@@ -302,13 +303,13 @@ Zero-config works. These are the shipped defaults:
 | **Reviewer 1** | `openai` / `gpt-5.5`, thinking `high` | `codex-reviewer` — standard lens |
 | **Reviewer 2** | `openai` / `gpt-5.5`, thinking `high` | `codex-reviewer-adv` — adversarial lens |
 | **Judge** | `openai` / `gpt-5.5`, thinking `high` | Cold; sees only structured findings |
-| **Producer** | `anthropic` / `claude-sonnet-4-6` under Claude Code; `openai` / `gpt-5.6-terra` otherwise | Harness-aware. Runs unsandboxed — it must commit |
+| **Producer** | `anthropic` / `claude-sonnet-4-6` under Claude Code; `openai` / `gpt-5.6-terra` otherwise | Harness-aware. Runs `confined` by default — sandboxed by the provider, committing only in its own standalone repository |
 | **Rounds** | `5` | Ceiling `10`. A typo-guard, not a spend guard |
 | **Timeout** | `1800`s | **Per subprocess**, not per round — see below |
 | **Max diff** | `1,000,000` bytes | Refuse rather than review (exit 60) |
 | **Budget** | `50,000,000` tokens | Stops at exit `25` (resumable). 4% of measured runs would have tripped this; raise with `--budget-tokens 0` to opt out |
 | **Test command** | none | Optional third convergence leg |
-| **Reviewer sandbox** | `trusted-execute` | Codex reviewers sandboxed to their worktree |
+| **Reviewer permissions** | `trusted-execute` | Codex is sandboxed to its Git-less workspace; Anthropic disables auto-loaded customizations but is not host-confined |
 | **Worktree base** | `/tmp/syncade` | Grows; see gotchas |
 
 **What we recommend:**
@@ -319,9 +320,10 @@ Zero-config works. These are the shipped defaults:
   reverted a `gpt-5.6` panel after both audited too leniently. Read that with its limits: one
   codebase, one language, a small Anthropic sample. It is enough for a default, not a law — and the
   config exists precisely so you can test it on your own repo.
-- **Keep two reviewers with different lenses.** Across 341 runs the panel raised 407 blocking
-  findings and **56% were caught by only one of the two** (126 adversarial, 101 standard). Drop
-  either and you lose half the findings — and not the same half.
+- **Keep two reviewers with different lenses.** Across 440 runs the panel raised 547 blocking
+  findings and **56% were caught by only one of the two** (490 findings from the adversarial
+  prompt, 420 from the standard one). Drop either and you lose half the findings — and not the
+  same half.
 - **Never lower the reviewer's effort tier to save money.** A cheaper panel that audits leniently
   ships bugs, which is the expensive outcome. Save money with `--max-rounds 1` or a budget ceiling,
   both of which reduce *how much* review you buy without degrading its quality. The bundled presets
@@ -407,7 +409,7 @@ the skill edits via the CLI and warns you when a higher layer would shadow your 
 ## 9. A first run, end to end
 
 ```bash
-# 1. A branch that isn't your default — the producer commits to the current branch
+# 1. A branch that isn't your default — accepted producer work targets this branch
 git checkout -b add-rate-limiting
 
 # 2. Write a brief: 3-6 numbered items with acceptance criteria
@@ -431,30 +433,36 @@ syncade specs/rate-limiting.md --budget-usd 10
 cat .syncade/runs/*/loop-summary.md
 ```
 
-On SHIP you're done. On NO-SHIP the producer has already committed fixes to your branch — read
-`findings.md` to see what it changed and why, and **check the gotcha about your working tree
-below** before you commit anything yourself.
+On SHIP you're done. On NO-SHIP, read `findings.md` and the run artifacts. If a producer
+candidate was made but could not be landed — a lost compare-and-swap race, a detached HEAD —
+the run prints the `refs/syncade/...` recovery ref it is anchored at; your branch is untouched
+and the candidate is still reachable from your repository at that ref.
 
 ---
 
 ## 10. Gotchas
 
-- **The producer commits to your current branch, and your working tree is not updated to match.**
-  Afterward `git status` shows what looks like a staged revert of the producer's work — committing
-  it silently undoes the run. Sync with `git stash && git reset --hard HEAD && git stash pop`.
-  syncade warns about this and the warning cannot be suppressed.
-- **Never commit to the branch while a run is in progress.** The branch advance is a
-  compare-and-swap; a concurrent commit stalls the run and wastes it.
-- **syncade refuses your default branch** unless you pass `--allow-default-branch`, because the
-  producer commits to wherever HEAD is. This is a feature.
+- **The producer's commits reach your branch through the trusted importer.** It works in a
+  standalone repository; syncade validates the commit range, anchors it at a recovery ref, and
+  fast-forwards your branch with a compare-and-swap. In `confined` mode (default) the producer
+  sandbox enforces host confinement (exterior filesystem writes are denied); `yolo` removes that confinement. The trusted importer boundary is unconditional in both modes. Your working tree is *not* updated to
+  match, so `git status` afterwards looks like a staged revert — sync with
+  `git stash && git reset --hard HEAD && git stash pop` rather than committing it. syncade warns
+  about this and the warning is not suppressible.
+- **syncade refuses your default branch** unless you pass `--allow-default-branch`, because
+  accepted producer work targets the invocation branch.
 - **Loop mode refuses a tracked-modified dirty tree** unless you pass `--force-dirty`. Single-pass
   review does not refuse: reviewers see committed HEAD, so uncommitted work is invisible to them.
-- **`<worktree_base>` grows.** NO-SHIP runs keep their worktrees so you can inspect what a reviewer
-  saw. `syncade --gc` removes worktrees once a run can no longer plausibly be resumed, controlled by
+- **`<worktree_base>` grows.** NO-SHIP runs keep reviewer exports, standalone
+  producer repositories, and trusted linked worktrees so you can
+  inspect what each actor saw. `syncade --gc` removes these workspaces once a run can no longer
+  plausibly be resumed, controlled by
   `gc.worktree_max_age_days` (default 14 days) — this applies even to runs that remain
   resume-eligible. It reached 4.4 GB on this machine before a cleanup. Point `worktree_base`
-  somewhere you don't mind and run `git worktree prune` after manual removals — removing the
-  directory does not remove git's registration of it.
+  somewhere you don't mind, outside the repository under review (reviewer provisioning refuses a
+  repo-local export). Run `git worktree prune` after manually removing linked
+  test/check worktrees; reviewer exports and standalone producer repositories
+  have no linked-worktree registration.
 - **Run artifacts are never deleted**, only transcripts are pruned. `syncade --metrics` is derived
   from that tree and would lose your history otherwise.
 - **Full LLM transcripts land in `.syncade/runs/`**, including source a reviewer read. **A secret in
@@ -465,8 +473,9 @@ below** before you commit anything yourself.
   `auth = "auto" | "subscription" | "api"`, and every run prints which account is about to pay —
   even under `--quiet`. On a subscription the marginal cost is $0, which is exactly why it's easy to
   forget that on API billing it is real money.
-- **`CLAUDE.md` and `AGENTS.md` are stripped** from reviewer worktrees and diffs by default, so the
-  panel stays blind to project memory. Add your own via `[review] strip_repo_context_files`.
+- **`CLAUDE.md` and `AGENTS.md` are stripped** from Git-less reviewer exports and diffs by default,
+  so Syncade does not supply project memory to the panel. This is not whole-host confinement for an
+  unsandboxed reviewer. Add your own via `[review] strip_repo_context_files`.
 
 ---
 

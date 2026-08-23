@@ -133,18 +133,16 @@ class ReviewerConfig(AuthedActor):
         default="trusted-execute",
         description=(
             "Tool-permission tier for this reviewer. ``trusted-execute`` is the "
-            "default: it still runs fully unattended (Codex "
-            "``-s workspace-write -c approval_policy=never``, Anthropic "
-            "``bypassPermissions`` — neither ever prompts) but keeps the OS "
-            "sandbox ACTIVE and scoped to the reviewer's worktree, so worktree "
-            "confinement is enforced structurally instead of resting on the "
-            "prompt asking the model to stay put. ``yolo`` maps to Codex's "
+            "default and still runs fully unattended. Codex uses "
+            "``-s workspace-write -c approval_policy=never``, keeping its sandbox "
+            "scoped to the Git-less reviewer workspace. Anthropic maps both tiers "
+            "to ``bypassPermissions`` and therefore has no equivalent host "
+            "confinement; the Git-less export remains an input boundary only. "
+            "``yolo`` maps to Codex's "
             "``--dangerously-bypass-approvals-and-sandbox`` and turns that "
-            "sandbox off; it buys a reviewer nothing, since reviewers only read "
-            "the repo and run its test/lint commands inside the worktree. "
-            "(``yolo`` and ``trusted-execute`` are identical on Anthropic — both "
-            "are ``bypassPermissions``; the distinction only bites on Codex, "
-            "which is the default reviewer provider.) ``safe`` is not offered: "
+            "sandbox off. (``yolo`` and ``trusted-execute`` are identical on "
+            "Anthropic; the distinction only bites on Codex, the default reviewer "
+            "provider.) ``safe`` is not offered: "
             "it prompts, so it would hang a headless subprocess — rejected at "
             "config-load (and again by the adapters as belt-and-braces)."
         ),
@@ -250,20 +248,19 @@ class ReviewerConfig(AuthedActor):
 
 
 class ReviewConfig(BaseModel):
-    """What reviewers are allowed to see and how their worktrees are
-    prepared."""
+    """What Syncade supplies to reviewers and how exports are prepared."""
 
     model_config = ConfigDict(extra="forbid")
 
     strip_repo_context_files: list[str] = Field(
         default_factory=lambda: list(REVIEWER_STRIP_FILES),
         description="Bare FILENAMES (not globs, not paths) to remove from each "
-        "reviewer worktree before dispatch and to strip from the reviewer-facing "
+        "reviewer workspace before dispatch and to strip from the reviewer-facing "
         "diff, so the producer's setup cannot leak. Matching is by basename "
         "equality: '*.md' matches nothing, and an entry containing '/' is "
-        "REFUSED by the worktree strip while the diff filter still matches its "
+        "REFUSED by the workspace strip while the diff filter still matches its "
         "basename -- so 'docs/CLAUDE.md' strips the diff hunk but leaves the "
-        "file readable in the worktree. Use bare basenames. The default is "
+        "file readable in the workspace. Use bare basenames. The default is "
         "sourced from REVIEWER_STRIP_FILES (single source of truth).",
     )
 
@@ -364,14 +361,16 @@ class SyncadeConfig(BaseModel):
     # check, --update, and --doctor's manifest row when false. --doctor's red manifest row
     # exits 60; the background check only prints, silent errors.
     update: UpdateConfig = Field(default_factory=UpdateConfig)
-    # Where per-run git worktrees are provisioned (PR-v2-9). A single top-level value (not a
+    # Where per-run actor workspaces are provisioned (PR-v2-9). A single top-level value (not a
     # ``[worktree]`` block — Q5); default reproduces worktree.DEFAULT_WORKTREE_BASE.
     # ``--worktree-base`` overrides per-invocation; threaded into the review run and doctor preview.
     worktree_base: Path = Field(
         default_factory=_default_worktree_base,
         description=(
-            "Base directory under which each run's per-reviewer/producer/test git worktrees are "
-            f"created (default ``{DEFAULT_WORKTREE_BASE}``). Overridable per-run with "
+            "Base directory under which each run's Git-less reviewer exports, standalone "
+            "producer repositories, and linked test/check worktrees are created "
+            f"(default ``{DEFAULT_WORKTREE_BASE}``). "
+            "Overridable per-run with "
             "``--worktree-base``. Point it at a fast local disk if ``/tmp`` is small or slow."
         ),
     )
@@ -410,7 +409,7 @@ class SyncadeConfig(BaseModel):
         """Reviewer ``name`` is the dedup key in synthesis cross-input
         validation (:mod:`syncade.synthesizer.validation` indexes finding
         counts and unanimous-blocker provenance by ``reviewer_name``) and
-        the per-reviewer prompt/worktree key in dispatch. Two reviewers
+        the per-reviewer prompt/workspace key in dispatch. Two reviewers
         sharing a name would collapse to one key and silently undercount a
         unanimous blocker, so reject duplicates at config-load with a clear
         error naming the offender(s) rather than letting the ambiguity reach
@@ -426,7 +425,7 @@ class SyncadeConfig(BaseModel):
             raise ValueError(  # GENERIC_ERR_OK: Pydantic model validator expects ValueError.
                 f"duplicate reviewer name(s) {duplicates!r}; each "
                 f"[[reviewers]] name must be unique (the name is the dedup "
-                f"key in synthesis and the per-reviewer worktree/prompt key "
+                f"key in synthesis and the per-reviewer workspace/prompt key "
                 f"in dispatch)."
             )
         return self
@@ -438,7 +437,7 @@ class SyncadeConfig(BaseModel):
         (single source of truth in :mod:`syncade.worktree`). When the
         operator configures ``[loop] test_command``, both the test
         leg AND a reviewer with a colliding name would try to
-        create a worktree at the same path and the second one
+        create a workspace at the same path and the second one
         would fail with a generic ``WorktreeError``.
 
         Case-insensitive comparison is required: exact-match checks miss
@@ -456,8 +455,8 @@ class SyncadeConfig(BaseModel):
 
         The check is conditional on ``test_command`` being set — a
         reviewer named ``"tests"`` is harmless when the test leg
-        is disabled (the only worktree at that path would be the
-        reviewer's own).
+        is disabled (the only workspace at that path would be the
+        reviewer's export).
         """
         if self.loop.test_command is None:
             return self

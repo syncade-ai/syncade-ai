@@ -1,7 +1,7 @@
 """Per-provider adapter contract for reviewer dispatch.
 
 An adapter translates a :class:`~syncade.config.ReviewerConfig`, a
-worktree path, and a rendered prompt into a concrete
+workspace path, and a rendered prompt into a concrete
 :class:`Invocation` that :func:`syncade.process.run_subprocess` can
 execute. It then translates the resulting :class:`SubprocessResult`
 back into a typed :class:`~syncade.findings.ReviewerOutput`.
@@ -31,7 +31,7 @@ class Invocation:
             :func:`syncade.process.run_subprocess`. ``argv[0]`` is the
             binary to execute.
         cwd: Working directory the subprocess runs from. Typically the
-            reviewer's worktree path.
+            reviewer's Git-less workspace path.
         env: Full environment for the subprocess. Adapters usually
             inherit the parent's env so the user's existing auth
             (keychain, OAuth, ``ANTHROPIC_API_KEY``) flows through.
@@ -120,7 +120,7 @@ class ReviewerAdapter(Protocol):
         worktree_path: Path,
         prompt: str,
     ) -> Invocation:
-        """Build a subprocess invocation from a reviewer's config + worktree
+        """Build a subprocess invocation from a reviewer's config + workspace
         + already-rendered prompt. No side effects."""
         ...
 

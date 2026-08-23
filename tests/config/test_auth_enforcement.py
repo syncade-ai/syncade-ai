@@ -134,11 +134,11 @@ class TestEveryRealAdapterEnforces:
             (CodexAdapter(), _rev(provider="openai", auth="subscription")),
             (
                 AnthropicProducerAdapter(),
-                ProducerConfig(provider="anthropic", auth="subscription", permissions="yolo"),
+                ProducerConfig(provider="anthropic", auth="subscription", permissions="confined"),
             ),
             (
                 OpenAIProducerAdapter(),
-                ProducerConfig(provider="openai", auth="subscription", permissions="yolo"),
+                ProducerConfig(provider="openai", auth="subscription", permissions="confined"),
             ),
         ],
     )
@@ -174,7 +174,7 @@ class TestOpenaiSpawnRefusesWhenTheGateWasSkipped:
             (CodexAdapter(), _rev(provider="openai", auth="api")),
             (
                 OpenAIProducerAdapter(),
-                ProducerConfig(provider="openai", auth="subscription", permissions="yolo"),
+                ProducerConfig(provider="openai", auth="subscription", permissions="confined"),
             ),
         ],
     )

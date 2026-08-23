@@ -52,7 +52,7 @@ from syncade.cli.toml_writer import render  # noqa: E402
 
 COMMENTED = """# Syncade self-review config. First dogfood: PR-8.
 #
-# Producer permissions = "yolo" because headless commits need it.
+# Producer permissions = "yolo" — sandbox disabled for this config fixture.
 
 [loop]
 max_rounds = 3          # the round ceiling

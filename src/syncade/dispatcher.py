@@ -60,6 +60,7 @@ from syncade.process import (
     terminate_active_child_groups,
 )
 from syncade.usage import Usage, _add_usage, _auth_mode, usage_for
+from syncade.worktree_env import reviewer_scoped_env
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,7 @@ class DispatchResult:
 def dispatch_reviewers(
     reviewer_configs: list[ReviewerConfig],
     *,
+    repo_root: Path,
     worktree_paths: dict[str, Path],
     prompt: str | dict[str, str],
     timeout_seconds: float = 1800,
@@ -187,11 +189,13 @@ def dispatch_reviewers(
     Args:
         reviewer_configs: One or more reviewer configurations. Each
             ``provider`` must be a key the adapter factory recognizes.
+        repo_root: The operator repository root whose path must not leak to
+            reviewer subprocesses through inherited environment variables.
         worktree_paths: Dict keyed by ``ReviewerConfig.name`` — the
-            worktree each reviewer should run in. Two reviewers from
+            workspace each reviewer should run in. Two reviewers from
             the same provider would otherwise collide on the same
-            worktree; keying by name avoids that. The orchestrator populates this dict via
-            :class:`~syncade.worktree.WorktreeManager`. If a
+            workspace; keying by name avoids that. The orchestrator populates this dict via
+            :class:`~syncade.reviewer_workspace.ReviewerWorkspaceManager`. If a
             ``reviewer_name`` is missing from this dict, only that
             reviewer fails (with a clear ``ValueError``); others run.
         prompt: The fully-rendered reviewer prompt. Two shapes:
@@ -364,6 +368,7 @@ def dispatch_reviewers(
                 _run_single_reviewer,
                 config,
                 adapter,
+                repo_root,
                 worktree_paths,
                 per_reviewer_prompts[config.name],
                 # Per-reviewer timeout (PR-v2-9): a reviewer's own ``timeout_seconds`` wins; None
@@ -396,6 +401,7 @@ def dispatch_reviewers(
 def _run_single_reviewer(
     config: ReviewerConfig,
     adapter: ReviewerAdapter,
+    repo_root: Path,
     worktree_paths: dict[str, Path],
     prompt: str,
     timeout_seconds: float,
@@ -408,8 +414,8 @@ def _run_single_reviewer(
     parse_output. Capture either the parsed output or the exception
     that fired.
 
-    Worktree lookup is per-reviewer-name — if the orchestrator forgot
-    to provision a worktree for this reviewer, that's a clear
+    Workspace lookup is per-reviewer-name — if the orchestrator forgot
+    to provision a workspace for this reviewer, that's a clear
     ``ValueError`` recorded in this reviewer's run result. Other
     reviewers proceed normally.
 
@@ -476,7 +482,7 @@ def _run_single_reviewer(
             subprocess_result = run_subprocess(
                 invocation.argv,
                 cwd=invocation.cwd,
-                env=invocation.env,
+                env=reviewer_scoped_env(worktree, invocation.env, repo_root=repo_root),
                 timeout=timeout_seconds,
                 input_text=invocation.stdin_text,
                 # Tee'd to <round>/<name>.{stdout,stderr} — the same two files persistence

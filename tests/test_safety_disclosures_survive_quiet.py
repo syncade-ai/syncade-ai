@@ -31,7 +31,10 @@ _SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "syncade"
 # the run, not the fate of work already committed.
 _SAFETY_SITES = {
     "orchestrator/branch_advance.py": 4,
-    "orchestrator/loop_finalize.py": 1,
+    # 2 since PR-h-05: the branch-advanced working-tree warning, plus the notice naming a
+    # committed candidate that did NOT reach the operator repository — where the preserved
+    # standalone repository is the ONLY copy of that work, which is this class exactly.
+    "orchestrator/loop_finalize.py": 2,
 }
 
 

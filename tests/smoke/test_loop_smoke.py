@@ -122,11 +122,10 @@ def test_full_loop_ships_at_round_less_than_max_rounds(tmp_path):
             provider="anthropic",
             # "sonnet" alias — haiku at low thinking is unreliable
             # on the committed-outcome path; sonnet at low is
-            # capable in 30-60s. See test_anthropic_producer_smoke
-            # for the trusted-vs-yolo permission rationale.
+            # capable in 30-60s.
             model="sonnet",
             thinking="low",
-            permissions="yolo",
+            permissions="confined",
         ),
         loop={"max_rounds": 3},
     )
@@ -288,7 +287,7 @@ def test_loop_terminates_on_max_rounds_reached_deterministically(tmp_path):
             provider="anthropic",
             model="sonnet",
             thinking="low",
-            permissions="yolo",
+            permissions="confined",
         ),
         loop={"max_rounds": 2},
     )

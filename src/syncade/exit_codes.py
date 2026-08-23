@@ -61,8 +61,8 @@ CONFIG_ERROR = 50
     schema validation.
 
 WORKTREE_ERROR = 60
-    Worktree provisioning error. ``git worktree add`` or equivalent setup failed
-    before the requested phase could run.
+    Worktree provisioning or reviewer-export error. ``git worktree add`` or
+    equivalent actor-workspace setup failed before the requested phase could run.
 
 REVIEWER_OUTPUT_UNPARSEABLE = 70
     Reviewer OR synthesizer output unparseable. The raw response is preserved in
@@ -80,3 +80,13 @@ REVIEWER_FAILURE: int = 40
 CONFIG_ERROR: int = 50
 WORKTREE_ERROR: int = 60
 REVIEWER_OUTPUT_UNPARSEABLE: int = 70
+
+
+WORKSPACE_PRESERVING_EXITS = frozenset({CLARIFICATION_NEEDED, MAX_ROUNDS_REACHED, FINDINGS_PRESENT})
+"""Exit codes that keep actor workspaces on disk for inspection.
+
+One authority. This list lived in ``loop_finalize`` as constants and was then re-typed as the
+literals ``(10, 20, 30)`` in ``loop_summary_text``, so the summary described a preservation policy
+it did not read — a third source of truth for the question the summary exists to answer. Change
+the policy here and every consumer moves with it.
+"""

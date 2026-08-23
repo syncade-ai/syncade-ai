@@ -238,6 +238,27 @@ class TestMultiRoundLoop:
             f"was cleaned up but PRD says exit 30 keeps worktrees "
             f"for inspection. Expected: {producer_worktree_dir}"
         )
+        assert (producer_worktree_dir / ".git").is_dir()
+        common = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=producer_worktree_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert (producer_worktree_dir / common).resolve() == (
+            producer_worktree_dir / ".git"
+        ).resolve()
+        assert (
+            subprocess.run(
+                ["git", "remote"],
+                cwd=producer_worktree_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            == ""
+        )
 
     def test_max_rounds_reached_preserves_worktrees(self, repo_with_pr_doc):
         """PR-8 R2.T3: exit 20 (max_rounds_reached) also preserves

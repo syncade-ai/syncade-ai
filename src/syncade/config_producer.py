@@ -75,13 +75,24 @@ The producer subprocess is a fresh LLM (claude or codex) — not the
 operator's Claude Code session. Same provider-string vocabulary as
 ``ReviewerConfig.provider`` so the same adapter routing applies."""
 
-ProducerPermissions = Literal["yolo"]
-"""Tool-permission tier accepted by the producer adapters.
+ProducerPermissions = Literal["confined", "yolo"]
+"""Producer confinement policy. ``confined`` is the DEFAULT; ``yolo`` is an opt-out.
 
-Real headless producer smokes require ``yolo`` to create git commits
-unattended. Sandboxed modes either prompt for bash (Claude) or block
-``.git/index.lock`` writes (Codex), so they are rejected at config-load
-instead of stalling mid-run."""
+``confined`` runs each provider's live-verified filesystem sandbox around the standalone
+producer repository: writes outside it are denied by enforcement, not by prompt text
+(PR-h-05 Item 2's live matrix). On the Anthropic path the sandbox can only auto-approve
+SANDBOXED Bash, so a confined ``claude`` producer runs Bash-only — it edits through the
+shell rather than through Edit/Write.
+
+``yolo`` is the pre-PR-h-05 behaviour and stays available because that tool restriction is a
+real cost and the operator, not this schema, owns that trade. It disables the sandbox
+outright (claude ``bypassPermissions`` / codex ``--dangerously-bypass-approvals-and-sandbox``),
+removing the enforced write boundary around the standalone producer repository. The standalone
+store and trusted importer are UNCONDITIONAL — neither is gated on ``producer.permissions`` —
+so rank 3 closes in both modes; what ``yolo`` forgoes is the host-confinement layer ``confined``
+adds on top (the deferred host-trust half of audit rank 2). It is therefore DISCLOSED on every
+run that can dispatch a producer, on a channel ``--quiet`` does not suppress. Neither mode ever
+prompts; both run fully unattended."""
 
 
 class ProducerConfig(AuthedActor):
@@ -103,7 +114,7 @@ class ProducerConfig(AuthedActor):
     Defaults follow the invoking harness (:func:`_invoking_harness`) —
     ``anthropic`` / ``claude-sonnet-4-6`` under Claude Code, ``openai`` /
     ``gpt-5.6-terra`` otherwise — with ``thinking="medium"`` /
-    ``permissions="yolo"`` either way. The producer is the one role that
+    ``permissions="confined"`` either way. The producer is the one role that
     tracks the operator's toolchain; the reviewers and the judge stay pinned
     to a cold OpenAI tier so verdicts stay comparable across harnesses. Other
     permission values are rejected at the schema level (see
@@ -126,8 +137,8 @@ class ProducerConfig(AuthedActor):
         default_factory=_default_producer_provider,
         description=(
             "Producer adapter provider. ``anthropic`` routes to "
-            ":class:`AnthropicProducerAdapter` (``claude -p`` with "
-            "``--permission-mode bypassPermissions``); ``openai`` routes "
+            ":class:`AnthropicProducerAdapter` (``claude -p`` with its "
+            "native sandbox); ``openai`` routes "
             "to :class:`OpenAIProducerAdapter` (``codex exec``). "
             "Defaults to the invoking harness (see :func:`_invoking_harness`): "
             "``anthropic`` under Claude Code, ``openai`` otherwise. "
@@ -179,18 +190,19 @@ class ProducerConfig(AuthedActor):
         return data
 
     permissions: ProducerPermissions = Field(
-        default="yolo",
+        default="confined",
         description=(
-            "Tool-permission tier. ``yolo`` (default) bypasses sandbox "
-            "and approval prompts entirely (claude's "
-            "``bypassPermissions`` / codex's "
-            "``--dangerously-bypass-approvals-and-sandbox``). This is "
-            "the only live-verified mode where both real headless "
-            "producer CLIs can create git commits; sandboxed modes are "
-            "rejected at the schema level because they stall or block "
-            "the commit path."
+            "Producer confinement policy. ``confined`` (default) runs the "
+            "provider's live-verified filesystem sandbox around the standalone "
+            "producer repository; exterior writes are denied by enforcement. "
+            "``yolo`` disables that sandbox (host confinement only — the trusted "
+            "importer boundary and standalone producer store are unconditional in "
+            "both modes) — supported, never the default, and disclosed on every run "
+            "that can dispatch a producer. A single-pass review dispatches none and "
+            "is not warned about one. Both run unattended; neither prompts."
         ),
     )
+
     timeout_seconds: float | None = Field(
         default=None,
         gt=0,

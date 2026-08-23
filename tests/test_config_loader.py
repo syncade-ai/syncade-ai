@@ -75,7 +75,7 @@ model = "gpt-5-codex"
     assert cfg.producer.model == "gpt-5-codex"
     # other defaults survive
     assert cfg.producer.thinking == "medium"
-    assert cfg.producer.permissions == "yolo"
+    assert cfg.producer.permissions == "confined"
 
 
 def test_max_rounds_above_cap_rejected_at_config_load(tmp_path):

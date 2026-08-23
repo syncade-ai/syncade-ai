@@ -7,11 +7,10 @@ The third convergence leg. After every reviewer succeeds AND the cold
 cold synthesizer produces a clean ``consolidated_findings``, the
 orchestrator runs ONE additional subprocess: the operator-configured
 ``[loop] test_command`` from ``.syncade/config.toml``. The subprocess
-runs in a fresh worktree provisioned the same way reviewer worktrees
-are (``WorktreeManager``, CLAUDE.md / AGENTS.md stripped, fresh
-checkout from the snapshot ``commit_sha``) so what runs is what an
-external CI would see — not the producer's working tree, not the
-reviewers' worktrees.
+runs in a fresh linked worktree (``WorktreeManager``, CLAUDE.md /
+AGENTS.md stripped, fresh checkout from the snapshot ``commit_sha``)
+so what runs is what an external CI would see — not the producer's
+working tree and not the reviewers' Git-less exports.
 
 This module is intentionally narrow. There is no prompt, no LLM, no
 JSONL parsing — just shell subprocess execution + result capture.
@@ -255,7 +254,7 @@ def run_tests(
         worktree_path: Path of the fresh worktree to run the test
             command in. The orchestrator provisions this via
             :class:`~syncade.worktree.WorktreeManager` with the
-            same ``strip_files`` treatment as reviewer worktrees,
+            same ``strip_files`` list as reviewer exports,
             so what runs sees what an external CI would see.
         test_command: The operator-configured ``[loop] test_command``
             string. Passed verbatim to ``bash -o pipefail -c``. Must

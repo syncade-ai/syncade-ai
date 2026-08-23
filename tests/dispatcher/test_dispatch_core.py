@@ -43,6 +43,7 @@ class TestDispatchHappyPath:
         adapters = [FakeAdapter(canned_output=_ship()) for _ in configs]
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", "rv2", tmp_path=tmp_path),
             prompt="rendered prompt",
             adapter_factory=_factory_returning(*adapters),
@@ -69,6 +70,7 @@ class TestDispatchHappyPath:
         adapters = [FakeAdapter() for _ in configs]
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("claude-primary", "claude-secondary", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(*adapters),
@@ -99,6 +101,7 @@ class TestDispatchPartialFailure:
         ]
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", "rv2", "rv3", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(*adapters),
@@ -126,6 +129,7 @@ class TestDispatchPartialFailure:
         ]
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", "rv2", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(*adapters),
@@ -145,6 +149,7 @@ class TestDispatchPartialFailure:
         adapters = [FakeAdapter(canned_exception=ReviewerOutputError("unparseable"))]
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(*adapters),
@@ -171,6 +176,7 @@ class TestDispatchPartialFailure:
         adapter = FlakyAdapter(canned_output=_ship())
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(adapter),
@@ -191,6 +197,7 @@ class TestDispatchPartialFailure:
         adapter = FakeAdapter(canned_exception=err)
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(adapter),
@@ -204,6 +211,7 @@ class TestDispatchPartialFailure:
         adapter = FakeAdapter(canned_exception=ReviewerOutputError("unparseable"))
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(adapter),
@@ -238,6 +246,7 @@ class TestAuthFailFast:
         adapters = [adapter_with_bad_auth, adapter_with_good_auth]
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", "rv2", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(*adapters),
@@ -270,6 +279,7 @@ class TestAuthFailFast:
         )
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             skip_auth_check=True,
@@ -352,6 +362,7 @@ class TestDispatchTimeout:
         start = time.monotonic()
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             timeout_seconds=0.5,
@@ -372,6 +383,7 @@ class TestDispatchTimeout:
         start = time.monotonic()
         result = dispatch_reviewers(
             [_config("rv1")],
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             timeout_seconds=0.5,
@@ -396,6 +408,7 @@ class TestDispatchTimeout:
         adapters = [_SlowAdapter()]
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             timeout_seconds=0.5,
@@ -425,6 +438,7 @@ class TestDispatchTimeout:
         def _capture(
             config,
             adapter,
+            repo_root,
             worktree_paths,
             prompt,
             timeout_seconds,
@@ -449,6 +463,7 @@ class TestDispatchTimeout:
         rv_default = ReviewerConfig(name="rv-default", provider="fake", model="m")  # None → global
         dispatch_reviewers(
             [rv_custom, rv_default],
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv-custom", "rv-default", tmp_path=tmp_path),
             prompt="x",
             timeout_seconds=1800.0,  # the resolved loop/CLI global — the fallback
@@ -470,6 +485,7 @@ class TestDispatchTimeout:
         adapters = [_SlowAdapterWithOutput()]
         result = dispatch_reviewers(
             configs,
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             timeout_seconds=0.5,

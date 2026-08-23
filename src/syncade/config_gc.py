@@ -48,13 +48,13 @@ class GcConfig(BaseModel):
         default=_DEFAULT_WORKTREE_MAX_AGE_DAYS,
         ge=0,
         description=(
-            "Days after which a run's WORKTREE is removed even though the run is still "
+            "Days after which a run's ACTOR WORKSPACES are removed even though the run is still "
             f"resume-eligible (default {_DEFAULT_WORKTREE_MAX_AGE_DAYS}; 0 disables the bound "
             "and restores the previous never-ending protection). Tier 3 of the retention "
-            "policy: a worktree is reconstructible from the SHA the run already records, so "
-            "removing one costs a `git worktree add` and never history. Distinct from "
+            "policy: reviewer exports and linked worktrees are reconstructible from recorded "
+            "snapshot state, so removing one never removes run history. Distinct from "
             "`max_age_days`, which gates TRANSCRIPTS only — one key cannot be non-zero for "
-            "worktrees and zero for transcripts at once."
+            "actor workspaces and zero for transcripts at once."
         ),
     )
 

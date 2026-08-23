@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import filecmp
 import hashlib
+import os
 import shutil
 from pathlib import Path
 
@@ -28,6 +29,13 @@ from syncade.process import (
 from syncade.producer_result import ProducerResult
 
 
+def _producer_git_env() -> dict[str, str]:
+    """Run actor Git against its cwd, never inherited operator routing."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
+
+
 def _read_worktree_head(worktree_path: Path) -> str:
     """Return ``git rev-parse HEAD`` in ``worktree_path``.
 
@@ -35,8 +43,8 @@ def _read_worktree_head(worktree_path: Path) -> str:
     the (starting_sha, ending_sha) tuple stall detection compares.
     Failures bubble as :class:`SubprocessError` — the orchestrator
     treats them as subprocess-error outcomes (exit 40) since a
-    worktree that can't be queried for HEAD isn't usable for the
-    next round either.
+    repository that can't be queried for HEAD cannot supply a trusted
+    candidate identity.
 
     Uses :func:`syncade.process.run_subprocess` (not
     :func:`subprocess.run` directly) so the shared subprocess
@@ -48,6 +56,7 @@ def _read_worktree_head(worktree_path: Path) -> str:
         result = run_subprocess(
             ["git", "rev-parse", "HEAD"],
             cwd=worktree_path,
+            env=_producer_git_env(),
             timeout=10.0,
         )
     except SubprocessNotFoundError as exc:
@@ -97,19 +106,20 @@ def _authoritative_head(worktree_path: Path) -> str | None:
 
 def _accept_committed_after_error(result: ProducerResult, *, ending_sha: str) -> ProducerResult:
     """Re-classify a ``subprocess_error`` whose producer ACTUALLY committed (HEAD moved to
-    ``ending_sha``) into a ``committed`` outcome, so the orchestrator fast-forwards the branch
-    instead of dropping the work at exit 40 (PR-v2-22 C1 — *never discard a made commit*).
+    ``ending_sha``) into a ``committed`` outcome, preserving the isolated candidate instead of
+    dropping it at exit 40 (PR-v2-22 C1 — *never discard a made commit*).
 
     ``committed`` requires ``output is not None`` and ``error is None`` (:class:`ProducerResult`
     invariant), so the trailing error is folded into a synthesized narrative rather than kept on
-    ``.error``. The branch-advance path independently re-gates descendant-ness (``git merge-base
-    --is-ancestor``), so a non-descendant move is still caught downstream.
+    ``.error``. The importer independently validates the candidate before any trusted
+    branch-advance path.
     """
     err = result.error
     detail = f"{type(err).__name__}: {err}" if err is not None else "an unspecified error"
     narrative = (
         f"[syncade] The producer committed (HEAD -> {ending_sha[:12]}) and its session then ended "
-        f"with {detail}. The commit is accepted; the trailing error did not discard it."
+        f"with {detail}. The isolated candidate is preserved; the trailing error did not "
+        f"discard it."
     )
     return dataclasses.replace(
         result,
@@ -139,7 +149,12 @@ def _reset_worktree(worktree_path: Path, starting_sha: str) -> None:
     into attempt 2, violating C2.
     """
     for argv in (["git", "reset", "--hard", starting_sha], ["git", "clean", "-ffd"]):
-        result = run_subprocess(argv, cwd=worktree_path, timeout=10.0)
+        result = run_subprocess(
+            argv,
+            cwd=worktree_path,
+            env=_producer_git_env(),
+            timeout=10.0,
+        )
         if result.returncode != 0:
             raise SubprocessError(
                 f"producer: {argv[1]} failed in {worktree_path}: "
@@ -151,7 +166,7 @@ def _stage_producer_input(src: Path, *, worktree_path: Path, repo_root: Path) ->
     """Stage one producer input inside the worktree; return a
     worktree-relative reference to it.
 
-    Confinement (H4): the producer runs ``yolo`` with cwd = its own
+    Confinement (H4): the producer runs with cwd = its own
     worktree. Handing it an ABSOLUTE main-repo or run-artifact path
     lures it OUT of that isolated worktree to read or edit the live
     operator repo — the same escape the reviewer path was closed

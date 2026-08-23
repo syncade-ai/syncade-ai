@@ -16,6 +16,7 @@ from pathlib import Path
 from syncade import billing
 from syncade.dispatcher import DispatchResult
 from syncade.producer import ProducerResult
+from syncade.producer_result import disposition_of
 from syncade.snapshot import Snapshot
 from syncade.synthesis import has_active_blocker
 from syncade.synthesizer import SYNTHESIZER_NAME, SynthesizerResult
@@ -425,6 +426,14 @@ def persist_run_summary(
             lines.append(f"- **Provider / model:** {producer_provider} / {producer_model}")
             lines.append(f"- **Duration:** {producer_result.duration_seconds:.1f}s")
             lines.append(f"- **Commit SHA:** `{producer_result.ending_sha}` (short: `{ending}`)")
+            candidate_import = producer_result.candidate_import
+            if candidate_import is not None:
+                lines.append(f"- **Trusted import:** {candidate_import.status}")
+                _disp = disposition_of(producer_result)
+                if _disp.reachable_ref is not None:
+                    lines.append(f"- **Recovery ref:** `{_disp.reachable_ref}`")
+                if candidate_import.error is not None:
+                    lines.append(f"- **Import detail:** {candidate_import.error}")
             lines.append(
                 f"- **Output:** [{PRODUCER_NAME}.stdout]({PRODUCER_NAME}.stdout) | "
                 f"[{PRODUCER_NAME}.stderr]({PRODUCER_NAME}.stderr) | "

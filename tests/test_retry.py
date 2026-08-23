@@ -145,6 +145,7 @@ class TestReviewerDispatchRetry:
         )
         result = dispatch_reviewers(
             [_config("rv1")],
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(adapter),
@@ -163,6 +164,7 @@ class TestReviewerDispatchRetry:
         )
         result = dispatch_reviewers(
             [_config("rv1")],
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(adapter),
@@ -176,6 +178,7 @@ class TestReviewerDispatchRetry:
         adapter = FakeAdapter(canned_exception=ReviewerOutputError("unparseable"))
         result = dispatch_reviewers(
             [_config("rv1")],
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(adapter),
@@ -189,6 +192,7 @@ class TestReviewerDispatchRetry:
         adapter = FakeAdapter(canned_exception=_invocation_error("auth failed", status=401))
         result = dispatch_reviewers(
             [_config("rv1")],
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(adapter),
@@ -210,6 +214,7 @@ class TestReviewerDispatchRetry:
         )
         result = dispatch_reviewers(
             [_config("rv1")],
+            repo_root=tmp_path / "repo",
             worktree_paths=_worktree_paths("rv1", tmp_path=tmp_path),
             prompt="x",
             adapter_factory=_factory_returning(adapter),

@@ -173,14 +173,14 @@ class TestBoundaryRenameIsAnnounced:
         assert "CLAUDE.md" not in filtered, "stripped source NAME leaked"
         assert "SECRET" not in filtered, "stripped source CONTENT leaked"
 
-    def test_placeholder_points_at_the_worktree(self, tmp_path):
+    def test_placeholder_points_at_the_workspace(self, tmp_path):
         """The file IS on disk for the reviewer, so the note must be actionable."""
         from syncade.diff_filter import filter_diff_for_reviewer
 
         filtered = filter_diff_for_reviewer(
             self._boundary_diff(tmp_path, edit=False), ["CLAUDE.md", "AGENTS.md"]
         )
-        assert "worktree" in filtered
+        assert "workspace" in filtered
 
     def test_nested_destination_full_path_announced(self, tmp_path):
         """Destination directory components must not be dropped.

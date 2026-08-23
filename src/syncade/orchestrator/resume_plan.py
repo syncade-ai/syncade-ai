@@ -228,10 +228,9 @@ def _expected_sha_for_resumed_round(
 ) -> str:
     """Derive the snapshot SHA the resumed round should pin against.
 
-    Round 0 uses ``run-init.json::starting_sha``. Round N>0 reads
-    the prior round's manifest: if the prior producer committed,
-    use ``producer.ending_sha``; otherwise (no producer commit),
-    the branch never advanced, so use the prior round's
+    Round 0 uses ``run-init.json::starting_sha``. Round N>0 reads the prior
+    round's manifest: if an imported prior candidate committed, use
+    ``producer.ending_sha``; otherwise use the prior round's
     ``snapshot.commit_sha``.
 
     Raises :class:`ResumeError` when the round-(N-1) manifest is
@@ -257,9 +256,8 @@ def _expected_sha_for_resumed_round(
         ending_sha = producer.get("ending_sha")
         if isinstance(ending_sha, str) and ending_sha:
             return ending_sha
-    # No producer commit (stalled, errored, or producer phase didn't
-    # run) → the branch was never advanced; resumed round snapshots
-    # from the prior round's snapshot SHA.
+    # No imported candidate (stalled, errored, or producer phase didn't run) →
+    # a resumed round snapshots from the prior round's snapshot SHA.
     snapshot = prior_manifest.get("snapshot") or {}
     commit_sha = snapshot.get("commit_sha")
     if not isinstance(commit_sha, str) or not commit_sha:

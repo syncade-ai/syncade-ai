@@ -1,8 +1,8 @@
-"""Worktree management for blind reviewer dispatch.
+"""Linked Git worktree management for trusted test/check legs.
 
-Provides the primitives that put each reviewer in its own physically isolated
-git worktree: the error type, default base path, run-id helper, and
-``WorktreeManager``.
+Provides the worktree error type, default actor-workspace base, run-id helper,
+and ``WorktreeManager``. Model reviewers use
+:class:`syncade.reviewer_workspace.ReviewerWorkspaceManager` instead.
 
 This module is intentionally decoupled from :mod:`syncade.config`.
 Callers pull values out of :class:`syncade.config.SyncadeConfig`
@@ -30,7 +30,7 @@ from .worktree_paths import (
 )
 
 DEFAULT_WORKTREE_BASE: Path = Path("/tmp/syncade")
-"""Filesystem location under which all per-run worktrees are created.
+"""Filesystem location under which per-run actor workspaces are created.
 
 Configurable via :class:`WorktreeManager`'s constructor argument; the
 default keeps worktrees out of the user's repo and on a tmpfs where the
@@ -126,23 +126,22 @@ class Worktree:
 
 
 class WorktreeManager:
-    """Provisions and cleans up per-reviewer git worktrees for a run.
+    """Provision and clean up linked Git worktrees for trusted legs.
 
     Use as a context manager — on clean exit, all worktrees created
     through this manager are removed. On exception, worktrees are
-    intentionally left in place so the user can inspect what each
-    reviewer saw.
+    intentionally left in place so the user can inspect what the leg saw.
 
     Example::
 
         run_id = generate_run_id("pr-3")
         with WorktreeManager(repo_root, run_id) as mgr:
             wt = mgr.create(
-                "claude-reviewer",
+                "tests",
                 commit_sha,
                 strip_files=["CLAUDE.md", "AGENTS.md"],
             )
-            # dispatch reviewer subprocess into wt.path ...
+            # run the configured test command in wt.path ...
             # cleanup happens automatically on context exit
     """
 
@@ -227,10 +226,8 @@ class WorktreeManager:
             raise WorktreeError(
                 f"git worktree add failed: could not create run_dir {self.run_dir}: {exc}"
             ) from exc
-        # `refs/replace/*` lives in the shared common dir and is writable from a
-        # producer worktree. Without --no-replace-objects, `git worktree add <sha>`
-        # checks out the replacement object while `Snapshot.commit_sha` names the
-        # original — a backdoored commit reviewed as its benign replacement.
+        # Without --no-replace-objects, `git worktree add <sha>` checks out a
+        # replacement object while `Snapshot.commit_sha` names the original.
         result = _run_git(
             ["git", "--no-replace-objects", "worktree", "add", str(target), commit_sha],
             cwd=self._repo_root,

@@ -51,6 +51,10 @@ class TestBuildInvocation:
         assert prompt not in inv.argv, "prompt must NOT be an argv element"
         assert not any(prompt in a for a in inv.argv), "prompt must not be embedded in argv"
 
+        # Reviewer subprocesses should not auto-load CLAUDE.md, skills,
+        # plugins, hooks, MCP servers, or other operator customizations.
+        assert "--safe-mode" in inv.argv
+
         # Reviewer now requests the stream-json transcript (+ required
         # --verbose) so the full tool-call stream is captured in .stdout;
         # the adapter extracts the terminal result envelope from it.

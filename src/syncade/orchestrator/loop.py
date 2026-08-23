@@ -17,7 +17,7 @@ from syncade.persistence import persist_run_init
 from syncade.persistence._atomic import atomic_write_text
 from syncade.run_inputs import validate_run_inputs
 from syncade.snapshot import SnapshotError, discover_repo_root, take_snapshot
-from syncade.worktree import WorktreeError, WorktreeManager, generate_run_id
+from syncade.worktree import WorktreeError, generate_run_id
 
 from ._runs_dir import _ensure_runs_gitignore
 from .budget import approaching_budget, over_budget, producer_only_usages, round_usages
@@ -103,15 +103,15 @@ def run_review(
 
     For ``max_rounds > 1``, wraps the per-round pipeline in a loop:
     each iteration runs snapshot → reviewers → synth → optional test
-    → verdict → (if NO-SHIP and rounds remain) producer → branch
-    advance → next round. The loop terminates as soon as:
+    → verdict → (if NO-SHIP and rounds remain) producer → trusted import
+    and recovery anchoring → attempted branch advance. The loop terminates as soon as:
 
     - **SHIP** at any round → exit 0 with
       ``termination_reason="ship"``.
     - **Max rounds reached** (last round was NO-SHIP) → exit 20
       with ``termination_reason="max_rounds_reached"``.
-    - **Producer stall** (subprocess clean but no commit, OR an
-      escalation that does not cover every active blocker) → exit 30
+    - **Producer stall** (no commit, an invalid candidate range, a branch-CAS
+      race, OR an escalation that does not cover every active blocker) → exit 30
       with ``termination_reason="producer_stalled"``.
     - **Decision needed** (the producer escalated and its
       ``finding_indices`` covered every active blocker) → exit
@@ -431,42 +431,28 @@ def run_review(
             raise
 
     try:
-        # --- Timeout resolution -----------------------------------------
         resolved_timeout = (
             timeout_seconds if timeout_seconds is not None else config.loop.timeout_seconds
         )
-        # Producer timeout: explicit > shared reviewer timeout (per
-        # config.producer.timeout_seconds docs).
+        # An explicit producer timeout overrides the shared reviewer timeout.
         resolved_producer_timeout = (
             config.producer.timeout_seconds
             if config.producer.timeout_seconds is not None
             else resolved_timeout
         )
-
-        # --- Loop state -------------------------------------------------
         round_results: list[RoundResult] = []
         round_artifacts_list: list[RoundArtifacts] = []
-        # Track every WorktreeManager opened during the loop. They defer cleanup so
-        # finalization can preserve diagnostic worktrees on operator-action exits
-        # and clean them on success/error exits.
-        managers_to_cleanup: list[WorktreeManager] = []
+        # Managers defer cleanup so operator-action exits preserve diagnostics.
+        managers_to_cleanup = []
         termination_reason: TerminationReason | None = None
         final_exit_code: int = SUCCESS
         branch_advanced_during_run = False
-        # PR-v2-11: running per-actor usage tally for the budget checks. Starts empty even on
-        # --resume (a fresh tally: the prior process already spent that; this run bounds only
-        # what IT spends), so a resumed loop is never aborted for a predecessor's cost.
+        # A resumed process gets a fresh usage tally; its predecessor already paid.
         run_usages: list[Usage] = []
         budget_warned = False  # the 80% heads-up fires once per run, not once per round
-        # Which ceiling tripped ("budget_tokens" | "budget_usd"), so the Budget section can
-        # name it (both set → first-to-trip, tokens checked first). None unless a budget abort.
+        # First-to-trip ceiling; token budget is checked before dollar budget.
         budget_ceiling: str | None = None
-
-        # The current snapshot — refreshed each round when the previous
-        # round's producer advanced the branch.
         current_snapshot = snapshot
-
-        # --- Resume rehydration -----------------------------------------
         # Rehydrate each completed round and derive the resumed loop bounds.
         resumed_round_start: int = 0
         if resume_plan is not None:

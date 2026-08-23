@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from syncade.cli import main
-from tests.cli._helpers import _init_git_repo
+from tests.cli._helpers import _init_git_repo, _outside_worktree_base
 
 
 def test_repo_root_tilde_is_expanded(tmp_path, monkeypatch):
@@ -72,7 +72,15 @@ def test_dirty_tree_warning_reaches_stderr_end_to_end(tmp_path, capsys):
     pr_doc = tmp_path / "pr.md"
     pr_doc.write_text("# PR\n")
 
-    rc = main(["--repo-root", str(tmp_path), str(pr_doc)])
+    rc = main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--worktree-base",
+            str(_outside_worktree_base(tmp_path)),
+            str(pr_doc),
+        ]
+    )
     assert rc == 50  # bogus provider triggered CONFIG_ERROR at dispatch
     captured = capsys.readouterr()
     # The strong dirty-tree warning fired BEFORE the dispatch failure,
@@ -98,7 +106,16 @@ def test_dirty_tree_warning_silenced_with_quiet_flag(tmp_path, capsys):
     pr_doc = tmp_path / "pr.md"
     pr_doc.write_text("# PR\n")
 
-    rc = main(["--quiet", "--repo-root", str(tmp_path), str(pr_doc)])
+    rc = main(
+        [
+            "--quiet",
+            "--repo-root",
+            str(tmp_path),
+            "--worktree-base",
+            str(_outside_worktree_base(tmp_path)),
+            str(pr_doc),
+        ]
+    )
     assert rc == 50
     captured = capsys.readouterr()
     assert "uncommitted" not in captured.err.lower()
@@ -118,7 +135,15 @@ def test_removed_require_unanimous_ship_true_is_config_error(tmp_path, capsys):
     pr_doc = tmp_path / "pr.md"
     pr_doc.write_text("# PR\n")
 
-    rc = main(["--repo-root", str(tmp_path), str(pr_doc)])
+    rc = main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--worktree-base",
+            str(_outside_worktree_base(tmp_path)),
+            str(pr_doc),
+        ]
+    )
     assert rc == 50
     captured = capsys.readouterr()
     assert "Invalid configuration" in captured.err
@@ -139,7 +164,15 @@ def test_removed_require_unanimous_ship_false_is_config_error(tmp_path, capsys):
     pr_doc = tmp_path / "pr.md"
     pr_doc.write_text("# PR\n")
 
-    rc = main(["--repo-root", str(tmp_path), str(pr_doc)])
+    rc = main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--worktree-base",
+            str(_outside_worktree_base(tmp_path)),
+            str(pr_doc),
+        ]
+    )
     assert rc == 50
     captured = capsys.readouterr()
     assert "Invalid configuration" in captured.err
@@ -186,7 +219,15 @@ def test_no_removed_config_error_when_field_omitted(tmp_path, capsys):
     pr_doc = tmp_path / "pr.md"
     pr_doc.write_text("# PR\n")
 
-    rc = main(["--repo-root", str(tmp_path), str(pr_doc)])
+    rc = main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--worktree-base",
+            str(_outside_worktree_base(tmp_path)),
+            str(pr_doc),
+        ]
+    )
     assert rc == 50
     captured = capsys.readouterr()
     assert "require_unanimous_ship" not in captured.err

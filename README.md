@@ -34,12 +34,14 @@ syncade attacks the code from outside that failure distribution:
 - **Diverse judges by design.** A bug survives only if every judge misses it, so the reviewers are
   deliberately not interchangeable. Out of the box you get **cross-prompt** diversity — a standard
   reviewer and an adversarial one, same model, different instructions — and that alone is worth
-  more than it sounds. Across **341 runs on this codebase over ten weeks**, the panel raised 407
-  blocking findings — and **56% of them were caught by only one of the two reviewers** (126 by the
-  adversarial one, 101 by the standard one). Drop either and you lose half, and not the same half.
+  more than it sounds. Across **440 runs on this codebase**, the panel raised 547 blocking
+  findings — and **56% of them were caught by only one of the two reviewers**. Both pull their
+  weight: 490 findings from the adversarial prompt, 420 from the standard one. Drop either and you
+  lose half, and not the same half.
   Every actor is independently configurable, so **cross-model / cross-lab** is one setting away.
-- **It finds and fixes.** On a no-ship verdict a producer attempts the fix and commits, then the loop
-  runs again, converging to a shippable state instead of just handing you a report.
+- **It finds and fixes.** On a no-ship verdict a producer attempts the fix and commits in its own
+  standalone repository, then that candidate is validated and fast-forwarded onto your branch and
+  the loop runs again — converging to a shippable state instead of just handing you a report.
 - **The verdict is mechanical.** Ship or no-ship is an exit code computed from the consolidated
   findings plus your own tests and checks, so an LLM never decides it directly.
 
@@ -50,9 +52,9 @@ The result is a review that finds what the tool that wrote your code structurall
 Point syncade at a short spec and it reviews your changes the way a careful team would: it
 spawns fresh, isolated CLI subprocesses — **blind reviewers**, a **cold synthesizer** that
 consolidates their findings into one mechanical verdict, and, on NO-SHIP, a **producer** that
-attempts a fix and commits it — looping up to five rounds by default until it ships or runs out of
-budget. The verdict comes back in the same Claude Code or Codex session; you never open another
-terminal or copy-paste between tools.
+attempts a fix and commits it in an isolated repository — looping up to five rounds by default
+until it ships or runs out of budget. The verdict comes back in the same Claude Code or Codex
+session; you never open another terminal or copy-paste between tools.
 
 ## Install
 
@@ -132,8 +134,8 @@ you to re-run.
 
 Check your setup any time with `syncade --doctor`.
 
-**What a run costs.** Measured across 102 priced runs on this repo: **median $4.07**, 90th
-percentile **$14.90**, worst observed **$35.50**. A clean single-round review lands nearer $2;
+**What a run costs.** Measured across 125 priced runs on this repo: **median $4.89**, 90th
+percentile **$15.75**, worst observed **$35.50**. A clean single-round review lands nearer $2;
 the expensive tail is multi-round loops where a producer rewrites code each round. If your
 `claude` / `codex` CLIs are signed in to a subscription the marginal cost is **$0** — that is how
 every run in this project has been paid for, which is precisely why these numbers are easy to
@@ -145,7 +147,7 @@ of reporting the damage afterwards.
 
 ```bash
 cd your-git-repo
-syncade --doctor --quick         # green/red readiness check (CLIs, worktree) — skips auth probe; no live provider calls
+syncade --doctor --quick         # green/red readiness check (CLIs, workspace) — skips auth probe; no live provider calls
 syncade path/to/brief.md         # run the review loop against a short markdown spec
 ```
 
@@ -166,7 +168,7 @@ From inside Codex (draft-from-session is a follow-up; supply a brief or OpenSpec
 
 syncade finds the repo root itself, writes all artifacts under `.syncade/runs/`
 (gitignored), and **refuses to run on your default branch** unless you pass
-`--allow-default-branch` — because the producer commits to the current branch.
+`--allow-default-branch` — because accepted producer work targets the current branch.
 
 For the full walkthrough — writing a brief the blind panel can use, keeping the change small enough
 to converge, and the pre-review prompt that raises the floor — see
@@ -177,10 +179,13 @@ to converge, and the pre-review prompt that raises the floor — see
 Each round of `syncade <brief>`:
 
 1. **Snapshot** the repo — HEAD plus the diff under review.
-2. **Reviewers** (two, blind, in parallel) investigate inside throwaway worktree copies and return structured findings.
+2. **Reviewers** (two, blind, in parallel) investigate inside Git-less exports of the
+   pinned snapshot and return structured findings; the supplied diff identifies the change.
 3. **Cold synthesizer** — a third blind judge — consolidates them into one `findings.md` with a **mechanical verdict**; unanimous blockers can't be dismissed.
 4. Optional **test / check legs** run in a clean worktree and fold into the verdict.
-5. On **NO-SHIP**, a **producer** attempts a fix and commits; the branch fast-forwards and the next round begins.
+5. On **NO-SHIP**, a **producer** attempts a fix and commits inside its own standalone
+   repository. Only that commit range — validated, and anchored at a recovery ref — is imported
+   and fast-forwarded onto your branch, and the next round begins.
 
 It ships the moment a round is clean, or stops at `max_rounds` (default 5), a budget
 ceiling, or a producer stall.
@@ -218,7 +223,7 @@ The verdict is mechanical — the LLMs never decide the exit code directly.
 | `30` | Findings present, test failed, or producer stalled |
 | `40` | A subprocess failed |
 | `50` | Config error |
-| `60` | Environment / worktree / repo problem — also a refused run: the diff is unreadable, or too large for a reviewer to be asked to read (`diff_too_large` / `prompt_too_large`) |
+| `60` | Environment / workspace / worktree / repo problem — also a refused run: the diff is unreadable, or too large for a reviewer to be asked to read (`diff_too_large` / `prompt_too_large`) |
 | `70` | Reviewer or synthesizer output couldn't be parsed |
 
 ## Configuration
@@ -246,7 +251,7 @@ every leg — each reviewer, the judge, the test run, each mechanical check, and
 round's worst case is a multiple of it. With two reviewers (parallel, so they count once), a test
 command and three checks, one round can run **7×** the configured value before anything times out.
 Size it as "how long may a single model call take". The actual runaway guard is the token
-ceiling, and it is **on by default** — `budget_tokens = 50000000`, which stops about 4% of runs
+ceiling, and it is **on by default** — `budget_tokens = 50000000`, which stops about 6% of runs
 in our own corpus and is `--resume`-able when it does. Set `budget_tokens = 0` to remove it, or
 add a `budget_usd` ceiling alongside. You can raise `max_rounds` up to **10**; the round cap
 is a typo-guard, not a spend guard. Per-invocation: `syncade --max-rounds N`, `--budget-usd N`.
@@ -278,8 +283,16 @@ prints which account is about to pay**, even under `--quiet`. Details in
 
 syncade runs AI coding-agent CLIs with **elevated tool access on your repo**:
 
-- **Reviewers** run headless inside throwaway worktree copies under `/tmp/syncade/` (Codex reviewers are additionally sandboxed to theirs).
-- **The producer** runs unsandboxed and **commits to your current branch** (syncade refuses the default branch by default).
+- **Reviewers** run headless inside Git-less exports of the pinned snapshot under
+  `/tmp/syncade/` (Codex reviewers are additionally sandboxed to theirs). Anthropic and
+  explicitly `yolo` reviewers are not confined from deliberately reading elsewhere on the host.
+- **The producer** runs in `confined` mode by default (provider's live-verified
+  sandbox; exterior writes denied by enforcement) and commits only inside a
+  standalone repository. `permissions = "yolo"` disables the sandbox — the
+  producer can then act outside its repository — announced on every run that
+  can dispatch a producer. Accepted work is validated by syncade's trusted
+  importer, anchored at a `refs/syncade/recovery/...` ref, and fast-forwarded
+  onto your branch through a compare-and-swap.
 - Full LLM transcripts — including source a reviewer read — are written to `.syncade/runs/` (gitignored, auto-pruned). **A secret in a file a reviewer opens lands there in plaintext.**
 - syncade makes a small number of network calls of its own: a **once-per-session** GET to its public update manifest at the first invocation in each terminal or harness window (suppressible via `[update] check = false`, or set `CI`). `syncade --update` and `syncade --doctor` check every time you run them — operator-requested, so not session-gated. **At most one manifest GET per invocation** either way: a single `syncade` process fetches once and shares it, so `--doctor` does not add a request on top of the session check. `syncade --update` also invokes your package manager (`uv tool upgrade`, `pipx upgrade`, or your own interpreter's `-m pip install -U`) — only when you run that flag. All other egress is the provider CLIs you already authenticated and the test/check commands you configure.
 
@@ -296,12 +309,15 @@ Early access. These are measured, not suspected.
   Both findings were real. If a SHIP arrives over code you did not change since a NO-SHIP, treat
   it as the weaker signal — compare the verdict to what the *code* changed, not to the previous
   verdict.
-- **Worktrees accumulate under `<worktree_base>`.** NO-SHIP runs keep their worktrees for
-  inspection. `syncade --gc` removes worktrees once a run can no longer plausibly be resumed —
+- **Workspaces accumulate under `<worktree_base>`.** NO-SHIP runs keep reviewer exports,
+  standalone producer repositories, and trusted linked worktrees for inspection. `syncade --gc` removes them once a run can no longer
+  plausibly be resumed —
   controlled by `gc.worktree_max_age_days` (default 14 days), which applies even to runs that are
   technically still resume-eligible. It reached 4.4 GB on this machine before a cleanup. Point
-  `worktree_base` somewhere you do not mind, and run `git worktree prune` after manual removals:
-  removing the directory does not remove git's registration of it.
+  `worktree_base` somewhere you do not mind, outside the repository under review (reviewer
+  provisioning refuses a repo-local export). After manually removing a linked test/check
+  worktree, run `git worktree prune`; reviewer exports and standalone producer repositories
+  have no linked-worktree registration.
 - **A hard-killed run keeps almost all of what its reviewers had written.** Reviewer stdout and
   stderr are copied to `<round>/<name>.stdout` / `<round>/<name>.stderr` as the child produces
   them, rather than held in memory until it exits, so a run ended by `SIGKILL` (or a machine
@@ -309,11 +325,15 @@ Early access. These are measured, not suspected.
   guarantee is everything written *so far*, not every byte produced — a chunk still in flight
   when the parent dies is lost. Completed rounds are unaffected, and `--resume` picks up from
   the last one and reports that the previous run was hard-killed and in which phase.
-- **The producer commits to your current branch.** That is the design — it fast-forwards only,
-  refuses the default branch without `--allow-default-branch`, and prints every commit it made.
-  Your working tree is *not* updated to match, so `git status` afterwards shows what looks like a
-  staged revert; sync with `git stash && git reset --hard HEAD && git stash pop` rather than
-  committing it. syncade warns about this and the warning is not suppressible.
+- **The producer's work reaches your branch through exactly one path.** It commits in a
+  standalone repository that has no storage relationship to yours; syncade then validates that
+  commit range, anchors it at a durable `refs/syncade/...` recovery ref, and fast-forwards your
+  branch with a compare-and-swap. If that swap loses a race — or you are on a detached HEAD —
+  your branch is left alone and the candidate is still reachable at the recovery ref the run
+  prints. It refuses the default branch without `--allow-default-branch`, and prints every
+  commit it made. Your working tree is *not* updated to match, so `git status` afterwards shows
+  what looks like a staged revert; sync with `git stash && git reset --hard HEAD && git stash
+  pop` rather than committing it. syncade warns about this and the warning is not suppressible.
 
 ## Development
 

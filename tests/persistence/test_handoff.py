@@ -307,8 +307,8 @@ class TestPersistHandoff:
         assert "Suggested disposition category:** A — Operator-attested" in text
         assert "Suggested disposition category:** M — Manual fix needed" in text
 
-    def test_persist_handoff_attempts_section_renders_producer_commits(self, tmp_path):
-        """Producer-attempted section: ``Round N producer commit:
+    def test_persist_handoff_attempts_section_renders_producer_candidates(self, tmp_path):
+        """Producer-attempted section: ``Round N producer candidate:
         <sha>`` for each committed round, plus the stall outcome
         when applicable."""
         from syncade.persistence import persist_handoff
@@ -335,9 +335,9 @@ class TestPersistHandoff:
         assert path is not None
         text = path.read_text()
         assert "## What the producer attempted" in text
-        # Two producer commits rendered.
-        assert "Round 0 producer commit:** `cccccccccccc`" in text
-        assert "Round 1 producer commit:** `dddddddddddd`" in text
+        # Two isolated producer candidates rendered.
+        assert "Round 0 producer candidate:** `cccccccccccc`" in text
+        assert "Round 1 producer candidate:** `dddddddddddd`" in text
         # Round 2 didn't run a producer — not in the section.
         assert "Round 2 producer commit" not in text
         # Findings-addressed and remaining-forwarded rollup present

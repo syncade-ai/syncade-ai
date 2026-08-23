@@ -155,6 +155,10 @@ class AnthropicAdapter:
 
         - ``claude -p`` with prompt on STDIN (PR-h-field-01 item 1): avoids the execve
           argument-list limit; stdin is read when no positional prompt is given
+        - ``--safe-mode``: disables CLAUDE.md discovery, skills, plugins, hooks,
+          MCP, custom agents, and other customizations while preserving normal
+          auth/model/permission behavior. This is narrower than ``--bare``,
+          which bypasses OAuth/keychain auth.
         - ``--output-format stream-json --verbose``: JSONL transcript on
           stdout (every tool_use/tool_result event), terminated by the
           ``{"type":"result"}`` envelope. ``--verbose`` is required by
@@ -168,8 +172,8 @@ class AnthropicAdapter:
           (``yolo`` / ``trusted-execute`` → ``bypassPermissions``).
           ``permissions="safe"`` is **rejected** —
           see :meth:`_validate_permissions`.
-        - ``--add-dir <worktree>``: grants the reviewer tool-access to
-          its worktree
+        - ``--add-dir <workspace>``: grants the reviewer tool-access to
+          its Git-less workspace
 
         The subprocess runs with ``cwd = worktree_path`` and inherits
         the caller's environment so existing ``claude`` auth (keychain,
@@ -198,6 +202,7 @@ class AnthropicAdapter:
         argv: list[str] = [
             "claude",
             "-p",
+            "--safe-mode",
             # stream-json (+ required --verbose under -p) so the reviewer's
             # full tool-call transcript lands in the persisted .stdout for
             # auditability; the terminal {"type":"result"} line carries the

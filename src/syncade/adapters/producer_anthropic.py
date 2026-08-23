@@ -1,11 +1,4 @@
-"""Producer adapter for the Anthropic ``claude`` CLI.
-
-Symmetric to :class:`syncade.adapters.anthropic.AnthropicAdapter` but
-for the fix-it subprocess that runs after a NO-SHIP round. The
-producer needs to make file edits AND commit them from a headless
-subprocess. Real ``claude -p`` needs ``bypassPermissions`` for that
-commit step because ``acceptEdits`` auto-approves file edits but not
-bash commands such as ``git commit``.
+"""Producer adapter for the confined Anthropic ``claude`` CLI subprocess.
 
 Built against the claude CLI's observed JSON output —
 the actual observed behavior of ``claude 2.1.137 (Claude Code)``. If
@@ -34,15 +27,30 @@ from syncade.worktree_env import worktree_scoped_env
 # Map :data:`syncade.config.ProducerPermissions` to the corresponding
 # claude ``--permission-mode`` value.
 #
-# ``yolo`` → ``bypassPermissions``: full bypass. This is the default
-# because live producer smokes need it to commit from headless mode.
+# ``confined`` -> ``dontAsk``: paired with _SANDBOX_SETTINGS below, which is what actually
+# enforces the boundary. ``dontAsk`` alone is NOT confinement — it only means the child never
+# waits for an answer.
 #
-# Sandboxed/stale values are intentionally NOT in this mapping. The schema
-# rejects them at config-load; the validator below rejects them again for
-# callers that bypass Pydantic.
+# ``yolo`` -> ``bypassPermissions``: no sandbox at all. The operator's explicit opt-out; the
+# run discloses it. Both values are headless — neither prompts, which is the property `claude -p`
+# requires and the reason `default`/`acceptEdits` are not in this mapping (`acceptEdits`
+# auto-approves file edits but NOT the `git commit` bash call, so the child hangs).
 _PRODUCER_PERMISSION_MAPPING: dict[str, str] = {
+    "confined": "dontAsk",
     "yolo": "bypassPermissions",
 }
+
+_SANDBOX_SETTINGS = json.dumps(
+    {
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "autoAllowBashIfSandboxed": True,
+            "allowUnsandboxedCommands": False,
+        }
+    },
+    separators=(",", ":"),
+)
 
 
 class AnthropicProducerAdapter:
@@ -53,8 +61,8 @@ class AnthropicProducerAdapter:
     - pins the model from :attr:`ProducerConfig.model`
     - sets effort from :attr:`ProducerConfig.thinking`
     - sets ``--permission-mode`` from :attr:`ProducerConfig.permissions`
-      (``yolo`` → ``bypassPermissions``; stale/sandboxed values rejected)
-    - scopes file access to the producer worktree via ``--add-dir``
+      (``confined`` → ``dontAsk``)
+    - scopes file access to the standalone producer repository via ``--add-dir``
     - requests JSON output via ``--output-format json``
 
     ``parse_output`` re-uses the reviewer adapter's envelope-parsing
@@ -98,17 +106,8 @@ class AnthropicProducerAdapter:
     ) -> Invocation:
         """Construct the ``claude -p`` invocation for one producer round.
 
-        Argv shape matches the reviewer adapter's surface (same
-        discovery doc, same flag set) with three differences:
-
-        1. ``--permission-mode`` maps from the producer-specific
-           :data:`syncade.config.ProducerPermissions`.
-        2. The producer-permission value is ``yolo`` because
-           real headless producers must run ``git commit`` unattended.
-        3. There is no separate ``-c approval_policy=...`` flag —
-           claude's ``--permission-mode`` is the complete control
-           surface (compared with codex which needs both ``-s`` and
-           the ``-c`` config override).
+        The native sandbox is mandatory and fails closed when unavailable.
+        Only sandboxed Bash is auto-approved; unsandboxed retries are disabled.
 
         Raises:
             ValueError: If ``producer_config.provider`` is not
@@ -132,6 +131,12 @@ class AnthropicProducerAdapter:
         argv: list[str] = [
             "claude",
             "-p",
+            "--safe-mode",
+            "--no-session-persistence",
+            "--disable-slash-commands",
+            "--strict-mcp-config",
+            "--mcp-config",
+            '{"mcpServers":{}}',
             "--output-format",
             "json",
             "--model",
@@ -140,9 +145,22 @@ class AnthropicProducerAdapter:
             producer_config.thinking,
             "--permission-mode",
             _PRODUCER_PERMISSION_MAPPING[producer_config.permissions],
-            "--add-dir",
-            str(worktree_path),
         ]
+        if producer_config.permissions == "confined":
+            # The tool restriction is FORCED by the sandbox, not chosen: `autoAllowBashIfSandboxed`
+            # auto-approves sandboxed Bash and nothing else, and `claude -p` cannot answer a
+            # prompt — so leaving Edit/Write enabled would hang the producer on its first edit.
+            # A confined producer therefore edits through the shell. That cost is the whole
+            # reason `yolo` remains available.
+            argv += [
+                "--tools",
+                "Bash",
+                "--allowedTools",
+                "Bash",
+                "--settings",
+                _SANDBOX_SETTINGS,
+            ]
+        argv += ["--add-dir", str(worktree_path)]
         return Invocation(
             argv=argv,
             cwd=worktree_path,
@@ -190,13 +208,6 @@ class AnthropicProducerAdapter:
         subprocess hangs on the first tool call until the
         orchestrator's timeout fires.
         """
-        if permissions == "safe":
-            raise ValueError(
-                "AnthropicProducerAdapter cannot run a producer with "
-                "permissions='safe' headlessly: --permission-mode=default "
-                "prompts for every tool use and `claude -p` cannot answer "
-                "prompts. Use 'yolo' for headless producer commits."
-            )
         if permissions not in _PRODUCER_PERMISSION_MAPPING:
             valid = "', '".join(_PRODUCER_PERMISSION_MAPPING)
             raise ValueError(

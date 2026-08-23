@@ -32,7 +32,7 @@ SCOPE] [--max-rounds N]` at the markdown layer only (no Python of its own). The
 interactive Codex agent then: resolves intent → validates the doc → runs
 `syncade --auth-check` + `--selfcheck` → shows the exact command and waits for
 `go`/`cancel` → streams the loop → reads `loop-summary.md` and prints the verdict
-→ surfaces any producer commits with a rollback pointer.
+→ surfaces each committed producer candidate (recovery ref + branch-advance note on SHIP; preserved repository on NO-SHIP).
 
 ### Natural-language phrasings the skill understands
 
@@ -70,21 +70,21 @@ loop; it just skips the gate. Use the terminal directly for `syncade --auth-chec
 `syncade --resume <run-id>` — those are standalone diagnostics the skill does not
 wrap.
 
-## Producer commits land on your branch
+## Producer candidates and the trusted importer
 
-When `max_rounds > 1` (the default), the producer commits fixes directly to the
-current branch between rounds (fast-forward only). The skill lists each commit
-with its SHA + subject and prints the rollback pointer
-(`git reset --hard <round-0-starting-sha>`, from
-`<run-dir>/loop-manifest.json` `rounds[0].snapshot.commit_sha`). Nothing is
-auto-reverted; you decide what to keep. See `AGENTS.md` for the full blast-radius
-contract.
+When `max_rounds > 1` (the default), the producer commits inside its own
+standalone repository (sandboxed by default; `permissions = "yolo"` disables
+the host-confinement sandbox). Accepted candidates are validated and imported by syncade's
+trusted importer; the branch advances only after a recovery ref is anchored at
+`refs/syncade/recovery/...`. A stalled or CAS-raced candidate that did not land
+is reachable at its recovery ref in the operator repository, or at the preserved
+standalone repository path the loop printed.
 
 ## Failure modes
 
 - **Auth-check / selfcheck fails:** the skill stops and surfaces the syncade
-  output verbatim (it names the failing provider and the fix). Common selfcheck
-  cause: `[producer] permissions` must be `"yolo"` for a headless commit.
+  output verbatim (it names the failing provider and the fix). A selfcheck failure
+  can indicate provider-CLI drift in the configured sandbox mode.
 - **You cancel at the gate:** the skill prints `cancelled at operator
   confirmation` and exits; nothing is modified.
 - **`syncade <pr-doc>` exits non-zero:** the skill still reads `loop-summary.md`

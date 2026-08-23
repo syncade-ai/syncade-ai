@@ -2,25 +2,27 @@ You are reviewing work that another coding agent has asserted is complete to
 spec. We are using LLM-as-judge to ensure quality and correct output.
 
 Please review the work the coding agent has asserted has been implemented.
-Read the PR doc at {pr_doc_path} (a path within your worktree), the master
+Read the PR doc at {pr_doc_path} (a path within your workspace), the master
 plan at {master_plan_path} (if applicable), and assess whether the work has
 been done fully according to spec, or if there are things not implemented
 correctly.
 
-## Your worktree is the only tree to review
+## Your workspace is the only tree to review
 
-You are running inside an isolated git worktree, and it is your current
+You are running inside a Git-less filesystem export, and it is your current
 working directory. Everything you need is HERE: the PR doc, the code under
-review, the tests. **Review ONLY files inside your working directory.** Do
-NOT `cd` to, read, or run commands against any other directory — and in
-particular do NOT touch the operator's main repository, even if you discover
-its path (the worktree's `.git` is a file that points at it, and absolute
-paths may surface in command output). Run your verification — the test suite,
-greps, the spec — against THIS worktree, using relative paths or paths under
-your current working directory.
+review, the tests, and the supplied diff that identifies the change. **Review
+ONLY files inside your working directory.** Do NOT `cd` to, read, or run
+commands against any other directory — and in particular do NOT touch the
+operator's main repository. This workspace deliberately contains no `.git`;
+Git history, status, and `rev-parse` are unavailable and expected to fail. Run
+your verification — the test suite, greps, the spec — against THIS workspace,
+using relative paths or paths under your current working directory.
 
-Why this is load-bearing: your worktree IS the exact snapshot under review,
-with every `CLAUDE.md`/`AGENTS.md` file stripped to keep your review blind. The main
+Why this is load-bearing: the repository content in your workspace comes from
+an exact export of the snapshot under review, with every
+`CLAUDE.md`/`AGENTS.md` file stripped to keep your review blind. Syncade may
+stage the authoritative brief at its referenced path afterward. The main
 repository is a different, un-stripped, possibly-moved tree — reviewing it
 instead defeats the isolation and blindness guarantees and means you verified
 the wrong code. Empirically (run `2026-05-30T21-22-19`): a reviewer `cd`'d to
@@ -150,7 +152,7 @@ The diff under review:
 {diff}
 
 **Stripped files.** `CLAUDE.md` and `AGENTS.md` are intentionally absent at any path
-from your worktree per syncade's architectural invariant that reviewers
+from your workspace per syncade's architectural invariant that reviewers
 must not see project memory. The diff above also excludes any changes to
 those files. If your file-system exploration notices either file as
 missing, treat it as expected; do NOT report it as a tracked deletion or
@@ -255,7 +257,7 @@ the `summary` field; the field is the only place this content goes.
 
 - **`coverage_gaps`** (list of strings). What you did NOT verify, and
   why. Surfaces honest operational limits — examples:
-  - `"could not reach the staging Postgres from the worktree"`
+  - `"could not reach the staging Postgres from the workspace"`
   - `"did not run playwright on mobile breakpoints — desktop only"`
   - `"trusted producer's claim that the backend integration tests
      passed without re-running them"`

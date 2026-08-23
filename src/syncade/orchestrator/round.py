@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable
 from datetime import datetime
 from functools import partial
@@ -33,7 +32,13 @@ from syncade.persistence import (
     persist_test_run_result,
     record_child_pid,
 )
+from syncade.producer_workspace import ProducerWorkspaceManager
 from syncade.prompts import load_reviewer_template_for, render_reviewer_prompt
+from syncade.reviewer_workspace import (
+    ReviewerWorkspaceManager,
+    reviewer_input_ref,
+    stage_reviewer_file,
+)
 from syncade.snapshot import Snapshot
 from syncade.synthesis import has_active_blocker
 from syncade.synthesizer import SynthesizerResult, run_synthesizer
@@ -60,7 +65,7 @@ def _build_reviewer_prompt(
     round_idx: int,
     run_dir: Path,
     pr_doc_path: Path,
-) -> tuple[str | dict[str, str], str, bool]:
+) -> tuple[str | dict[str, str], str]:
     """Load + render the reviewer prompt(s) for one round.
 
     Each reviewer renders its OWN provider-specific template (anthropic →
@@ -70,11 +75,9 @@ def _build_reviewer_prompt(
     Round N>0 additionally folds in that reviewer's own prior-round response
     (per-reviewer isolation).
 
-    Returns ``(prompt_arg, pr_doc_ref, pr_doc_is_out_of_repo)``: ``prompt_arg``
-    is a per-reviewer ``{name: prompt}`` dict;
-    ``pr_doc_ref`` is the worktree-LOCAL doc reference handed to reviewers;
-    ``pr_doc_is_out_of_repo`` flags a doc whose copy into each worktree must
-    never be skipped (see the caller's copy site).
+    Returns ``(prompt_arg, pr_doc_ref)``: ``prompt_arg`` is a per-reviewer
+    ``{name: prompt}`` dict and ``pr_doc_ref`` is the workspace-local doc
+    reference handed to reviewers.
 
     Raises :class:`KeyError` / :class:`ValueError` when the (operator-
     overridden) template references an unknown placeholder or a malformed
@@ -82,8 +85,8 @@ def _build_reviewer_prompt(
     producer/synth template-render contract.
     """
     # Strip context-file hunks from the reviewer-facing diff so reviewers do
-    # not see edits to files absent from their worktrees. Uses the same strip
-    # list as worktree creation in the caller.
+    # not see edits to files absent from their workspaces. Uses the same strip
+    # list as workspace export in the caller.
     filtered_diff = filter_diff_for_reviewer(
         snapshot.diff_text, config.review.strip_repo_context_files
     )
@@ -95,30 +98,17 @@ def _build_reviewer_prompt(
     # survive, so the change is disclosed rather than silently dropped.
     filtered_diff, _ = elide_binary_hunks(filtered_diff)
     diff_text = filtered_diff if filtered_diff else _NO_DIFF_SENTINEL
-    # Worktree-escape fix: reviewers run with cwd = their own worktree. Hand
-    # them a worktree-LOCAL reference to the PR doc (relative to the worktree
+    # Workspace-escape fix: reviewers run with cwd = their own export. Hand
+    # them a workspace-local reference to the PR doc (relative to the workspace
     # root) — NOT the operator's absolute MAIN path. An absolute MAIN path lures
-    # the reviewer OUT of its isolated, CLAUDE.md/AGENTS.md-stripped worktree to
+    # the reviewer OUT of its isolated, CLAUDE.md/AGENTS.md-stripped workspace to
     # review the live repo, defeating the isolation + blindness invariants
     # (empirically: run 2026-05-30T21-22-19 round 0, claude-reviewer cd'd to
     # MAIN for 25/32 bash commands + every Read). The doc is copied into each
-    # worktree by the caller. Same relative ref for every reviewer (each
+    # workspace by the caller. Same relative ref for every reviewer (each
     # resolves it against its own cwd), so the round-0 shared prompt and the
     # round-N per-reviewer prompts both work.
-    pr_doc_is_out_of_repo = False
-    try:
-        pr_doc_ref = str(pr_doc_path.relative_to(repo_root))
-    except ValueError:
-        # Out-of-repo doc: its basename may collide with a tracked file (e.g.
-        # README.md). A bare-basename ref would resolve to the repo's tracked
-        # file and the caller's copy would be skipped because the path already
-        # exists — reviewers would silently read the WRONG spec. Render a
-        # reserved, collision-free worktree-local ref under `.syncade-inputs/`
-        # (hashed on the resolved source path) so the supplied doc can ALWAYS
-        # be copied there without shadowing a tracked file.
-        pr_doc_is_out_of_repo = True
-        digest = hashlib.sha256(str(pr_doc_path).encode("utf-8")).hexdigest()[:16]
-        pr_doc_ref = f".syncade-inputs/pr-doc-{digest}-{pr_doc_path.name}"
+    pr_doc_ref = reviewer_input_ref(repo_root, pr_doc_path, config.review.strip_repo_context_files)
     # Each reviewer renders its own provider-specific template, so we always
     # build a per-reviewer dict — there is no shared-str fast path now that the
     # claude and codex prompts differ. Round 0 omits prior_round_output → the
@@ -146,7 +136,7 @@ def _build_reviewer_prompt(
             )
         per_reviewer_prompts[reviewer.name] = render_reviewer_prompt(template, **render_kwargs)
     prompt_arg: str | dict[str, str] = per_reviewer_prompts
-    return prompt_arg, pr_doc_ref, pr_doc_is_out_of_repo
+    return prompt_arg, pr_doc_ref
 
 
 def _run_one_round(
@@ -167,12 +157,14 @@ def _run_one_round(
     worktree_base: Path,
     logger: Logger,
     started_at: datetime,
-    managers_to_cleanup: list[WorktreeManager],
+    managers_to_cleanup: list[
+        WorktreeManager | ReviewerWorkspaceManager | ProducerWorkspaceManager
+    ],
     resumed_under_drift: bool = False,
 ) -> RoundResult:
     """Execute one round of the per-round pipeline.
 
-    The round handles reviewer worktree provisioning, dispatch, synthesis,
+    The round handles reviewer workspace provisioning, dispatch, synthesis,
     optional test rerun, checks, and persistence. Producer and branch-advance
     happen after this returns.
 
@@ -198,15 +190,12 @@ def _run_one_round(
         return _gate
     prompt_arg = _gate.prompt_arg
     pr_doc_ref = _gate.pr_doc_ref
-    pr_doc_is_out_of_repo = _gate.pr_doc_is_out_of_repo
     _filtered_for_check = _gate.filtered_for_check
 
-    # --- Worktrees + dispatch ---------------------------------------
-    # Scope the WorktreeManager at <run-id>/round-N/ so each round's
-    # worktrees are isolated.
+    # --- Reviewer workspaces + dispatch -----------------------------
     #
     # When the test-leg worktree fails to provision, preserve reviewer
-    # worktrees on disk for inspection. The ``with`` block's ``__exit__`` runs
+    # workspaces on disk for inspection. The ``with`` block's ``__exit__`` runs
     # ``cleanup_all`` only on clean exit; raising inside the block
     # skips it. We raise the test_worktree_error inside the block
     # to trigger preservation, then catch it here so
@@ -232,39 +221,44 @@ def _run_one_round(
     # Defer cleanup so the loop terminator decides cleanup-vs-preserve from
     # the final exit code.
     try:
+        reviewer_manager = ReviewerWorkspaceManager(
+            repo_root,
+            round_worktree_id,
+            base_dir=worktree_base,
+            defer_cleanup=True,
+        )
         round_manager = WorktreeManager(
             repo_root,
             round_worktree_id,
             base_dir=worktree_base,
             defer_cleanup=True,
         )
+        managers_to_cleanup.append(reviewer_manager)
         managers_to_cleanup.append(round_manager)
-        with round_manager as manager:
+        with reviewer_manager as reviewer_workspaces, round_manager as manager:
             logger.event(
-                f"provisioning {len(config.reviewers)} worktree(s) under {manager.run_dir}"
+                f"provisioning {len(config.reviewers)} reviewer workspace(s) "
+                f"under {reviewer_workspaces.run_dir}"
             )
             worktree_paths: dict[str, Path] = {}
             for reviewer in config.reviewers:
-                worktree = manager.create(
+                workspace = reviewer_workspaces.create(
                     reviewer_name=reviewer.name,
                     commit_sha=snapshot.commit_sha,
                     strip_files=config.review.strip_repo_context_files,
                 )
-                worktree_paths[reviewer.name] = worktree.path
-                # Ensure the PR doc is readable from INSIDE the worktree so the
-                # worktree-local `pr_doc_ref` resolves without the reviewer
-                # leaving its sandbox. An out-of-repo doc ALWAYS copies to its
-                # reserved collision-free ref (never skip — a same-basename
-                # tracked file, e.g. README.md, must not shadow the supplied
-                # doc and feed reviewers the WRONG spec). A tracked in-repo doc
-                # is already present (no-op); an untracked in-repo doc copies in.
-                pr_doc_in_worktree = worktree.path / pr_doc_ref
-                if pr_doc_is_out_of_repo or not pr_doc_in_worktree.exists():
-                    import shutil
-
-                    pr_doc_in_worktree.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(pr_doc_path, pr_doc_in_worktree)
-                logger.event(f"  worktree ready: {reviewer.name} -> {worktree.path}")
+                worktree_paths[reviewer.name] = workspace.path
+                # Ensure the PR doc is readable from INSIDE the workspace so the
+                # workspace-local `pr_doc_ref` resolves without the reviewer
+                # leaving its sandbox. The authoritative source always replaces
+                # a regular tracked copy; reserved refs prevent collisions and
+                # prevent a stripped brief from restoring its original path.
+                stage_reviewer_file(
+                    workspace.path,
+                    pr_doc_path,
+                    pr_doc_ref,
+                )
+                logger.event(f"  reviewer workspace ready: {reviewer.name} -> {workspace.path}")
 
             # Report the timeout honestly: "each" only holds when every reviewer uses the fallback.
             # A per-reviewer ``timeout_seconds`` override makes "1800s each" a lie (dogfood R2-M4).
@@ -288,6 +282,7 @@ def _run_one_round(
             )
             dispatch_result = dispatch_reviewers(
                 config.reviewers,
+                repo_root=repo_root,
                 worktree_paths=worktree_paths,
                 prompt=prompt_arg,
                 timeout_seconds=resolved_timeout,
@@ -520,14 +515,14 @@ def _run_one_round(
                 raise
 
             # Raise the captured test_worktree_error inside the with block so
-            # __exit__ skips cleanup and reviewer worktrees survive on disk.
+            # __exit__ skips cleanup and reviewer workspaces survive on disk.
             if test_worktree_error is not None:
                 raise test_worktree_error
     except WorktreeError:
         # Re-enter here only when the captured ``test_worktree_error`` was
         # raised inside the with block to trigger worktree preservation.
         # Distinguish this case from a *different* WorktreeError (e.g. reviewer-name
-        # duplicate during reviewer-worktree provisioning, which
+        # duplicate during reviewer-workspace provisioning, which
         # fires BEFORE we ever set test_worktree_error). The
         # pre-dispatch WorktreeError path must propagate to the
         # CLI which maps it to exit 60 with the original message;

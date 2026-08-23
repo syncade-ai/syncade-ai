@@ -340,9 +340,8 @@ def test_gc_dispatches_before_other_modes(tmp_path, monkeypatch, capsys, _safe_w
 
 
 def test_gc_subprocess_invocation_dry_run_is_safe(tmp_path):
-    """Black-box: ``python -m syncade --gc --gc-dry-run`` against a throwaway
-    repo exits 0 and deletes nothing (the only real-invocation form the brief
-    permits)."""
+    """A CLI subprocess against an isolated throwaway repo exits 0 and deletes
+    nothing (the only real-invocation form the brief permits)."""
     if __import__("shutil").which("git") is None:
         pytest.skip("git not on PATH")
     repo = _make_git_repo_with_runs(tmp_path)
@@ -354,8 +353,27 @@ def test_gc_subprocess_invocation_dry_run_is_safe(tmp_path):
     # Use sys.executable (NOT bare "python") so the subprocess resolves the SAME
     # interpreter/venv running the tests — a bare "python" can resolve to a
     # system interpreter without syncade installed (PR-27 finding 7).
+    bootstrap = """
+import sys
+from pathlib import Path
+import syncade.config_loader as config_loader
+import syncade.cli.update_notice as update_notice
+config_loader._default_global_config_path = lambda: Path(sys.argv[1])
+update_notice.emit_update_notice = lambda **kwargs: False
+from syncade.cli import main
+raise SystemExit(main(sys.argv[2:]))
+"""
     proc = subprocess.run(
-        [sys.executable, "-m", "syncade", "--repo-root", str(repo), "--gc", "--gc-dry-run"],
+        [
+            sys.executable,
+            "-c",
+            bootstrap,
+            str(tmp_path / "absent-global-config.toml"),
+            "--repo-root",
+            str(repo),
+            "--gc",
+            "--gc-dry-run",
+        ],
         capture_output=True,
         text=True,
     )

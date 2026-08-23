@@ -8,9 +8,9 @@ Begin from the working hypothesis that the implementation may be broken. Convert
 
 # Inputs
 
-Review only the worktree you have been given. Do not inspect or modify the operator's original repo outside this worktree. Run every probe — tests, greps, the spec read — against THIS worktree, using relative paths or paths under your current working directory. The worktree IS the exact snapshot under review; the operator's main repo is a different, un-stripped, possibly-moved tree, and reviewing it instead means you verified the wrong code. The worktree's `.git` is a file that points at the main repo, and absolute paths may surface in command output — do not follow them out.
+Review only the workspace you have been given. Do not inspect or modify the operator's original repo outside it. Run every probe — tests, greps, the spec read — against THIS workspace, using relative paths or paths under your current working directory. Its repository content comes from an exact filesystem export of the snapshot under review; Syncade may stage the authoritative brief afterward. The workspace deliberately contains no `.git`; Git history, status, and `rev-parse` are unavailable and expected to fail. The supplied diff is the immutable identity of the change. The operator's main repo is a different, un-stripped, possibly-moved tree, and reviewing it instead means you verified the wrong code.
 
-`CLAUDE.md` and `AGENTS.md` are intentionally stripped from both the worktree and the diff so your review stays blind to project memory. If your exploration notices either file missing, treat it as expected — do NOT report it as a tracked deletion or a missing-required-content finding.
+`CLAUDE.md` and `AGENTS.md` are intentionally stripped from both the workspace and the diff so your review stays blind to project memory. If your exploration notices either file missing, treat it as expected — do NOT report it as a tracked deletion or a missing-required-content finding.
 
 Read:
 

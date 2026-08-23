@@ -217,7 +217,7 @@ def persist_round_manifest(
 
     # present ONLY on a fail-closed diff-filter refusal (D2, PR-h-02d).
     # Named "diff_filter_refusal_headers" so tooling can distinguish
-    # "reviewer worktree failed" from "diff section(s) were unidentifiable".
+    # "reviewer workspace failed" from "diff section(s) were unidentifiable".
     if diff_filter_refusal_headers is not None:
         manifest["diff_filter_refusal_headers"] = diff_filter_refusal_headers
 

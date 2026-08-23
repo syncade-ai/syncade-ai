@@ -15,22 +15,22 @@ from typing import Literal
 from syncade.adapters.producer import ProducerOutput
 from syncade.process import SubprocessResult
 from syncade.producer_escalation import ProducerEscalation
+from syncade.producer_import import CandidateImportResult
 from syncade.usage import Usage
 
 ProducerOutcome = Literal["committed", "stalled", "subprocess_error", "escalated"]
 """Three-way outcome of one producer subprocess run.
 
 - ``"committed"`` — the subprocess completed cleanly AND the
-  worktree's HEAD moved forward (``ending_sha != starting_sha``).
-  The orchestrator advances the operator's branch to ``ending_sha``
-  and the next round snapshots the new HEAD.
+  standalone repository's HEAD moved (``ending_sha != starting_sha``).
+  The orchestrator then records trusted import/recovery state before any
+  operator branch can move.
 - ``"stalled"`` — the subprocess completed cleanly (no
   :class:`ReviewerInvocationError`, no timeout) BUT the worktree's
   HEAD did NOT move. The producer either made no changes or made
   changes without committing. The orchestrator terminates the loop
   with exit 30 + ``termination_reason="producer_stalled"`` — the
-  next round would dispatch reviewers against an identical diff,
-  burning compute for no signal delta.
+  identical input is not reviewed again, avoiding spend with no signal delta.
 - ``"subprocess_error"`` — the producer subprocess itself failed
   (:class:`ReviewerInvocationError` from the adapter,
   :class:`SubprocessTimeoutError`,
@@ -141,9 +141,14 @@ class ProducerResult:
     errors (PR-v2-22). ``0`` when the first attempt settled it. Mirrors
     :attr:`ReviewerRunResult.retries` / :attr:`SynthesizerResult.retries` so the round manifest
     can sum ONE ``retried`` count across all three model legs."""
+    candidate_import: CandidateImportResult | None = None
+    """Trusted import result for a committed candidate; set by the orchestrator
+    after the producer subprocess returns and before branch advance."""
 
     def __post_init__(self) -> None:
         sha_moved = self.ending_sha != self.starting_sha
+        if self.candidate_import is not None and self.outcome != "committed":
+            raise ValueError("ProducerResult: only a committed outcome can have candidate_import")
         # escalation is set exactly when (and only when) the outcome
         # is "escalated". Cross-cutting guard before the per-outcome table.
         if (self.escalation is not None) != (self.outcome == "escalated"):
@@ -203,3 +208,72 @@ class ProducerResult:
         # but a caller bypassing the type hint (e.g. a dict-fed
         # dataclass construction) could land here.
         raise ValueError(f"ProducerResult: unknown outcome {self.outcome!r}")
+
+
+@dataclass(frozen=True)
+class CandidateDisposition:
+    """Where a producer's committed work actually is — computed ONCE for a whole run.
+
+    Every defect in this area has been the same shape: two places deriving the same fact with
+    slightly different rules. First ``loop-summary.md`` read ``termination_reason`` while
+    preservation read the facts. Then a "fixed" summary grew its own traversal, which disagreed
+    with preservation on multi-round runs and on ``stalled``/``escalated`` outcomes. Then a third
+    copy of the preserve-exit list appeared. Three rounds of a blind panel found three versions
+    of one bug.
+
+    So this is the single authority: the preservation decision and every renderer consume the
+    same object. Making them disagree now requires deleting this type, not merely forgetting a
+    branch — which is the difference between a policy that is stated and one that is enforced.
+    (`CLAUDE.md` records the same collapse for PR-h-12.5's finding counts, for the same reason.)
+    """
+
+    ending_sha: str | None
+    """The producer's ending commit, or ``None`` when no round produced one."""
+
+    reachable_ref: str | None
+    """A ref in the OPERATOR repository that resolves to the candidate, when one exists."""
+
+    @property
+    def workspace_is_only_copy(self) -> bool:
+        """True when the actor store holds the sole copy of committed producer work.
+
+        This is precisely tier 3's premise inverted: a workspace may be deleted *because* it is
+        reconstructible, which holds exactly while the objects are reachable here.
+        """
+        return self.ending_sha is not None and self.reachable_ref is None
+
+
+def disposition_of(producer_result) -> CandidateDisposition:
+    """The disposition of ONE round's producer result — the primitive every caller shares.
+
+    Exposed so a per-round renderer consumes the authority directly instead of wrapping its
+    single result in a round-shaped stand-in. Same rule, one implementation: work is detected by
+    SHA MOVEMENT rather than the outcome label (a producer that commits and then times out lands
+    as ``subprocess_error``), and reachability is the recovery ref.
+    """
+    if producer_result is None or producer_result.ending_sha == producer_result.starting_sha:
+        return CandidateDisposition(ending_sha=None, reachable_ref=None)
+    candidate_import = getattr(producer_result, "candidate_import", None)
+    return CandidateDisposition(
+        ending_sha=producer_result.ending_sha,
+        reachable_ref=candidate_import.recovery_ref if candidate_import is not None else None,
+    )
+
+
+def candidate_disposition(round_results) -> CandidateDisposition:
+    """Resolve the disposition of producer work across every round of a run.
+
+    Scans ALL rounds and reports the LAST round that produced commits: a run whose round 0
+    imported cleanly and whose round 1 did not is described by round 1, which is the round the
+    operator has to act on. An earlier version returned on the first match and so described the
+    wrong round on any multi-round run.
+
+    `committed` is not the only outcome carrying work — a producer that commits and then times
+    out lands as `subprocess_error` with a moved HEAD — so the test is the SHA, not the label.
+    """
+    disposition = CandidateDisposition(ending_sha=None, reachable_ref=None)
+    for round_result in round_results:
+        candidate = disposition_of(getattr(round_result, "producer_result", None))
+        if candidate.ending_sha is not None:
+            disposition = candidate
+    return disposition

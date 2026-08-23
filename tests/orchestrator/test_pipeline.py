@@ -361,25 +361,25 @@ class TestUnknownProvider:
 
 
 class TestWorktreeError:
-    def test_reviewer_worktree_provisioning_error_propagates(self, repo_with_pr_doc, monkeypatch):
-        """A reviewer-worktree provisioning failure (pre-dispatch) raises
+    def test_reviewer_workspace_provisioning_error_propagates(self, repo_with_pr_doc, monkeypatch):
+        """A reviewer-workspace provisioning failure (pre-dispatch) raises
         WorktreeError straight out of run_review rather than landing in the
         DispatchResult, so the CLI maps directly to exit 60 without writing a
         stale manifest.
 
         Historically this was reached via two reviewers sharing a name —
-        their worktree directories overlapped and the second ``create``
+        their workspace directories overlapped and the second ``create``
         collided. Config-load now rejects duplicate reviewer names up front
         (see tests/config/test_config_schema.py::test_duplicate_reviewer_names_rejected),
         so that collision can no longer be constructed via config. The
         propagation invariant is still real, so simulate the collision by
         forcing the second reviewer's ``manager.create`` to raise: the first
-        worktree provisions, the second fails, and the error must propagate
+        workspace provisions, the second fails, and the error must propagate
         out untouched."""
         repo, pr_doc = repo_with_pr_doc
-        from syncade.worktree import WorktreeManager
+        from syncade.reviewer_workspace import ReviewerWorkspaceManager
 
-        real_create = WorktreeManager.create
+        real_create = ReviewerWorkspaceManager.create
 
         def patched_create(self, reviewer_name, commit_sha, strip_files=None):
             if reviewer_name == "rv2":
@@ -391,7 +391,7 @@ class TestWorktreeError:
                 strip_files=strip_files,
             )
 
-        monkeypatch.setattr(WorktreeManager, "create", patched_create)
+        monkeypatch.setattr(ReviewerWorkspaceManager, "create", patched_create)
 
         config = SyncadeConfig(
             reviewers=[

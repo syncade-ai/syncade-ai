@@ -26,6 +26,7 @@ from syncade.prompts import load_reviewer_template_for_provider, render_reviewer
 _HAIKU = "haiku"
 """The cheapest model from the discovery doc — adequate for smoke
 round-trips; cost should stay under a cent per invocation."""
+_WORKSPACE_MARKER = "gitless-export-probe-7f3a9c"
 
 
 def _skip_if_no_claude() -> None:
@@ -52,6 +53,8 @@ def test_minimal_round_trip_against_real_claude(tmp_path):
     asserting silently.
     """
     _skip_if_no_claude()
+    (tmp_path / "boundary-probe.txt").write_text(_WORKSPACE_MARKER)
+    assert not (tmp_path / ".git").exists()
 
     config = ReviewerConfig(
         name="smoke-claude-minimal",
@@ -68,11 +71,12 @@ def test_minimal_round_trip_against_real_claude(tmp_path):
     # ReviewerOutput.model_validate discriminator skips the verdict
     # block and the smoke fails with exit-70-style ReviewerOutputError.
     prompt = (
-        "Respond with only valid JSON matching this exact schema and "
+        "Use your file-reading tool to read boundary-probe.txt, then respond "
+        "with only valid JSON matching this exact schema and "
         "nothing else. No prose, no markdown fences, no preamble.\n\n"
         "For this smoke test, return: "
         '{"verdict": "SHIP", "findings": [], '
-        '"summary": "smoke test minimal SHIP", '
+        '"summary": "replace this with the exact file content you read", '
         '"priority_order": [], "coverage_gaps": [], '
         '"dismissed_concerns": []}'
     )
@@ -89,6 +93,7 @@ def test_minimal_round_trip_against_real_claude(tmp_path):
 
     assert isinstance(output, ReviewerOutput)
     assert output.verdict == "SHIP"
+    assert _WORKSPACE_MARKER in output.summary
     # findings list may be empty or non-empty — we don't assert on it,
     # only that parse succeeded.
 
@@ -141,7 +146,7 @@ def test_full_template_round_trip_against_real_claude(tmp_path):
     template = load_reviewer_template_for_provider(tmp_path, "anthropic")
     prompt = render_reviewer_prompt(
         template,
-        pr_doc_path=str(pr_doc),
+        pr_doc_path="pr-doc.md",
         diff=diff,
         master_plan_path=None,
         json_schema=schema,

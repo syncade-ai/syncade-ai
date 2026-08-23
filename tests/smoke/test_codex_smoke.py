@@ -28,7 +28,6 @@ Coverage:
 from __future__ import annotations
 
 import shutil
-import subprocess
 
 import pytest
 
@@ -44,35 +43,12 @@ from syncade.prompts import load_reviewer_template_for_provider, render_reviewer
 # model in :func:`syncade.config._default_reviewers` — see
 # :func:`test_smoke_model_matches_default_config` below.
 _CHEAP_MODEL = "gpt-5.5"
+_WORKSPACE_MARKER = "gitless-export-probe-7f3a9c"
 
 
 def _skip_if_no_codex() -> None:
     if shutil.which("codex") is None:
         pytest.skip("codex CLI not on PATH — install codex-cli to run smoke tests")
-
-
-def _git_init_worktree(path) -> None:
-    """Make ``path`` a real git worktree.
-
-    Trusted-mode codex runs (``-s workspace-write`` without the
-    yolo combined bypass) refuse to start unless cwd is a git
-    working tree, failing with ``Not inside a trusted directory and
-    --skip-git-repo-check was not specified.`` In production
-    ``WorktreeManager`` (PR-2) produces real git worktrees, so the
-    adapter never needs ``--skip-git-repo-check``. Smoke tests that
-    use ``tmp_path`` directly have to set up a git repo themselves.
-
-    Yolo's ``--dangerously-bypass-approvals-and-sandbox`` implicitly
-    skips the git check, so the yolo smokes work fine against bare
-    ``tmp_path``. Every smoke that runs a NON-yolo reviewer needs this —
-    which now includes the default-config smoke, because the shipped
-    reviewer default is ``trusted-execute``, not ``yolo``.
-    """
-    subprocess.run(
-        ["git", "init", "-q"],
-        cwd=path,
-        check=True,
-    )
 
 
 def test_smoke_model_matches_default_config():
@@ -118,6 +94,8 @@ def test_minimal_round_trip_against_real_codex(tmp_path):
     earlier in production via ``codex login status``.
     """
     _skip_if_no_codex()
+    (tmp_path / "boundary-probe.txt").write_text(_WORKSPACE_MARKER)
+    assert not (tmp_path / ".git").exists()
 
     config = ReviewerConfig(
         name="smoke-codex-minimal",
@@ -134,16 +112,18 @@ def test_minimal_round_trip_against_real_codex(tmp_path):
     # ReviewerOutput.model_validate discriminator skips the verdict
     # block and the smoke fails with exit-70-style ReviewerOutputError.
     prompt = (
-        "Respond with ONLY valid JSON matching this exact schema and "
+        "Use your file-reading tool to read boundary-probe.txt, then respond "
+        "with ONLY valid JSON matching this exact schema and "
         "nothing else. No prose, no markdown fences, no preamble.\n\n"
         "For this smoke test, return: "
         '{"verdict": "SHIP", "findings": [], '
-        '"summary": "smoke test minimal SHIP", '
+        '"summary": "replace this with the exact file content you read", '
         '"priority_order": [], "coverage_gaps": [], '
         '"dismissed_concerns": []}'
     )
 
     invocation = adapter.build_invocation(config, tmp_path, prompt)
+    assert "--skip-git-repo-check" in invocation.argv
     result = run_subprocess(
         invocation.argv,
         cwd=invocation.cwd,
@@ -155,6 +135,7 @@ def test_minimal_round_trip_against_real_codex(tmp_path):
 
     assert isinstance(output, ReviewerOutput)
     assert output.verdict == "SHIP"
+    assert _WORKSPACE_MARKER in output.summary
     # findings list may be empty or non-empty — we don't assert on it,
     # only that parse succeeded.
 
@@ -202,7 +183,7 @@ def test_full_template_round_trip_against_real_codex(tmp_path):
     template = load_reviewer_template_for_provider(tmp_path, "openai")
     prompt = render_reviewer_prompt(
         template,
-        pr_doc_path=str(pr_doc),
+        pr_doc_path="pr-doc.md",
         diff=diff,
         master_plan_path=None,
         json_schema=schema,
@@ -257,10 +238,7 @@ def test_default_config_round_trip_against_real_codex(tmp_path):
     breaks the smoke.
     """
     _skip_if_no_codex()
-    # The shipped reviewer default is trusted-execute, so codex enforces its
-    # git-repo trust check. Production hands reviewers real git worktrees;
-    # this test has to build one itself or codex refuses to start.
-    _git_init_worktree(tmp_path)
+    assert not (tmp_path / ".git").exists()
 
     cfg = SyncadeConfig()
     codex_rev = next(r for r in cfg.reviewers if r.provider == "openai")
@@ -277,6 +255,7 @@ def test_default_config_round_trip_against_real_codex(tmp_path):
         '"dismissed_concerns": []}'
     )
     invocation = adapter.build_invocation(codex_rev, tmp_path, prompt)
+    assert "--skip-git-repo-check" in invocation.argv
     result = run_subprocess(
         invocation.argv,
         cwd=invocation.cwd,
@@ -300,12 +279,11 @@ def test_trusted_execute_permissions_round_trip_against_real_codex(tmp_path):
     ``-s workspace-write -c approval_policy=never`` mapping against
     the real CLI.
 
-    Trusted mode does NOT get yolo's implicit
-    ``--skip-git-repo-check``, so we git-init the worktree the way
-    ``WorktreeManager`` would in production.
+    Reviewer workspaces deliberately contain no Git metadata, so this also
+    proves the adapter's explicit ``--skip-git-repo-check`` path.
     """
     _skip_if_no_codex()
-    _git_init_worktree(tmp_path)
+    assert not (tmp_path / ".git").exists()
 
     config = ReviewerConfig(
         name="smoke-codex-trusted-execute",
@@ -327,6 +305,7 @@ def test_trusted_execute_permissions_round_trip_against_real_codex(tmp_path):
     invocation = adapter.build_invocation(config, tmp_path, prompt)
     # Sanity-check the corrected argv shape before sending it to codex
     assert "approval_policy=never" in invocation.argv
+    assert "--skip-git-repo-check" in invocation.argv
     assert "-a" not in invocation.argv
     result = run_subprocess(
         invocation.argv,

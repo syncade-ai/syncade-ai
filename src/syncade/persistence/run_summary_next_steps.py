@@ -8,6 +8,7 @@ for rounds where a producer ran).
 from __future__ import annotations
 
 from syncade.producer import ProducerResult
+from syncade.producer_result import disposition_of
 from syncade.synthesizer import SynthesizerResult
 from syncade.test_runner import TestRunResult
 
@@ -58,7 +59,7 @@ _NEXT_STEPS: dict[int, str] = {
         "  files name the offending value."
     ),
     60: (
-        "- Worktree provisioning failed for a reviewer worktree (the\n"
+        "- Workspace provisioning failed for a reviewer export (the\n"
         "  pre-dispatch path). Check the `.error.txt` files; a stale\n"
         "  `<worktree_base>/<run-id>/` directory from a prior failed run\n"
         "  is the usual cause. If the test re-run leg's worktree was\n"
@@ -199,7 +200,7 @@ _NEXT_STEPS_40_TEST_SUBPROCESS = (
 # was the test leg's (not a reviewer's). Reviewer + synth phases
 # already produced valid artifacts; the only thing missing is the
 # test re-run output. Different fix path than the reviewer-
-# worktree-error case.
+# workspace-error case.
 _NEXT_STEPS_60_TEST_WORKTREE = (
     "- The test re-run leg's worktree could not be provisioned\n"
     "  (every reviewer succeeded; the synthesizer succeeded; only\n"
@@ -275,7 +276,7 @@ def _resolve_next_steps(
       reviewer-failed variant from ``_NEXT_STEPS``.
     - Exit 60 : ``test_skip_reason == "test_worktree_error"``
       → test-leg worktree variant naming the preserved
-      reviewer + synth artifacts; else the generic worktree-
+      reviewer + synth artifacts; else the generic workspace-
       provisioning variant for reviewer-side failures.
     - Exit 70: unchanged — the test leg has no parse path, so
       this code only ever points at reviewer or synth output.
@@ -288,7 +289,7 @@ def _resolve_next_steps(
             the test phase was skipped.
         test_skip_reason: Why the test leg was skipped. Used to
             distinguish the test-worktree-error variant of
-            exit 60 from the reviewer-worktree variant.
+            exit 60 from the reviewer-workspace variant.
 
     Returns:
         The Next-steps content string for this exit-code / phase
@@ -324,7 +325,7 @@ def _resolve_next_steps(
         return _NEXT_STEPS_40_TEST_SUBPROCESS
     if exit_code == 40 and synth_failed:
         return _NEXT_STEPS_40_SYNTH
-    # exit 60 splits between reviewer-worktree-error
+    # exit 60 splits between reviewer-workspace-error
     # (generic provisioning variant) and test-leg-worktree-error
     # (preserved reviewer + synth artifacts variant).
     if exit_code == 60 and test_skip_reason == "test_worktree_error":
@@ -348,10 +349,8 @@ def _resolve_next_steps_with_producer(
 
     Branches by producer outcome:
 
-    - ``committed`` — the producer made a commit; the next round
-      will dispatch reviewers against the new diff. Operator
-      reads ``producer.stdout`` to see what the producer
-      attempted.
+    - ``committed`` — the producer made an isolated candidate commit; its
+      trusted-import result determines whether branch landing can proceed.
     - ``stalled`` — the producer subprocess completed cleanly
       but didn't commit. The loop terminated with
       ``producer_stalled`` (exit 30 + that termination reason);
@@ -368,14 +367,44 @@ def _resolve_next_steps_with_producer(
       findings, not a checkpoint that doesn't exist.
     """
     if producer_result.outcome == "committed":
+        candidate_import = producer_result.candidate_import
+        # Whether the workspace survives is NOT decided here. `candidate_disposition` is the one
+        # authority the terminal cleanup also reads, so this text cannot promise a repository
+        # that gets deleted — which is precisely what a hand-rolled copy of the rule did, twice.
+        # The previous revision reached the right answer while CITING that authority in a comment
+        # instead of calling it: a fourth independent derivation that merely agreed for now, and
+        # read as if it were unified. Agreement that is re-derived is not agreement.
+        disposition = disposition_of(producer_result)
+        if candidate_import is not None and candidate_import.status == "imported":
+            return (
+                f"- The producer candidate `{producer_result.ending_sha[:12]}` passed "
+                f"trusted import and is anchored at `{disposition.reachable_ref}`. "
+                f"The operator-branch compare-and-swap runs after this artifact is written; "
+                f"the top-level loop summary records whether it advanced."
+            )
+        if candidate_import is not None:
+            if not disposition.workspace_is_only_copy:
+                return (
+                    f"- The producer candidate `{producer_result.ending_sha[:12]}` was not "
+                    f"fully accepted by trusted import (`{candidate_import.status}`): "
+                    f"{candidate_import.error}. It IS anchored at "
+                    f"`{disposition.reachable_ref}` in the operator repository — "
+                    f"the standalone workspace is NOT the only copy and is not preserved. "
+                    f"Inspect `producer.import.error.txt`; the operator branch remains unchanged."
+                )
+            return (
+                f"- The producer candidate `{producer_result.ending_sha[:12]}` was not "
+                f"accepted by trusted import (`{candidate_import.status}`): "
+                f"{candidate_import.error}. The operator branch remains unchanged. "
+                f"Inspect `producer.import.error.txt` and the preserved standalone repository."
+            )
         return (
-            f"- The producer subprocess committed `{producer_result.ending_sha[:12]}` "
-            f"to attempt a fix for this round's findings. Read "
-            f"`{PRODUCER_NAME}.stdout` for the producer's narrative; the "
-            f"commit subject + body are in git history at the new SHA. The "
-            f"next round of reviewers will see the post-producer diff and "
-            f"decide SHIP or NO-SHIP from there. To inspect the consolidated "
-            f"review the producer was given, open `findings.md`."
+            f"- The producer subprocess created isolated candidate "
+            f"`{producer_result.ending_sha[:12]}` for this round's findings. "
+            f"It was not imported because no trusted-import result was recorded. Read "
+            f"`{PRODUCER_NAME}.stdout` "
+            f"and inspect the preserved standalone producer repository. The operator "
+            f"branch and working tree remain unchanged."
         )
     if producer_result.outcome == "stalled":
         return (
@@ -426,11 +455,10 @@ def _resolve_next_steps_with_producer(
         return (
             f"- The producer subprocess failed after moving HEAD to "
             f"`{producer_result.ending_sha[:12]}`. This is an indeterminate "
-            f"producer commit, not a successful committed round: the operator's "
-            f"branch was NOT advanced. Read `{PRODUCER_NAME}.stdout`, "
-            f"`{PRODUCER_NAME}.stderr`, and `{PRODUCER_NAME}.error.txt`; use "
-            f"`git show {producer_result.ending_sha}` to inspect the recorded "
-            f"commit before deciding whether to keep or manually replay it."
+            f"isolated producer candidate, not a successful imported round: the operator's "
+            f"branch was not advanced. Read `{PRODUCER_NAME}.stdout`, "
+            f"`{PRODUCER_NAME}.stderr`, and `{PRODUCER_NAME}.error.txt`; inspect "
+            f"the preserved standalone producer repository named by the run."
         )
     return (
         f"- The producer subprocess failed before it could attempt a fix. "

@@ -1,9 +1,9 @@
-"""Refuse to run the committing loop on the repo's default branch (PR-v2-26).
+"""Refuse to target a multi-round run at the repo's default branch (PR-v2-26).
 
-The producer fast-forwards the CURRENT branch. With no guard, a stranger's first
-`syncade <brief>` run while sitting on `main` silently lands producer commits on
-their default branch — reproduced: 7 commits on `main`, warned only after they had
-landed. This guard refuses that up front, before any subprocess is dispatched.
+The current branch is the declared destination for accepted producer work. The producer
+keeps candidates isolated, but the guard remains in force so that future trusted
+landing cannot silently target the default branch. It refuses that target up front,
+before any subprocess is dispatched.
 
 Enforced at the run-entry choke (:func:`syncade.orchestrator.run_review`), not the
 CLI wrapper, so a direct library call and a `--resume` are covered too — the same
@@ -48,7 +48,7 @@ def guard_default_branch(
     allow: bool,
     will_commit: bool,
 ) -> None:
-    """Raise :class:`WorktreeError` when a *committing* run could land on the default branch.
+    """Raise :class:`WorktreeError` when a multi-round run targets the default branch.
 
     Exempt (no raise): ``will_commit`` is False (single-pass commits nothing), ``allow`` is
     True (``--allow-default-branch`` — or a repo syncade itself just auto-created), or
@@ -76,8 +76,8 @@ def guard_default_branch(
         if current_branch == remote_default:
             raise WorktreeError(
                 f"refusing: HEAD is the default branch {current_branch!r}, and loop mode "
-                f"would fast-forward producer commits onto it. Re-run on a feature branch, "
-                f"or pass --allow-default-branch to commit there deliberately."
+                f"targets accepted producer work there. Re-run on a feature branch, "
+                f"or pass --allow-default-branch to select it deliberately."
             )
         return
 
@@ -86,13 +86,13 @@ def guard_default_branch(
         raise WorktreeError(
             f"refusing: HEAD is {current_branch!r}, and with no origin/HEAD and no local "
             f"main/master there is nothing to prove it is not this repo's default branch, so "
-            f"producer commits could land there. Set origin/HEAD "
+            f"it cannot be selected as the producer target. Set origin/HEAD "
             f"(git remote set-head origin <branch>), or pass --allow-default-branch."
         )
     if current_branch == local_default or current_branch in _COMMON_DEFAULT_NAMES:
         raise WorktreeError(
             f"refusing: HEAD ({current_branch!r}) looks like this repo's default/integration "
             f"branch (local default is {local_default!r}; no origin/HEAD to prove otherwise), "
-            f"so producer commits could land there. Re-run on a feature branch, or pass "
-            f"--allow-default-branch to commit here deliberately."
+            f"so it cannot be selected as the producer target. Re-run on a feature branch, "
+            f"or pass --allow-default-branch to select it deliberately."
         )

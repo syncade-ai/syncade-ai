@@ -18,7 +18,7 @@ def test_default_config_matches_prd():
     assert cfg.producer.provider == "openai"
     assert cfg.producer.model == "gpt-5.6-terra"
     assert cfg.producer.thinking == "medium"
-    assert cfg.producer.permissions == "yolo"
+    assert cfg.producer.permissions == "confined"
     assert cfg.producer.timeout_seconds is None
     assert cfg.loop.max_rounds == 5
     assert cfg.loop.timeout_seconds == 1800
@@ -421,7 +421,7 @@ def test_reviewer_unknown_permission_value_rejected():
 
 
 def test_producer_permissions_safe_rejected():
-    """Producer permissions accept only ``yolo``.
+    """Producer permissions accept ``confined`` or ``yolo``; ``safe`` is rejected.
 
     The corresponding
     ``--permission-mode default`` (claude) and
@@ -439,7 +439,7 @@ def test_producer_permissions_invalid_value_lists_valid_choices():
         SyncadeConfig(producer={"permissions": "trusted-execute"})
     msg = str(exc_info.value)
     assert "permissions" in msg
-    assert "yolo" in msg
+    assert "confined" in msg
 
 
 def test_producer_permissions_trusted_rejected():
@@ -555,7 +555,7 @@ def test_producer_section_absent_yields_defaults(tmp_path):
     assert cfg.producer.provider == "openai"
     assert cfg.producer.model == "gpt-5.6-terra"
     assert cfg.producer.thinking == "medium"
-    assert cfg.producer.permissions == "yolo"
+    assert cfg.producer.permissions == "confined"
     assert cfg.producer.timeout_seconds is None
     # the loop override took effect
     assert cfg.loop.max_rounds == 2

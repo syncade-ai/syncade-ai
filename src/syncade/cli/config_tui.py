@@ -19,15 +19,13 @@ from pydantic import ValidationError
 
 from syncade import config_loader
 from syncade.cli import config_keys, config_menu_rows
-from syncade.cli.config_mode import (
+from syncade.cli.config_mode import _PROVIDER_DEFAULT_MODELS, _layer_of, _shown
+from syncade.cli.config_set import (
     _LIST_SECTIONS,
-    _PROVIDER_DEFAULT_MODELS,
     _apply,
     _atomic_write,
     _cross_provider_error,
     _existing_text,
-    _layer_of,
-    _shown,
     _unknown_reviewer_provider_error,
 )
 from syncade.cli.toml_writer import render

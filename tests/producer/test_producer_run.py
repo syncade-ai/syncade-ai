@@ -305,7 +305,7 @@ class TestRunProducerSetupFailures:
             provider="google",
             model="gemini-x",
             thinking="high",
-            permissions="yolo",
+            permissions="confined",
         )
         result = run_producer(
             worktree_path=tmp_path,

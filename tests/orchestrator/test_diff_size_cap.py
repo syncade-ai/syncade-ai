@@ -265,7 +265,7 @@ def test_assembled_prompt_too_large_refuses_before_dispatch(tmp_path, monkeypatc
     monkeypatch.setattr(
         round_module,
         "_build_reviewer_prompt",
-        lambda *a, **kw: ({"rv1": over_ceiling, "rv2": over_ceiling}, None, False),
+        lambda *a, **kw: ({"rv1": over_ceiling, "rv2": over_ceiling}, None),
     )
 
     result, dispatched, provisioned = _run(
@@ -296,7 +296,7 @@ def _run_with_oversized_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr(
         round_module,
         "_build_reviewer_prompt",
-        lambda *a, **kw: ({"rv1": over_ceiling, "rv2": over_ceiling}, None, False),
+        lambda *a, **kw: ({"rv1": over_ceiling, "rv2": over_ceiling}, None),
     )
     result, _, _ = _run(
         tmp_path, cap=10_000_000, extra_file=("small.py", "x = 1\n"), monkeypatch=monkeypatch

@@ -170,7 +170,7 @@ def _check_provider_clis(config: SyncadeConfig) -> list[DoctorCheck]:
 def _check_worktree_root(worktree_base: Path) -> DoctorCheck:
     """The worktree base (``worktree_base`` — ``config.worktree_base`` or ``--worktree-base``,
     default :data:`DEFAULT_WORKTREE_BASE` = ``/tmp/syncade``) must be writable and its filesystem
-    must have headroom — every reviewer/producer/test leg checks out a worktree there. Reading the
+    must have headroom — every actor leg materializes a repository tree there. Reading the
     configured/overridden base (not the hardcoded default) keeps the preview honest for a run that
     relocated it. **Strictly inert (F4'):** probes the nearest EXISTING ancestor (the base if
     present, else its first existing parent) with ``os.access`` — a pure permission read that writes
@@ -188,15 +188,16 @@ def _check_worktree_root(worktree_base: Path) -> DoctorCheck:
         return DoctorCheck(
             "worktree",
             _RED,
-            f"{probe_dir} is a broken symlink — worktrees cannot be created under it",
+            f"{probe_dir} is a broken symlink — actor workspaces cannot be created under it",
             fix=f"remove or repoint {probe_dir}; its target must exist as a directory",
         )
     if not probe_dir.is_dir():
         return DoctorCheck(
             "worktree",
             _RED,
-            f"{probe_dir} exists but is not a directory — worktrees cannot be created under it",
-            fix=f"remove or rename {probe_dir}; it must be a directory for run worktrees",
+            f"{probe_dir} exists but is not a directory — actor workspaces "
+            "cannot be created under it",
+            fix=f"remove or rename {probe_dir}; it must be a directory for run workspaces",
         )
     # W_OK to create worktree entries, X_OK to traverse into the base.
     if not os.access(probe_dir, os.W_OK | os.X_OK):
@@ -204,7 +205,7 @@ def _check_worktree_root(worktree_base: Path) -> DoctorCheck:
             "worktree",
             _RED,
             f"{probe_dir} is not writable",
-            fix=f"make {worktree_base} (or {probe_dir}) writable for run worktrees",
+            fix=f"make {worktree_base} (or {probe_dir}) writable for run workspaces",
         )
     free = disk_usage(probe_dir).free
     free_gib = free / 1024**3
@@ -212,8 +213,9 @@ def _check_worktree_root(worktree_base: Path) -> DoctorCheck:
         return DoctorCheck(
             "worktree",
             _RED,
-            f"only {free_gib:.1f} GiB free on {probe_dir}'s filesystem — worktrees may fail",
-            fix="free up disk space; each reviewer/producer/test leg checks out a worktree",
+            f"only {free_gib:.1f} GiB free on {probe_dir}'s filesystem — actor workspaces may fail",
+            fix="free up disk space; each reviewer/producer/test leg materializes "
+            "a repository tree",
         )
     return DoctorCheck("worktree", _OK, f"{probe_dir} writable, {free_gib:.1f} GiB free")
 

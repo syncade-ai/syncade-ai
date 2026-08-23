@@ -41,8 +41,8 @@ only; the skill adds no Python of its own (PR-B added `--scope`, PR-C added
 5. On `go`, run the resolved command and stream output to chat.
 6. Read `<run-dir>/loop-summary.md` and print the verdict + round
    count + finding count.
-7. If the producer committed, list each commit with its short SHA +
-   subject and a `git reset --hard <round-0-sha>` rollback pointer.
+7. If the producer committed, surface each candidate: recovery ref and branch-advance
+   note on SHIP; preserved standalone repository on NO-SHIP.
 
 ### Natural-language phrasings the skill understands
 
@@ -120,12 +120,10 @@ The skill stops. Common causes:
 
 - **Producer stalled** — the producer edited files but never
   committed, so the round has nothing to accept. This is not a
-  permissions misconfiguration: `[producer] permissions` accepts
-  **only** `"yolo"` (schema-enforced), precisely because sandboxed
-  modes cannot commit headlessly — claude's `acceptEdits` prompts for
-  bash, and codex's `workspace-write` blocks `.git/index.lock` writes.
-  Look at the producer's own output instead: it usually means the model
-  described a fix without running `git commit`.
+  permissions misconfiguration: `[producer] permissions` defaults to
+  `"confined"`, whose provider sandbox can commit to the standalone
+  repository. Look at the producer's own output instead: it usually means
+  the model described a fix without running `git commit`.
 - **Producer subprocess error** — the producer CLI itself failed.
   The selfcheck workspace is preserved; the path is the last stderr
   line. `cat <workspace>/round-0/producer.error.txt` for the cause.
@@ -156,30 +154,24 @@ round dir under `<run-dir>/`. Common exit codes:
 
 Full table at the exit-code table.
 
-## Producer commits on your branch
+## Producer candidates and the trusted importer
 
-When `max_rounds > 1` (the default), the producer can commit to the
-current branch between rounds. The blast radius:
+When `max_rounds > 1` (the default), the producer commits inside its
+own standalone repository (sandboxed by default; `permissions = "yolo"`
+disables the host-confinement sandbox). Accepted candidates are validated and
+imported by syncade's trusted importer; the branch advances only after
+a recovery ref is anchored at `refs/syncade/recovery/...`.
 
-- **Each producer commit lands on the operator's branch**, not on a
-  separate branch. Reviewer worktrees share `.git`, so the next
-  round's reviewers see the new commit.
-- **Branch advance is fast-forward only.** If the producer makes an
-  orphan commit (which shouldn't happen — the producer's prompt
-  requests a real commit on top of HEAD), the orchestrator refuses
-  to advance the branch and exits 30 with `producer_stalled`.
-- **Step 7 of the skill surfaces every commit** with its SHA + subject
-  before declaring the run done. Inspect each via `git show <sha>`
-  before merging.
-- **Rollback is `git reset --hard <round-0-starting-sha>`**. The
-  starting SHA is in `<run-dir>/loop-manifest.json` at
-  `rounds[0].snapshot.commit_sha`. The skill prints this command in
-  step 7; you don't have to look it up.
-
-If you want to keep some producer commits and reject others, use
-`git reset --hard <round-0-sha>` + `git cherry-pick <sha>` for the
-ones you keep, or `git revert <sha>` to invert specific ones in
-place.
+- **A SHIP run** means the candidate landed on your branch via the
+  trusted importer's compare-and-swap.
+- **A stalled or CAS-raced candidate** that did not land is reachable
+  at its `refs/syncade/recovery/...` ref in the operator repository.
+  Inspect it with `git show <recovery-ref>`.
+- **A trusted-import failure without a recovery ref** means the candidate
+  never reached the operator repository; it exists only in the preserved
+  standalone producer repository named in the terminal safety notice.
+- **No operator-side rollback is needed** for a non-SHIP round because
+  the branch CAS is the only way the branch moves.
 
 ## What the skill does not do
 

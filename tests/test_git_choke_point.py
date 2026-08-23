@@ -30,12 +30,6 @@ _ALLOWED_BYPASSES = {
     # cannot substitute anything. Measured, not assumed.
     "doctor.py": {"rev-parse"},
     "orchestrator/branch_guard.py": {"symbolic-ref"},
-    # A test double. It deliberately stays out of the production subprocess
-    # machinery (see its own comment) and only ever runs against a fixture
-    # worktree in tests — there is no untrusted producer to plant a
-    # replacement ref. `commit` DOES read objects, so this entry is justified
-    # by the absence of an adversary, not by the subcommand.
-    "adapters/fake_producer_audit_draft.py": {"add", "commit"},
 }
 
 

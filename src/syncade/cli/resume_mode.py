@@ -241,6 +241,16 @@ def _run_resume(args) -> int:
     from syncade.orchestrator.branch_guard import current_branch_name, guard_default_branch
 
     effective_max_rounds = max(config.loop.max_rounds, plan.max_rounds)
+    # Propagate the effective cap into config so auth_gate sees it. Without this,
+    # auth_gate._announce_unconfined_producer checks config.loop.max_rounds <= 1 and
+    # suppresses the yolo notice when the raw reloaded config drifted to 1, even though
+    # the resumed run will use effective_max_rounds (which may be > 1) and CAN dispatch
+    # a producer. loop_resume.py applies the same bump for the same reason; doing it here
+    # too means auth_gate and run_review both receive the same effective value.
+    if effective_max_rounds != config.loop.max_rounds:
+        config = config.model_copy(
+            update={"loop": config.loop.model_copy(update={"max_rounds": effective_max_rounds})}
+        )
     # Refuse ONLY when we can PROVE the resumed run commits (D1(c), PR-h-02d.5) — the same
     # inversion as the fresh path. Literal `base_oid == HEAD` equality was too narrow: a
     # resumed run whose pinned base is NOT HEAD but whose diff filters empty takes the

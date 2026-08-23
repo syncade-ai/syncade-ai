@@ -9,7 +9,7 @@ import shutil
 import pytest
 
 from syncade.cli import main
-from tests.cli._helpers import _init_git_repo
+from tests.cli._helpers import _init_git_repo, _outside_worktree_base
 
 # ---------------------------------------------------------------------------
 # PR-8: --max-rounds and --force-dirty
@@ -91,7 +91,17 @@ class TestMaxRoundsFlag:
 
         # Run — bogus provider → exit 50, but the captured config
         # is what we're after.
-        rc = main(["--max-rounds", "1", "--repo-root", str(tmp_path), str(pr_doc)])
+        rc = main(
+            [
+                "--max-rounds",
+                "1",
+                "--repo-root",
+                str(tmp_path),
+                "--worktree-base",
+                str(_outside_worktree_base(tmp_path)),
+                str(pr_doc),
+            ]
+        )
         assert rc == 50
         # The flag overrode the config-file value.
         assert captured["config"].loop.max_rounds == 1
@@ -118,7 +128,17 @@ class TestMaxRoundsFlag:
 
         monkeypatch.setattr(cli_module, "run_review", recording)
 
-        rc = main(["--max-rounds", "2", "--repo-root", str(tmp_path), str(pr_doc)])
+        rc = main(
+            [
+                "--max-rounds",
+                "2",
+                "--repo-root",
+                str(tmp_path),
+                "--worktree-base",
+                str(_outside_worktree_base(tmp_path)),
+                str(pr_doc),
+            ]
+        )
         assert rc == 50
         assert captured["config"].loop.max_rounds == 2
 
@@ -147,7 +167,15 @@ class TestMaxRoundsFlag:
 
         monkeypatch.setattr(cli_module, "run_review", recording)
 
-        rc = main(["--repo-root", str(tmp_path), str(pr_doc)])
+        rc = main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--worktree-base",
+                str(_outside_worktree_base(tmp_path)),
+                str(pr_doc),
+            ]
+        )
         assert rc == 50
         # Config file's value wins; CLI default of None doesn't override.
         assert captured["config"].loop.max_rounds == 2
@@ -309,7 +337,16 @@ class TestForceDirtyFlag:
         pr_doc = tmp_path / "pr.md"
         pr_doc.write_text("# PR\n")
 
-        rc = main(["--force-dirty", "--repo-root", str(tmp_path), str(pr_doc)])
+        rc = main(
+            [
+                "--force-dirty",
+                "--repo-root",
+                str(tmp_path),
+                "--worktree-base",
+                str(_outside_worktree_base(tmp_path)),
+                str(pr_doc),
+            ]
+        )
         # Got past the dirty-tree refusal; bogus provider → exit 50.
         assert rc == 50
         err = capsys.readouterr().err

@@ -108,7 +108,7 @@ def _isolated_worktree_base(request, tmp_path, monkeypatch):
     monkeypatch.setattr(
         config_module,
         "DEFAULT_WORKTREE_BASE",
-        tmp_path / "syncade-worktrees",
+        tmp_path.parent / f"{tmp_path.name}-syncade-worktrees",
     )
     yield
 

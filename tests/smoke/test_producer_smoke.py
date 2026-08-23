@@ -26,6 +26,7 @@ from syncade.adapters.producer_anthropic import AnthropicProducerAdapter
 from syncade.adapters.producer_openai import OpenAIProducerAdapter
 from syncade.config import ProducerConfig
 from syncade.producer import run_producer
+from syncade.producer_workspace import ProducerWorkspaceManager
 
 
 def _skip_if_missing(*binaries: str) -> None:
@@ -112,10 +113,14 @@ def test_anthropic_producer_commits_a_fix(tmp_path):
     low thinking can fix it in 10-30 seconds."""
     _skip_if_missing("claude")
 
-    starting_sha, pr_doc, findings_md = _seed_repo_with_bug(tmp_path)
+    operator = tmp_path / "operator"
+    starting_sha, pr_doc, findings_md = _seed_repo_with_bug(operator)
+    actor = ProducerWorkspaceManager(operator, "anthropic", base_dir=tmp_path / "stores").create(
+        starting_sha
+    )
 
     result = run_producer(
-        worktree_path=tmp_path,
+        worktree_path=actor.path,
         starting_sha=starting_sha,
         pr_doc_path=pr_doc,
         findings_md_path=findings_md,
@@ -129,15 +134,14 @@ def test_anthropic_producer_commits_a_fix(tmp_path):
             # reliable for the committed-outcome assertion.
             model="sonnet",
             thinking="low",
-            # Default producer permissions are yolo because real
-            # headless claude needs bypassPermissions for the bash
-            # `git commit` step; acceptEdits only approves file edits.
-            permissions="yolo",
+            # Item 2 proved this native sandbox shape can commit in a
+            # standalone repository while denying exterior writes.
+            permissions="confined",
         ),
         timeout_seconds=180.0,
         round_number=0,
         max_rounds=2,
-        repo_root=tmp_path,
+        repo_root=operator,
         adapter=AnthropicProducerAdapter(),
     )
 
@@ -148,7 +152,7 @@ def test_anthropic_producer_commits_a_fix(tmp_path):
     assert result.starting_sha == starting_sha
     assert result.ending_sha != starting_sha
     # The fix changed foo.py
-    foo_after = (tmp_path / "foo.py").read_text()
+    foo_after = (actor.path / "foo.py").read_text()
     assert "None" in foo_after, (
         f"producer's commit didn't reference None in foo.py; got:\n{foo_after}"
     )
@@ -160,10 +164,14 @@ def test_openai_producer_commits_a_fix(tmp_path):
     the same shape — commit + moved HEAD + None-aware foo.py."""
     _skip_if_missing("codex")
 
-    starting_sha, pr_doc, findings_md = _seed_repo_with_bug(tmp_path)
+    operator = tmp_path / "operator"
+    starting_sha, pr_doc, findings_md = _seed_repo_with_bug(operator)
+    actor = ProducerWorkspaceManager(operator, "openai", base_dir=tmp_path / "stores").create(
+        starting_sha
+    )
 
     result = run_producer(
-        worktree_path=tmp_path,
+        worktree_path=actor.path,
         starting_sha=starting_sha,
         pr_doc_path=pr_doc,
         findings_md_path=findings_md,
@@ -172,25 +180,14 @@ def test_openai_producer_commits_a_fix(tmp_path):
             provider="openai",
             model="gpt-5.5",
             thinking="low",
-            # Real codex with ``-s workspace-write`` (the trusted
-            # mapping) blocks writes to ``.git/`` — verified live:
-            # the producer
-            # successfully edits ``foo.py`` but ``git commit``
-            # fails with ``fatal: Unable to create
-            # '.git/index.lock': Operation not permitted`` because
-            # the sandbox protects ``.git`` from writes even when
-            # the workspace itself is writable. Headless committed-
-            # outcome therefore requires ``--dangerously-bypass-
-            # approvals-and-sandbox`` (``yolo``) for the codex
-            # producer too, same as the anthropic case.
-            # The ProducerConfig default is therefore yolo for
-            # unattended producer commits.
-            permissions="yolo",
+            # The actor's real .git directory is explicitly writable;
+            # every exterior root remains denied by workspace-write.
+            permissions="confined",
         ),
         timeout_seconds=180.0,
         round_number=0,
         max_rounds=2,
-        repo_root=tmp_path,
+        repo_root=operator,
         adapter=OpenAIProducerAdapter(),
     )
 
@@ -200,7 +197,7 @@ def test_openai_producer_commits_a_fix(tmp_path):
     )
     assert result.starting_sha == starting_sha
     assert result.ending_sha != starting_sha
-    foo_after = (tmp_path / "foo.py").read_text()
+    foo_after = (actor.path / "foo.py").read_text()
     assert "None" in foo_after
 
 
@@ -241,47 +238,51 @@ def test_anthropic_producer_stalls_when_template_forbids_commit(tmp_path):
     """
     _skip_if_missing("claude")
 
-    # Build a repo where foo.py is already None-aware.
-    tmp_path.mkdir(parents=True, exist_ok=True)
+    # Build an operator repo where foo.py is already None-aware.
+    operator = tmp_path / "operator"
+    operator.mkdir(parents=True, exist_ok=True)
     for cmd in (
         ["init", "-q"],
         ["config", "user.email", "smoke@example.com"],
         ["config", "user.name", "Smoke"],
         ["config", "commit.gpgsign", "false"],
     ):
-        subprocess.run(["git", *cmd], cwd=tmp_path, check=True)
-    (tmp_path / "foo.py").write_text(
+        subprocess.run(["git", *cmd], cwd=operator, check=True)
+    (operator / "foo.py").write_text(
         "def add_one(x):\n    if x is None:\n        return None\n    return x + 1\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=operator, check=True)
     subprocess.run(
         ["git", "commit", "-q", "-m", "seed: already-fixed foo.py"],
-        cwd=tmp_path,
+        cwd=operator,
         check=True,
     )
     starting_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=tmp_path,
+        cwd=operator,
         capture_output=True,
         text=True,
         check=True,
     ).stdout.strip()
 
     # Install per-repo producer template that pins the stall.
-    template_dir = tmp_path / ".syncade" / "templates"
+    template_dir = operator / ".syncade" / "templates"
     template_dir.mkdir(parents=True)
     (template_dir / "producer.md").write_text(_STALL_FORCING_PRODUCER_TEMPLATE, encoding="utf-8")
 
-    pr_doc = tmp_path / "pr.md"
+    pr_doc = operator / "pr.md"
     pr_doc.write_text("# PR — content ignored by stall-fixture template\n")
-    findings_dir = tmp_path / ".syncade" / "runs" / "smoke" / "round-0"
+    findings_dir = operator / ".syncade" / "runs" / "smoke" / "round-0"
     findings_dir.mkdir(parents=True)
     findings_md = findings_dir / "findings.md"
     findings_md.write_text("# Findings\n\nSee producer template for instructions.\n")
 
+    actor = ProducerWorkspaceManager(operator, "stall", base_dir=tmp_path / "stores").create(
+        starting_sha
+    )
     result = run_producer(
-        worktree_path=tmp_path,
+        worktree_path=actor.path,
         starting_sha=starting_sha,
         pr_doc_path=pr_doc,
         findings_md_path=findings_md,
@@ -290,12 +291,12 @@ def test_anthropic_producer_stalls_when_template_forbids_commit(tmp_path):
             provider="anthropic",
             model="sonnet",
             thinking="low",
-            permissions="yolo",
+            permissions="confined",
         ),
         timeout_seconds=180.0,
         round_number=0,
         max_rounds=2,
-        repo_root=tmp_path,
+        repo_root=operator,
         adapter=AnthropicProducerAdapter(),
     )
 
