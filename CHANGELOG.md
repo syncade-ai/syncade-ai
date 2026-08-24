@@ -8,6 +8,28 @@ include breaking changes.
 ## [Unreleased]
 
 
+## [0.8.1] — 2026-08-24
+
+### Fixed
+
+- **The suite no longer fails intermittently on git's own background maintenance.** A test
+  asserting that a refused run leaves the repository untouched compared every path under `.git`
+  byte-for-byte, so git firing `gc.auto` between the two snapshots left
+  `.git/objects/maintenance.lock` behind and failed the assertion. It surfaced on public CI for
+  0.8.0 — py3.14 red, py3.11 green, same commit, because the window is a timing race. Fixed at
+  the cause (`gc.auto=0`, `maintenance.auto=false` on the fixture repo) rather than by excluding
+  `*.lock` from the comparison, which would have blinded the test to a real defect abandoning
+  `.git/refs/heads/<branch>.lock`.
+- **The repo's LOC and internal-reference gates now fail closed instead of reporting success over
+  a tree they could not read.** `scripts/check-loc.sh` and `scripts/check-no-internal-refs.sh`
+  both exited **0 with their success message** when run outside a git repository — measured, over
+  a planted 900-line file and a planted internal reference respectively. `check-loc.sh` did the
+  same inside a real repository with an empty tracked set. Both now exit **2**, which is distinct
+  from exit 1 so "could not check" stays separable from "checked and found violations". If you
+  wrap either script in your own CI, a previously-silent green in a broken checkout will now fail
+  — which is the point.
+
+
 ## [0.8.0] — 2026-08-23
 
 ### Changed
@@ -709,7 +731,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.8.1
 [0.8.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.8.0
 [0.7.6]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.6
 [0.7.5]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.5

@@ -26,6 +26,31 @@ case $limit in
         ;;
 esac
 
+# Enumerate BEFORE the loop, and refuse an enumeration we could not make.
+#
+# `git ls-files` used to live in the loop's process substitution, where its failure is
+# invisible to `set -euo pipefail`: the loop read nothing, found nothing over the limit, and
+# printed the success line. Measured — in a directory with no `.git` and a planted 900-line
+# file, this gate said "all tracked src/ + tests/ .py files are within 500 code LOC" and
+# exited 0. Same for a real repository with an empty tracked set.
+#
+# Same rule as the limit check above, applied to the INPUT rather than the threshold: a gate
+# that cannot see what it is checking must fail, not pass. Exit 2 (not 1) keeps "I could not
+# check" distinguishable from "I checked and found violations" for any caller reading codes.
+# stderr is NOT merged into the capture: a warning on git's stderr that happened to end in
+# `.py` would enter the file list, and could make the emptiness check below see a non-empty
+# list when the real tracked set is empty — defeating the guard this block exists to add.
+# Git's own message still reaches the terminal; `git ls-files src tests` reproduces it.
+if ! tracked=$(git ls-files src tests); then
+    printf 'error: cannot enumerate tracked files (git failed — not a repository?)\n' >&2
+    exit 2
+fi
+files=$(printf '%s\n' "$tracked" | grep '\.py$' || true)
+if [ -z "$files" ]; then
+    printf 'error: no tracked .py files under src/ or tests/ — refusing to report success over an empty enumeration\n' >&2
+    exit 2
+fi
+
 over=0
 exempt=0
 while IFS= read -r f; do
@@ -45,7 +70,7 @@ while IFS= read -r f; do
         printf '%s: %d code LOC > %d\n' "$f" "$n" "$limit"
         over=$((over + 1))
     fi
-done < <(git ls-files src tests | grep '\.py$')
+done <<< "$files"
 
 if [ "$over" -gt 0 ]; then
     printf '\n%d file(s) over %d code LOC\n' "$over" "$limit" >&2

@@ -45,6 +45,17 @@ def _git_repo(path: Path) -> None:
         ["git", "init", "-q", "-b", "main"],
         ["git", "config", "user.email", "t@t"],
         ["git", "config", "user.name", "t"],
+        # Git's OWN housekeeping, disabled at the source. `_tree()` compares every path under
+        # `.git` byte-for-byte, and git may fire auto-maintenance after an ordinary command and
+        # leave `.git/objects/maintenance.lock` behind — which public CI hit on py3.14 while
+        # py3.11 passed on the same commit, because the window is a timing race.
+        #
+        # Removing the CAUSE rather than filtering the symptom keeps the assertion at full
+        # strength. Excluding `*.lock` from the comparison would have been the easy fix and a bad
+        # one: a real syncade defect that abandoned `.git/refs/heads/main.lock` is exactly what
+        # this test exists to catch, and that is a `.lock` too.
+        ["git", "config", "gc.auto", "0"],
+        ["git", "config", "maintenance.auto", "false"],
     ):
         subprocess.run(argv, cwd=path, capture_output=True, check=True)
     subprocess.run(

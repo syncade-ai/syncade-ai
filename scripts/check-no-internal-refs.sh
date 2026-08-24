@@ -16,7 +16,25 @@
 # not banned. The oss-release script re-runs both tiers over the actual staged tree.
 set -euo pipefail
 
-cd "$(git rev-parse --show-toplevel)"
+# Fail closed when the tree cannot be enumerated. `cd "$(git rev-parse --show-toplevel)"` could
+# not do this: on failure the substitution is empty and `cd ""` returns 0 in bash, so `set -e`
+# never fired and the scan ran over whatever directory happened to be current. Measured — with no
+# `.git` and a planted `PR-h-99` in README.md, this gate printed "OK: no ... internal PR-refs" and
+# exited 0. Same rule as scripts/check-loc.sh: a gate that cannot see what it is checking must
+# fail, not pass; exit 2 keeps "could not check" apart from exit 1 "checked and found refs".
+if ! toplevel=$(git rev-parse --show-toplevel 2>/dev/null); then
+    printf 'error: not a git repository — refusing to report a clean tree\n' >&2
+    exit 2
+fi
+cd "$toplevel"
+
+# `git grep` searches TRACKED content, so an empty index yields "no matches" — indistinguishable
+# from a clean tree by exit code alone, and the public snapshot always has files. An empty
+# enumeration means something is broken, not that the tree is clean.
+if [ -z "$(git ls-files | head -1)" ]; then
+    printf 'error: no tracked files — refusing to report a clean tree over an empty enumeration\n' >&2
+    exit 2
+fi
 
 # --- Which tree am I on? -------------------------------------------------------------------------
 # On the DEV tree a raw scan is meaningless and always red: the unshipped files are SUPPOSED to be

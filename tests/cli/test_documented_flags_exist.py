@@ -55,6 +55,7 @@ _FOREIGN = {
     "--hard": "git reset --hard",
     "--into": "scripts/oss-release.sh",
     "--is-ancestor": "git merge-base",
+    "--show-toplevel": 'git rev-parse (PR-h-15 records why `cd "$(...)"` cannot fail closed)',
     "--no-ff": "git merge",
     "--numstat": "git diff --numstat (the binary-report oracle PR-h-field-01 rejected)",
     "--no-replace-objects": "git",

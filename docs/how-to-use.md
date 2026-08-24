@@ -147,7 +147,7 @@ Why smallness pays:
   hard 1,048,576-character input limit, so syncade's message fires before the provider's does. For
   calibration: across measured rounds on this codebase the *largest* reviewer-facing diff was
   **147 KB**, median **77 KB**. If you are anywhere near the cap, the PR is far too big.
-- **Cost scales with rounds.** Measured across 125 priced runs: median **$4.89**, p90 **$15.75**,
+- **Cost scales with rounds.** Measured across 126 priced runs: median **$4.66**, p90 **$15.75**,
   worst **$35.50**. The expensive tail is multi-round loops where the producer rewrites code every
   round — which is what a sprawling PR guarantees.
 
@@ -320,7 +320,7 @@ Zero-config works. These are the shipped defaults:
   reverted a `gpt-5.6` panel after both audited too leniently. Read that with its limits: one
   codebase, one language, a small Anthropic sample. It is enough for a default, not a law — and the
   config exists precisely so you can test it on your own repo.
-- **Keep two reviewers with different lenses.** Across 440 runs the panel raised 547 blocking
+- **Keep two reviewers with different lenses.** Across 441 runs the panel raised 547 blocking
   findings and **56% were caught by only one of the two** (490 findings from the adversarial
   prompt, 420 from the standard one). Drop either and you lose half the findings — and not the
   same half.

@@ -34,7 +34,7 @@ syncade attacks the code from outside that failure distribution:
 - **Diverse judges by design.** A bug survives only if every judge misses it, so the reviewers are
   deliberately not interchangeable. Out of the box you get **cross-prompt** diversity — a standard
   reviewer and an adversarial one, same model, different instructions — and that alone is worth
-  more than it sounds. Across **440 runs on this codebase**, the panel raised 547 blocking
+  more than it sounds. Across **441 runs on this codebase**, the panel raised 547 blocking
   findings — and **56% of them were caught by only one of the two reviewers**. Both pull their
   weight: 490 findings from the adversarial prompt, 420 from the standard one. Drop either and you
   lose half, and not the same half.
@@ -134,7 +134,7 @@ you to re-run.
 
 Check your setup any time with `syncade --doctor`.
 
-**What a run costs.** Measured across 125 priced runs on this repo: **median $4.89**, 90th
+**What a run costs.** Measured across 126 priced runs on this repo: **median $4.66**, 90th
 percentile **$15.75**, worst observed **$35.50**. A clean single-round review lands nearer $2;
 the expensive tail is multi-round loops where a producer rewrites code each round. If your
 `claude` / `codex` CLIs are signed in to a subscription the marginal cost is **$0** — that is how
