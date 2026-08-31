@@ -18,8 +18,26 @@ import pytest
 import syncade.gc_execute as gc_execute_module
 from syncade.gc import GcPlan, execute_gc, plan_gc
 from syncade.process import SubprocessNotFoundError, SubprocessResult
+from syncade.workspace_owner import (
+    OWNER_RECORD_NAME,
+    OWNER_RECORD_VERSION,
+    git_common_dir,
+    record_owner,
+    workspace_claim_matches,
+)
 
 from ._helpers import STRUCTURED_ROUND_ARTIFACTS, make_repo, snapshot_tree, write_run
+
+
+def _record_sigkills(killed: list[int]):  # noqa: ANN202
+    """An ``os.kill`` stand-in recording SIGKILLs only.
+
+    ``_reap_processes_in_tree`` probes every confirmed pid with ``os.kill(pid, 0)``
+    before signalling any of them, so a recorder that logs every call sees two entries
+    per reaped pid. Signal 0 delivers nothing — it asks "does this exist and may I
+    signal it?" — and must not be counted as a kill.
+    """
+    return lambda pid, sig: sig and killed.append(pid)
 
 
 @pytest.fixture
@@ -37,10 +55,15 @@ def test_execute_slims_runs_and_removes_worktrees(tmp_path: Path, _fake_lsof_emp
     SURVIVE. Whole-dir deletion was a data-loss bug: metrics.db is a derived view over
     .syncade/runs/, so deleting a run destroys its history on the next rebuild."""
     repo = make_repo(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
     run_dir = write_run(repo, "run-del", final_exit_code=0, with_round=True)
     wt_base = tmp_path / "wt"
-    (wt_base / "run-del").mkdir(parents=True)
-    (wt_base / "run-del" / "marker").write_text("x", encoding="utf-8")
+    tree = wt_base / "run-del"
+    tree.mkdir(parents=True)
+    (tree / "marker").write_text("x", encoding="utf-8")
+    record_owner(tree, repo)
+    claim = repo / ".syncade" / "workspace-claims" / "run-del"
+    assert workspace_claim_matches(repo, tree)
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
@@ -55,7 +78,8 @@ def test_execute_slims_runs_and_removes_worktrees(tmp_path: Path, _fake_lsof_emp
     assert not (run_dir / "round-0" / "codex-reviewer.stdout").exists()
     assert not (run_dir / "round-0" / "codex-reviewer.stderr").exists()
 
-    assert not (wt_base / "run-del").exists()
+    assert not tree.exists()
+    assert not claim.exists(), "normal age-based GC must remove the bound claim too"
     assert "run-del" in report.runs_slimmed
     assert report.bytes_freed > 0
     assert (wt_base / "run-del") in report.worktrees_removed
@@ -100,6 +124,7 @@ def test_execute_calls_git_worktree_prune(tmp_path: Path, monkeypatch: pytest.Mo
     write_run(repo, "run-del", final_exit_code=0)
     wt_base = tmp_path / "wt"
     (wt_base / "run-del").mkdir(parents=True)
+    record_owner(wt_base / "run-del", repo)
 
     calls: list[list[str]] = []
 
@@ -121,6 +146,7 @@ def test_reaping_kills_only_in_dir_pids(tmp_path: Path, monkeypatch: pytest.Monk
     wt_base = tmp_path / "wt"
     tree = wt_base / "run-del"
     tree.mkdir(parents=True)
+    record_owner(tree, repo)
 
     # Tabular lsof reports two PIDs (4242, 4243) with files inside tree.
     lsof_stdout = (
@@ -139,7 +165,7 @@ def test_reaping_kills_only_in_dir_pids(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
 
     killed: list[int] = []
-    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(gc_execute_module.os, "kill", _record_sigkills(killed))
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
@@ -154,6 +180,7 @@ def test_reaping_parses_terse_lsof_output(tmp_path: Path, monkeypatch: pytest.Mo
     wt_base = tmp_path / "wt"
     tree = wt_base / "run-del"
     tree.mkdir(parents=True)
+    record_owner(tree, repo)
 
     # `lsof -t` terse output: one PID per line (the real flag set we use).
     def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
@@ -165,7 +192,7 @@ def test_reaping_parses_terse_lsof_output(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
     killed: list[int] = []
-    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(gc_execute_module.os, "kill", _record_sigkills(killed))
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
@@ -188,7 +215,7 @@ def test_reaping_dry_run_kills_nothing(tmp_path: Path, monkeypatch: pytest.Monke
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
     killed: list[int] = []
-    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(gc_execute_module.os, "kill", _record_sigkills(killed))
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     execute_gc(plan, dry_run=True, repo_root=repo)
@@ -197,13 +224,20 @@ def test_reaping_dry_run_kills_nothing(tmp_path: Path, monkeypatch: pytest.Monke
     assert (wt_base / "run-del").exists()
 
 
-def test_lsof_missing_warns_and_still_rmtrees(
+def test_lsof_missing_warns_and_refuses_rmtree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
+    """PR-h-06b item 1 REVERSED this test's original assertion.
+
+    It used to pin "reaping skipped, but the tree is STILL removed" — best-effort
+    cleanup taking precedence over an unanswered liveness question. The loud-warning
+    half is unchanged and still asserted; only the deletion half flipped.
+    """
     repo = make_repo(tmp_path)
     write_run(repo, "run-del", final_exit_code=0)
     wt_base = tmp_path / "wt"
     (wt_base / "run-del").mkdir(parents=True)
+    record_owner(wt_base / "run-del", repo)
 
     def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
         if argv[0] == "lsof":
@@ -217,9 +251,9 @@ def test_lsof_missing_warns_and_still_rmtrees(
 
     err = capsys.readouterr().err
     assert "lsof" in err.lower()
-    # Reaping skipped, but the tree is STILL removed.
-    assert not (wt_base / "run-del").exists()
-    assert (wt_base / "run-del") in report.worktrees_removed
+    # No liveness proof is available, so the tree stays.
+    assert (wt_base / "run-del").exists()
+    assert report.worktrees_removed == []
 
 
 def test_lsof_error_does_not_abort_gc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -227,6 +261,7 @@ def test_lsof_error_does_not_abort_gc(tmp_path: Path, monkeypatch: pytest.Monkey
     write_run(repo, "run-del", final_exit_code=0)
     wt_base = tmp_path / "wt"
     (wt_base / "run-del").mkdir(parents=True)
+    record_owner(wt_base / "run-del", repo)
 
     def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
         if argv[0] == "lsof":
@@ -239,7 +274,9 @@ def test_lsof_error_does_not_abort_gc(tmp_path: Path, monkeypatch: pytest.Monkey
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)  # must not raise
-    assert not (wt_base / "run-del").exists()
+    # The name still holds: GC does not abort, it declines this one tree and continues
+    # (PR-h-06b item 1 changed the tree's fate, not the "does not abort" claim).
+    assert (wt_base / "run-del").exists()
     assert report.pids_reaped == []
 
 
@@ -249,6 +286,7 @@ def test_dead_pid_during_reap_is_skipped(tmp_path: Path, monkeypatch: pytest.Mon
     wt_base = tmp_path / "wt"
     tree = wt_base / "run-del"
     tree.mkdir(parents=True)
+    record_owner(tree, repo)
 
     def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
         if argv[0] == "lsof":
@@ -262,7 +300,8 @@ def test_dead_pid_during_reap_is_skipped(tmp_path: Path, monkeypatch: pytest.Mon
     def fake_kill(pid: int, sig: int) -> None:
         if pid == 5555:
             raise ProcessLookupError  # already dead
-        killed.append(pid)
+        if sig:  # sig 0 is the permission probe, not a kill
+            killed.append(pid)
 
     killed: list[int] = []
     monkeypatch.setattr(gc_execute_module.os, "kill", fake_kill)
@@ -285,6 +324,7 @@ def test_foreign_worktree_tree_is_not_removed_or_reaped(
     write_run(repo, "run-del", final_exit_code=0)  # ours, deletable
     wt_base = tmp_path / "wt"
     (wt_base / "run-del").mkdir(parents=True)
+    record_owner(wt_base / "run-del", repo)
     foreign = wt_base / "foreign-other-repo-run"
     foreign.mkdir(parents=True)
 
@@ -297,7 +337,7 @@ def test_foreign_worktree_tree_is_not_removed_or_reaped(
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
     killed: list[int] = []
-    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(gc_execute_module.os, "kill", _record_sigkills(killed))
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
@@ -332,7 +372,7 @@ def test_symlink_worktree_entry_is_not_reaped_or_removed(
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
     killed: list[int] = []
-    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(gc_execute_module.os, "kill", _record_sigkills(killed))
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=False, repo_root=repo)
@@ -387,6 +427,7 @@ def test_lsof_invocation_is_cwd_scoped(tmp_path: Path, monkeypatch: pytest.Monke
     write_run(repo, "run-del", final_exit_code=0)
     wt_base = tmp_path / "wt"
     (wt_base / "run-del").mkdir(parents=True)
+    record_owner(wt_base / "run-del", repo)
 
     captured: list[list[str]] = []
 
@@ -415,6 +456,7 @@ def test_dry_run_reports_would_reap_pids_without_killing(
     write_run(repo, "run-del", final_exit_code=0)
     wt_base = tmp_path / "wt"
     (wt_base / "run-del").mkdir(parents=True)
+    record_owner(wt_base / "run-del", repo)
 
     def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
         if argv[0] == "lsof":
@@ -423,7 +465,7 @@ def test_dry_run_reports_would_reap_pids_without_killing(
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
     killed: list[int] = []
-    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(gc_execute_module.os, "kill", _record_sigkills(killed))
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     report = execute_gc(plan, dry_run=True, repo_root=repo)
@@ -445,6 +487,7 @@ def test_lsof_real_error_emits_loud_warning(
     write_run(repo, "run-del", final_exit_code=0)
     wt_base = tmp_path / "wt"
     (wt_base / "run-del").mkdir(parents=True)
+    record_owner(wt_base / "run-del", repo)
 
     def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
         if argv[0] == "lsof":
@@ -459,8 +502,8 @@ def test_lsof_real_error_emits_loud_warning(
 
     assert any("lsof errored" in e for e in report.errors), report.errors
     assert "lsof errored" in capsys.readouterr().err
-    # best-effort: the tree is still removed even though reaping was skipped.
-    assert (wt_base / "run-del") in report.worktrees_removed
+    # PR-h-06b item 1: an error exit WITH diagnostics is not an answer, so the tree stays.
+    assert report.worktrees_removed == []
 
 
 def test_worktree_removal_failure_is_reported_not_silent_success(
@@ -477,6 +520,7 @@ def test_worktree_removal_failure_is_reported_not_silent_success(
     tree = wt_base / "run-del"
     tree.mkdir(parents=True)
     (tree / "f").write_text("x", encoding="utf-8")
+    record_owner(tree, repo)
 
     # lsof empty → no reaping noise.
     monkeypatch.setattr(
@@ -496,13 +540,19 @@ def test_worktree_removal_failure_is_reported_not_silent_success(
 
     assert tree.exists(), "precondition: rmtree should have been blocked"
     assert tree not in report.worktrees_removed
-    assert any("still present after rmtree" in e for e in report.errors), report.errors
+    # PR-h-06b item 3 strengthened this: the report used to say only "still present
+    # after rmtree; permission denied?" — a guess. It now carries the OS's own reason.
+    assert any(f"failed to remove worktree tree {tree}" in e for e in report.errors), report.errors
+    assert any("Permission denied" in e for e in report.errors), report.errors
 
 
 def test_real_git_orphan_with_registered_worktree_is_removed(tmp_path: Path) -> None:
     """PR-27 dogfood finding 1 (the operator's real-git repro): a gone-run tree
-    whose nested worktree is registered in THIS repo IS collected + removed; a
-    foreign tree (not registered) is left untouched. End-to-end against real git."""
+    RECORDED as ours IS collected + removed; a foreign tree is left untouched.
+    End-to-end against real git.
+
+    The proof was a nested worktree registered in this repo; PR-h-06a made it the
+    ownership record, which is the only proof that survives a Git-less export."""
     if shutil.which("git") is None:
         pytest.skip("git not on PATH")
     repo = tmp_path / "repo"
@@ -517,15 +567,75 @@ def test_real_git_orphan_with_registered_worktree_is_removed(tmp_path: Path) -> 
 
     wt_base = tmp_path / "wt"
     gone = wt_base / "gone-run"
-    git("worktree", "add", "--detach", "-q", str(gone / "round-0" / "rv1"))  # registers under gone
+    (gone / "round-0" / "rv1").mkdir(parents=True)
+    record_owner(gone, repo)  # this repository's claim on the tree
     foreign = wt_base / "foreign-run"
-    foreign.mkdir(parents=True)
+    foreign.mkdir(parents=True)  # no record: not ours, not reclaimable
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     assert gone in plan.orphan_worktree_trees, plan.orphan_worktree_trees
     assert foreign not in plan.orphan_worktree_trees
 
     report = execute_gc(plan, dry_run=False, repo_root=repo)
-    assert not gone.exists(), "provably-ours gone-run tree should be removed"
+    assert not gone.exists(), "recorded-as-ours gone-run tree should be removed"
     assert foreign.exists(), "foreign tree must be left untouched"
     assert gone in report.worktrees_removed
+
+
+def test_execute_gc_removes_claim_after_orphan_removal(tmp_path: Path) -> None:
+    """GC must remove the repo-side claim when it removes an orphan workspace.
+
+    If the claim is left behind, a forged replacement workspace at the same
+    run-id path can reuse it and trigger destructive GC on the next cycle.
+    This test is RED against an implementation that skips claim cleanup and
+    GREEN once execute_gc removes the claim alongside the tree.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git not on PATH")
+    repo = tmp_path / "repo"
+    (repo / ".syncade" / "runs").mkdir(parents=True)
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
+
+    git("init", "-q")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-q", "-m", "i")
+
+    wt_base = tmp_path / "wt"
+    run_id = "gone-run"
+
+    # Phase 1: create legitimate workspace and GC it.
+    gone = wt_base / run_id
+    (gone / "round-0" / "rv1").mkdir(parents=True)
+    record_owner(gone, repo)
+    claim = repo / ".syncade" / "workspace-claims" / run_id
+    assert claim.is_file(), "claim must be present after record_owner"
+    assert workspace_claim_matches(repo, gone), "claim must bind to this owner record"
+
+    plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
+    assert gone in plan.orphan_worktree_trees
+    execute_gc(plan, dry_run=False, repo_root=repo)
+    assert not gone.exists()
+    assert not claim.exists(), "claim must be removed after GC"
+
+    # Phase 2: forged replacement at same path must NOT be reclaimed.
+    import json
+
+    forged = wt_base / run_id
+    (forged / "round-0").mkdir(parents=True)
+    repo_common = git_common_dir(repo)
+    assert repo_common is not None
+    record = {
+        "version": OWNER_RECORD_VERSION,
+        "repo_common_dir": str(repo_common),
+        "run_id": run_id,
+    }
+    (forged / OWNER_RECORD_NAME).write_text(json.dumps(record, sort_keys=True))
+
+    plan2 = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
+    assert forged not in plan2.orphan_worktree_trees, (
+        "forged workspace must not be reclaimed after stale claim was cleaned up"
+    )
+    execute_gc(plan2, dry_run=False, repo_root=repo)
+    assert forged.exists(), "forged workspace must survive: no claim to authenticate it"

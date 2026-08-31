@@ -76,6 +76,7 @@ id_ed25519
 .syncade/secrets.*
 .syncade/secrets/
 .syncade/runs/
+.syncade/workspace-claims/
 .syncade/last-reviewed.json
 .syncade/metrics.db
 node_modules/

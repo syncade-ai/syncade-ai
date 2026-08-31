@@ -458,7 +458,20 @@ and the candidate is still reachable from your repository at that ref.
   inspect what each actor saw. `syncade --gc` removes these workspaces once a run can no longer
   plausibly be resumed, controlled by
   `gc.worktree_max_age_days` (default 14 days) — this applies even to runs that remain
-  resume-eligible. It reached 4.4 GB on this machine before a cleanup. Point `worktree_base`
+  resume-eligible. Recordless Syncade-shaped workspaces cannot be proven yours, are never
+  reclaimed automatically, and are reported by `syncade --gc` for manual removal. An unreadable
+  workspace is also reported when its directory name matches repo-local run artifacts; make it
+  inspectable and rerun GC so ownership can be classified. A workspace GC could not prove is free
+  of live processes is kept, counted as `declined` on the summary line, and listed — that is every
+  workspace on a machine with no `lsof` installed, so install it if `--gc` reclaims nothing.
+  `--resume` applies the same rule to the leftover workspace of the round it is retrying, but
+  cannot merely skip it — that directory is where the retried round re-provisions — so it stops
+  with exit 60 naming the directory and leaving the round's artifacts untouched, rather than
+  deleting the workspace on the assumption that nobody is inside. The report gives an exact size only
+  after a complete traversal, otherwise `size unknown`. Workspaces with an inspectable ownership
+  record — even a malformed record or one naming another repository — are left safely but
+  excluded from this recordless/manual-cleanup report rather than mislabeled.
+  It reached 4.4 GB on this machine before a cleanup. Point `worktree_base`
   somewhere you don't mind, outside the repository under review (reviewer provisioning refuses a
   repo-local export). Run `git worktree prune` after manually removing linked
   test/check worktrees; reviewer exports and standalone producer repositories

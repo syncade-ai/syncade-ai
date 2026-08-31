@@ -7,14 +7,16 @@ Every builder writes into a ``tmp_path`` tree — NONE touches the real
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
 
 def make_repo(tmp_path: Path) -> Path:
-    """Create a minimal ``.syncade/runs/`` skeleton and return the repo root."""
+    """Create a minimal ``.syncade/runs/`` skeleton with a git repo and return the repo root."""
     runs = tmp_path / ".syncade" / "runs"
     runs.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
     return tmp_path
 
 

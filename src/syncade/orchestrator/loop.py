@@ -17,12 +17,13 @@ from syncade.persistence import persist_run_init
 from syncade.persistence._atomic import atomic_write_text
 from syncade.run_inputs import validate_run_inputs
 from syncade.snapshot import SnapshotError, discover_repo_root, take_snapshot
+from syncade.workspace_owner import create_run_dir
 from syncade.worktree import WorktreeError, generate_run_id
 
 from ._runs_dir import _ensure_runs_gitignore
 from .budget import approaching_budget, over_budget, producer_only_usages, round_usages
 from .loop_dispatch_check import _diff_will_dispatch as _diff_will_dispatch
-from .loop_finalize import _finalize_run
+from .loop_finalize import _finalize_run, _reclaim_shared_run_dir
 from .loop_preflight import run_preflight
 from .loop_resume import _rehydrate_resume_state
 from .loop_rmtree import _safe_resume_rmtree
@@ -264,7 +265,11 @@ def run_review(
             # raises, so a concurrent run racing on the same timestamp
             # run-id cannot also claim this tmp subtree.
             try:
-                tmp_run_dir.mkdir(parents=True, exist_ok=False)
+                # Records ownership as part of creating the directory: every
+                # line below can fail, and a run that aborts between here and
+                # the first workspace manager would otherwise strand a tree
+                # under the shared base that no repository can ever claim.
+                create_run_dir(effective_worktree_base, run_id, repo_root, exist_ok=False)
             except FileExistsError:
                 attempt += 1
                 run_id = f"{base_run_id}-{attempt}"
@@ -285,8 +290,10 @@ def run_review(
                 break
             except FileExistsError:
                 # Release the tmp reservation we just took for this id so a
-                # run-dir collision does not strand an empty /tmp subtree.
-                tmp_run_dir.rmdir()
+                # run-dir collision does not strand a /tmp subtree. The
+                # reservation now holds its ownership record, so a bare rmdir
+                # would fail on a non-empty directory — reclaim the tree.
+                _reclaim_shared_run_dir(tmp_run_dir)
                 attempt += 1
                 run_id = f"{base_run_id}-{attempt}"
                 if attempt > 100:
@@ -367,9 +374,10 @@ def run_review(
             # directory and the worktree subtree at /tmp/syncade/<run-id>/
             # round-N/ are remnants of the aborted attempt; we re-run from
             # snapshot. Both removals go through _safe_resume_rmtree, which
-            # applies the same containment + identity guards GC uses so a
-            # swapped symlink or out-of-base path can never redirect the
-            # delete; missing targets safely no-op (idempotent). Only the
+            # applies the same containment + identity guards GC uses AND refuses
+            # any symlink component below the base, so neither an out-of-base
+            # path nor a run root symlinked at a SIBLING inside the base can
+            # redirect the delete; missing targets safely no-op (idempotent). Only the
             # EXTERNAL worktree subtree is reaped (reap=True), matching GC's
             # worktree-tree removal; the persisted .syncade/runs artifact dir
             # uses a plain guarded rmtree (reap=False) — an operator may be
@@ -381,14 +389,33 @@ def run_review(
             # never ran), so there is nothing to prune.
             _is_budget_abort_resume = resume_plan.budget_aborted_before_producer_round is not None
             if not _is_budget_abort_resume:
-                resumed_round_dir = run_dir / f"round-{resume_plan.resumed_round}"
-                _safe_resume_rmtree(resumed_round_dir, runs_root, repo_root, reap=False)
+                # The WORKSPACE goes first, and a failure to clear it stops the resume
+                # before anything else is destroyed. It sits exactly where the resumed
+                # round re-provisions, and every workspace manager hard-refuses a
+                # pre-existing target — so removing the artifact dir first and then
+                # abandoning the workspace loses the round's artifacts AND fails at
+                # exit 60, on every future resume (PR-h-06b item 4).
                 resumed_worktree_dir = (
                     effective_worktree_base / run_id / f"round-{resume_plan.resumed_round}"
                 )
-                _safe_resume_rmtree(
+                if not _safe_resume_rmtree(
                     resumed_worktree_dir, effective_worktree_base, repo_root, reap=True
-                )
+                ):
+                    raise WorktreeError(
+                        f"cannot clear the previous round's workspace at "
+                        f"{resumed_worktree_dir}: syncade either could not establish "
+                        f"that no process is running inside it, or could not remove it. "
+                        f"The round's artifacts are untouched. Install lsof if it is "
+                        f"missing, then remove that directory yourself and resume again."
+                    )
+                resumed_round_dir = run_dir / f"round-{resume_plan.resumed_round}"
+                if not _safe_resume_rmtree(resumed_round_dir, runs_root, repo_root, reap=False):
+                    raise WorktreeError(
+                        f"cannot clear the previous round's artifact directory at "
+                        f"{resumed_round_dir}: it exists but could not be removed (symlink "
+                        f"or unremovable path). Inspect it and remove it yourself, then "
+                        f"resume again."
+                    )
                 # Terminal rounds that preserve worktrees also leave git worktree
                 # registry entries. The rmtree above removed the dirs, but stale registry
                 from syncade.process import run_subprocess as _run_subprocess

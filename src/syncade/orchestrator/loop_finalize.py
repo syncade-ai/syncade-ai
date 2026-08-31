@@ -12,6 +12,7 @@ aggregate :class:`RunResult`, and returns it.
 from __future__ import annotations
 
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 from syncade import run_status as _run_status
@@ -29,6 +30,7 @@ from syncade.persistence import (
     persist_loop_summary,
 )
 from syncade.producer_result import candidate_disposition
+from syncade.workspace_owner import OWNER_RECORD_NAME, remove_workspace_claim, run_id_parts
 
 from .results import RunArtifacts, RunResult
 
@@ -351,48 +353,55 @@ def _finalize_run(
                     f"PRD). Inspect at {effective_worktree_base / run_id}/."
                 )
 
-    # Final cleanup of the per-run workspace-base parent. The
-    # per-round managers each cleaned up their round-N
-    # subdirs, but the shared ``<worktree_base>/<run_id>/`` parent
-    # they were nested under is still on disk.
-    #
-    # the per-round managers' cleanup_all rmdirs
-    # their own ``round-N/`` subdirs, BUT on a NO-SHIP round where
-    # the producer also ran, the reviewer-manager's cleanup_all
-    # tries to rmdir ``round-N/`` BEFORE the producer-manager
-    # cleans up its own ``round-N/producer-worktree/`` — the rmdir
-    # fails silently (dir not empty), the producer phase runs and
-    # cleans its subdir, but nothing goes back to retry the
-    # ``round-N/`` rmdir. Result: empty ``round-N/`` directories
-    # accumulate under ``<base>/<run_id>/`` even on successful
-    # runs, and the post-loop ``rmdir(<base>/<run_id>/)`` fails
-    # because of the empty children.
-    #
-    # Fix: walk the run_dir bottom-up and rmdir every empty subdir
-    # before the final ``rmdir(run_dir)``. Best-effort: any OSError
-    # is swallowed (caller may have left intentional state).
-    #
-    # skipped when ``preserve_worktrees`` is True — the
-    # whole point is to leave the dirs on disk for inspection.
+    # Final cleanup of the shared ``<worktree_base>/<run_id>/`` parent the
+    # per-round managers nested under. Skipped when ``preserve_worktrees``
+    # is set — the point of those exit codes is to leave the tree readable.
     shared_run_dir = effective_worktree_base / run_id
-    if not preserve_worktrees and shared_run_dir.exists():
-        # Walk bottom-up so deeper empty dirs get rmdir'd first,
-        # making their parents potentially empty for the next step.
-        for child_dir in sorted(
-            (p for p in shared_run_dir.rglob("*") if p.is_dir()),
-            key=lambda p: len(p.parts),
-            reverse=True,
-        ):
-            try:
-                child_dir.rmdir()
-            except OSError:
-                # Not empty (operator left something) — skip.
-                pass
-        try:
-            shared_run_dir.rmdir()
-        except OSError:
-            # Not empty; leave it for inspection.
-            pass
+    if not preserve_worktrees:
+        _reclaim_shared_run_dir(shared_run_dir)
+        if not shared_run_dir.exists():
+            remove_workspace_claim(repo_root, run_id_parts(run_id)[0])
 
     logger.summary(result)
     return result
+
+
+def _reclaim_shared_run_dir(shared_run_dir: Path) -> None:
+    """Remove a run's workspace tree once nothing in it is worth keeping.
+
+    Reviewer and producer managers each rmdir their own ``round-N/`` subdir, but
+    on a NO-SHIP round where the producer also ran, the reviewer manager's
+    cleanup tries to rmdir ``round-N/`` BEFORE the producer manager removes
+    ``round-N/producer-worktree/``. That rmdir fails silently and nothing
+    retries it, so empty ``round-N/`` dirs accumulate and the final rmdir fails
+    on them. Walking bottom-up first is the fix.
+
+    Best effort throughout: an ``OSError`` means the caller left state behind on
+    purpose, and inspection beats tidiness.
+    """
+    # Never follow a symlinked run root: doing so would delete the ownership
+    # record inside the symlink target, an uncontrolled location outside the
+    # run tree. Let GC handle it — it applies the same no-follow discipline.
+    if shared_run_dir.is_symlink():
+        return
+    if not shared_run_dir.exists():
+        return
+    # Deeper dirs first, so emptying a child can empty its parent in turn.
+    for child_dir in sorted(
+        (p for p in shared_run_dir.rglob("*") if p.is_dir()),
+        key=lambda p: len(p.parts),
+        reverse=True,
+    ):
+        with suppress(OSError):
+            child_dir.rmdir()
+    # The ownership record is the last thing standing in a fully cleaned tree,
+    # and rmdir would fail on it — turning every clean run into a permanent
+    # one-file directory, the exact accumulation the record exists to let GC
+    # reclaim. Remove it ONLY when nothing else remains: a tree that survives
+    # cleanup must keep its record, or GC can no longer prove the tree is ours
+    # and would leave it on disk forever.
+    with suppress(OSError):
+        if [p.name for p in shared_run_dir.iterdir()] == [OWNER_RECORD_NAME]:
+            (shared_run_dir / OWNER_RECORD_NAME).unlink()
+    with suppress(OSError):
+        shared_run_dir.rmdir()

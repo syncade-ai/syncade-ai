@@ -7,6 +7,77 @@ include breaking changes.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-31
+
+### Upgrading
+
+- **Workspaces created by earlier versions can no longer be reclaimed automatically, and
+  `syncade --gc` will report them for one-time manual cleanup.** Ownership is now proven from a
+  record written when a workspace is created, so anything that predates this release carries no
+  record and no repository can prove it owns it. `--gc` lists those paths with a total size
+  instead of deleting them. Measured on the author's machine at this release: 3 workspaces
+  reclaimable, **38 (1.8 GB) reported for manual removal**. Delete them yourself once
+  (they are under your `worktree_base`, `/tmp/syncade` by default) and the accumulation does not
+  come back — every workspace created from here on is recorded at creation. The alternative was
+  deleting directories syncade could not prove were its own, on a base that is shared between
+  projects by default.
+
+### Added
+
+- **Shared workspace ownership is now recorded at creation and proven from trusted repo-local
+  state before orphan GC can delete anything.** The creator hard-links the owner record into
+  `.syncade/workspace-claims/` when the filesystem permits it; reclamation requires validated
+  record contents and identity of that exact record inode, so a cross-device link failure, forged
+  self-naming record, stale run-id marker, copied replacement, or another repository's workspace
+  fails toward leaked disk instead of deletion. Record creation is centralized with run-directory
+  creation, and normal cleanup removes the trusted claim after the workspace root is gone.
+
+  **Known limitation, stated rather than discovered later.** The record-inode proof above is
+  solid everywhere, and structurally so: the repo-side claim is a hard link to the record, so
+  that inode cannot be reallocated while the claim exists, and hard links cannot cross devices.
+  A workspace syncade re-creates at the same path therefore always gets a different record and
+  is never mistaken for the old one.
+
+  A second, weaker check binds the claim to the workspace *directory's* inode, to catch one
+  remaining case: someone deliberately hard-linking your stale claim file into a directory they
+  created at the same path, so that GC then deletes it for them. That check works only on
+  filesystems that do not hand a deleted directory's inode number to the next one — measured,
+  ext4 and Docker's default overlay-on-ext4 do reuse it, while tmpfs and macOS APFS do not. So
+  on most Linux, including CI, that second check does nothing. Exploiting it requires another
+  process running as your own user, which syncade does not attempt to defend against anywhere.
+
+### Changed
+
+- **`syncade --gc` and `syncade --resume` now need `lsof` to remove a workspace, and refuse
+  rather than guess without it.** Before deleting a workspace directory, syncade asks which
+  processes are running inside it. Every way of failing to get that answer — `lsof` not
+  installed, an error, a timeout, or a process it found that cannot be stopped — used to be
+  treated as "nothing is running there", and the directory was deleted anyway. It is now a
+  refusal. On a machine without `lsof`, `--gc` still prunes transcripts but removes no
+  workspaces, listing each one it declined; and `--resume` stops with exit 60 naming the
+  leftover directory to remove by hand, rather than deleting it and possibly taking a running
+  process's working directory with it. Install `lsof` if `--gc` stops reclaiming anything.
+  A clean "nothing running here" answer is still trusted — non-root `lsof` cannot see every
+  process, so this guards against acting on silence rather than proving a workspace idle.
+
+### Fixed
+
+- **`syncade --gc` reports why a removal failed, and still reclaims what it can.** A failed
+  delete used to surface as a guess ("permission denied?") with no path; it now names the
+  failing file and the operating system's own reason, and deletion continues around the
+  failure instead of stopping at it.
+
+- **A resumed run no longer destroys the previous round's artifacts before discovering it
+  cannot continue.** Resume clears the leftover workspace first and stops with a clear message
+  if it cannot, so a run that was going to fail at provisioning no longer loses the artifacts
+  on its way there — previously it did, and repeated the same failure on every later resume.
+
+- **`syncade --gc` no longer silently loses recordless workspaces from both cleanup and reporting.**
+  Syncade-shaped trees without an ownership-record file are reported for permanent manual cleanup
+  even when matching run artifacts still exist. An unreadable root is also reported when its name
+  matches repo-local run artifacts; incomplete traversal now says `size unknown` instead of zero
+  and tells the operator to restore inspectability and rerun GC. Inspectable malformed and foreign
+  records remain fail-closed but are excluded from the recordless report rather than mislabeled.
 
 ## [0.8.1] — 2026-08-24
 
@@ -731,7 +802,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.9.0
 [0.8.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.8.1
 [0.8.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.8.0
 [0.7.6]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.7.6

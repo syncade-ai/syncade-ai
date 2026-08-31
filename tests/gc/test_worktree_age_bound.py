@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
 from syncade.gc import DEFAULT_WORKTREE_MAX_AGE_DAYS, plan_gc
+from syncade.workspace_owner import record_owner
 
 #: Exit 40 (subprocess error) IS resume-eligible. Exit 20 is NOT — `_RESUMABLE_EXIT_CODES` is
 #: {10, 25, 40, 60, 70}, and max-rounds has never been in it. The brief claimed otherwise and
@@ -51,17 +53,20 @@ def _run(repo: Path, run_id: str, *, exit_code: int, age_days: float) -> Path:
     return d
 
 
-def _worktree(base: Path, run_id: str) -> Path:
-    tree = base / run_id / "reviewer"
-    tree.mkdir(parents=True)
-    (tree / "file.txt").write_text("worktree content")
+def _worktree(base: Path, run_id: str, repo: Path) -> Path:
+    tree = base / run_id
+    (tree / "reviewer").mkdir(parents=True)
+    (tree / "reviewer" / "file.txt").write_text("worktree content")
+    record_owner(tree, repo)
     return tree
 
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    (tmp_path / "repo" / ".syncade" / "runs").mkdir(parents=True)
-    return tmp_path / "repo"
+    root = tmp_path / "repo"
+    (root / ".syncade" / "runs").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+    return root
 
 
 def test_an_aged_resumable_run_releases_its_worktree(repo: Path, tmp_path: Path) -> None:
@@ -69,7 +74,7 @@ def test_an_aged_resumable_run_releases_its_worktree(repo: Path, tmp_path: Path)
     refuses on tree drift long before that."""
     base = tmp_path / "wt"
     _run(repo, "2020-01-01T00-00-00", exit_code=_RESUMABLE_EXIT, age_days=21)
-    _worktree(base, "2020-01-01T00-00-00")
+    _worktree(base, "2020-01-01T00-00-00", repo)
 
     plan = plan_gc(repo, keep=0, worktree_max_age_days=14, worktree_base=base)
 
@@ -82,7 +87,7 @@ def test_a_young_resumable_run_is_still_fully_protected(repo: Path, tmp_path: Pa
     someone may well be inspecting yesterday's."""
     base = tmp_path / "wt"
     _run(repo, "2026-01-01T00-00-00", exit_code=_RESUMABLE_EXIT, age_days=2)
-    _worktree(base, "2026-01-01T00-00-00")
+    _worktree(base, "2026-01-01T00-00-00", repo)
 
     plan = plan_gc(repo, keep=0, worktree_max_age_days=14, worktree_base=base)
 
@@ -98,7 +103,7 @@ def test_the_age_release_frees_only_worktrees(repo: Path, tmp_path: Path) -> Non
     """
     base = tmp_path / "wt"
     _run(repo, "2020-01-01T00-00-00", exit_code=_RESUMABLE_EXIT, age_days=99)
-    _worktree(base, "2020-01-01T00-00-00")
+    _worktree(base, "2020-01-01T00-00-00", repo)
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_max_age_days=14, worktree_base=base)
 
@@ -117,7 +122,7 @@ def test_zero_disables_the_bound_and_preserves_the_old_behaviour(
     """
     base = tmp_path / "wt"
     _run(repo, "2020-01-01T00-00-00", exit_code=_RESUMABLE_EXIT, age_days=999)
-    _worktree(base, "2020-01-01T00-00-00")
+    _worktree(base, "2020-01-01T00-00-00", repo)
 
     plan = plan_gc(repo, keep=0, worktree_max_age_days=0, worktree_base=base)
 
@@ -130,7 +135,7 @@ def test_a_non_resumable_run_never_needed_the_bound(repo: Path, tmp_path: Path) 
     not be doing the work here, or a regression in it would hide behind this path."""
     base = tmp_path / "wt"
     _run(repo, "2020-06-01T00-00-00", exit_code=0, age_days=30)
-    _worktree(base, "2020-06-01T00-00-00")
+    _worktree(base, "2020-06-01T00-00-00", repo)
 
     plan = plan_gc(repo, keep=0, worktree_max_age_days=0, worktree_base=base)
 
@@ -158,7 +163,7 @@ def test_an_interrupted_run_is_the_common_case(repo: Path, tmp_path: Path) -> No
     (d / "run-init.json").write_text("{}")  # started, never finished: no loop-manifest.json
     when = time.time() - 60 * 86400
     os.utime(d, (when, when))
-    _worktree(base, "2020-03-01T00-00-00")
+    _worktree(base, "2020-03-01T00-00-00", repo)
 
     plan = plan_gc(repo, keep=0, worktree_max_age_days=14, worktree_base=base)
 
@@ -179,7 +184,7 @@ def test_execution_actually_removes_the_released_worktree(repo: Path, tmp_path: 
 
     base = tmp_path / "wt"
     _run(repo, "2020-01-01T00-00-00", exit_code=_RESUMABLE_EXIT, age_days=40)
-    _worktree(base, "2020-01-01T00-00-00")
+    _worktree(base, "2020-01-01T00-00-00", repo)
     tree_root = base / "2020-01-01T00-00-00"
 
     plan = plan_gc(repo, keep=0, worktree_max_age_days=14, worktree_base=base)
@@ -198,7 +203,7 @@ def test_execution_still_honours_protection_for_a_young_run(repo: Path, tmp_path
 
     base = tmp_path / "wt"
     _run(repo, "2026-01-01T00-00-00", exit_code=_RESUMABLE_EXIT, age_days=1)
-    _worktree(base, "2026-01-01T00-00-00")
+    _worktree(base, "2026-01-01T00-00-00", repo)
     tree_root = base / "2026-01-01T00-00-00"
 
     plan = plan_gc(repo, keep=0, worktree_max_age_days=14, worktree_base=base)
@@ -224,7 +229,7 @@ def test_a_run_that_becomes_protected_between_plan_and_execute_is_still_skipped(
     base = tmp_path / "wt"
     run_id = "2020-09-01T00-00-00"
     d = _run(repo, run_id, exit_code=0, age_days=40)  # SHIP: unprotected at plan time
-    _worktree(base, run_id)
+    _worktree(base, run_id, repo)
     tree_root = base / run_id
 
     plan = plan_gc(repo, keep=0, worktree_max_age_days=14, worktree_base=base)
@@ -262,7 +267,7 @@ def test_old_unprotected_run_within_keep_window_loses_its_worktree(
     _run(repo, "2026-01-01T00-00-00", exit_code=0, age_days=30)  # 30d old — past worktree floor
     _run(repo, "2026-02-01T00-00-00", exit_code=0, age_days=2)
     _run(repo, "2026-03-01T00-00-00", exit_code=0, age_days=1)
-    _worktree(base, "2026-01-01T00-00-00")  # worktree only for the old run
+    _worktree(base, "2026-01-01T00-00-00", repo)  # worktree only for the old run
 
     # max_age_days=90: runs must be 90d old before transcripts are slimmed, so the 30d run stays
     plan = plan_gc(repo, keep=5, max_age_days=90, worktree_max_age_days=14, worktree_base=base)
@@ -289,7 +294,7 @@ def test_young_run_beyond_the_keep_window_keeps_its_worktree(repo: Path, tmp_pat
     base = tmp_path / "wt"
     for i in range(4):  # 4 runs, keep=1 -> three fall outside the transcript keep window
         _run(repo, f"2026-03-0{i + 1}T00-00-00", exit_code=0, age_days=1)
-    _worktree(base, "2026-03-01T00-00-00")
+    _worktree(base, "2026-03-01T00-00-00", repo)
 
     plan = plan_gc(repo, keep=1, max_age_days=0, worktree_max_age_days=14, worktree_base=base)
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -217,12 +218,17 @@ def test_gc_threads_configured_worktree_base(tmp_path, monkeypatch, capsys):
         'worktree_base = "/custom/base"\n', encoding="utf-8"
     )
     captured: dict = {}
-    plan = SimpleNamespace(protected_run_ids=[])
+    # The stub plan carries every field the renderer reads; the test's subject is the
+    # BASE, so a missing field must not be what fails it.
+    plan = SimpleNamespace(protected_run_ids=[], unclaimable_trees=[], unclaimable_bytes=0)
     report = SimpleNamespace(
         dry_run=False,
         runs_slimmed=[],
         bytes_freed=0,
         worktrees_removed=[],
+        worktrees_declined=[],
+        worktrees_failed=[],
+        worktrees_refused=[],
         pids_reaped=[],
         errors=[],
     )
@@ -409,3 +415,221 @@ def test_negative_gc_knobs_are_rejected(tmp_path):
         with pytest.raises(SystemExit) as exc:
             main(argv)
         assert exc.value.code == 2, argv
+
+
+def test_gc_reports_declined_workspaces_on_stdout(tmp_path, capsys, monkeypatch):
+    """A workspace GC declined must appear on STDOUT, the channel the operator reads.
+
+    Without it the summary is byte-identical to a run that had nothing to remove —
+    ``0 worktree(s) removed`` at exit 0 — while the reason sits on stderr under a
+    headline that contradicts it. PR-h-06b item 1.
+    """
+    import syncade.gc_execute as gc_execute_module
+    from syncade.process import SubprocessNotFoundError, SubprocessResult
+    from syncade.workspace_owner import record_owner
+    from tests.gc._helpers import make_repo
+
+    repo = make_repo(tmp_path / "repo")
+    # Older than the default 14-day tier-3 floor, so the workspace is genuinely selected.
+    write_run(
+        repo,
+        "run-alpha",
+        started_at=datetime.now(UTC) - timedelta(days=60),
+        final_exit_code=0,
+        with_round=True,
+    )
+    wt_base = tmp_path / "wt"
+    tree = wt_base / "run-alpha"
+    tree.mkdir(parents=True)
+    record_owner(tree, repo)
+
+    def fake_run(argv, **kwargs):
+        if argv[0] == "lsof":
+            raise SubprocessNotFoundError("lsof")
+        return SubprocessResult(returncode=0, stdout="", stderr="", duration_seconds=0.0)
+
+    monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
+
+    rc = main(["--repo-root", str(repo), "--gc", "--gc-keep", "0", "--worktree-base", str(wt_base)])
+
+    assert rc == 0
+    assert tree.exists()
+    out = capsys.readouterr().out
+    # The run id deliberately does NOT contain "declined": an earlier version of this
+    # test used `run-declined`, so the substring was satisfied by the `slimmed run:`
+    # line and the assertion passed with both reporting paths deleted.
+    assert "run-alpha" in out and "declined" in out.lower(), out
+    assert "1 declined" in out, out  # the headline count, not just the per-tree line
+    assert str(tree) in out, out
+    assert "no live-process proof" not in out.lower(), "an EPERM decline is not a missing proof"
+
+
+def test_gc_quiet_declined_path_still_on_stdout(tmp_path, capsys, monkeypatch):
+    """--quiet must not hide the path of a declined workspace from stdout.
+
+    The path is the actionable information — an operator reading stdout summary
+    output must see which workspace to inspect even when --quiet suppresses the
+    verbose transcript lines.
+    """
+    import syncade.gc_execute as gc_execute_module
+    from syncade.process import SubprocessNotFoundError, SubprocessResult
+    from syncade.workspace_owner import record_owner
+    from tests.gc._helpers import make_repo
+
+    repo = make_repo(tmp_path / "repo")
+    write_run(
+        repo,
+        "run-quiet-check",
+        started_at=datetime.now(UTC) - timedelta(days=60),
+        final_exit_code=0,
+        with_round=True,
+    )
+    wt_base = tmp_path / "wt"
+    tree = wt_base / "run-quiet-check"
+    tree.mkdir(parents=True)
+    record_owner(tree, repo)
+
+    def fake_run(argv, **kwargs):
+        if argv[0] == "lsof":
+            raise SubprocessNotFoundError("lsof")
+        return SubprocessResult(returncode=0, stdout="", stderr="", duration_seconds=0.0)
+
+    monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
+
+    rc = main(
+        [
+            "--repo-root",
+            str(repo),
+            "--gc",
+            "--gc-keep",
+            "0",
+            "--worktree-base",
+            str(wt_base),
+            "--quiet",
+        ]
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert str(tree) in out, f"declined path must appear on stdout even with --quiet: {out}"
+
+
+def test_gc_partial_delete_failure_path_on_stdout(tmp_path, capsys, monkeypatch):
+    """A partial rmtree failure must put the workspace path on stdout, not only stderr.
+
+    Before the fix, the path only appeared in report.errors → stderr. The summary
+    showed '0 worktrees removed' with no path on stdout, indistinguishable from a
+    run that had nothing to do.
+    """
+    import os
+
+    import syncade.gc_execute as gc_execute_module
+    from syncade.process import SubprocessResult
+    from syncade.workspace_owner import record_owner
+    from tests.gc._helpers import make_repo
+
+    repo = make_repo(tmp_path / "repo")
+    write_run(
+        repo,
+        "run-partial",
+        started_at=datetime.now(UTC) - timedelta(days=60),
+        final_exit_code=0,
+        with_round=True,
+    )
+    wt_base = tmp_path / "wt"
+    tree = wt_base / "run-partial"
+    locked_sub = tree / "sub"
+    locked_sub.mkdir(parents=True)
+    (locked_sub / "f.txt").write_text("x", encoding="utf-8")
+    record_owner(tree, repo)
+
+    monkeypatch.setattr(
+        gc_execute_module,
+        "run_subprocess",
+        lambda argv, **k: SubprocessResult(
+            returncode=1, stdout="", stderr="", duration_seconds=0.0
+        ),
+    )
+    os.chmod(locked_sub, 0o500)
+    try:
+        rc = main(
+            [
+                "--repo-root",
+                str(repo),
+                "--gc",
+                "--gc-keep",
+                "0",
+                "--worktree-base",
+                str(wt_base),
+            ]
+        )
+    finally:
+        os.chmod(locked_sub, 0o700)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert str(tree) in out, f"failed-to-remove path must appear on stdout: {out}"
+
+
+def test_gc_guard_refused_identity_mismatch_path_on_stdout(tmp_path, capsys, monkeypatch):
+    """A worktree whose identity changed since planning must appear on stdout as refused.
+
+    Before the fix, the identity-mismatch guard only added to report.errors (stderr).
+    The summary showed '0 worktrees removed' with no path on stdout, indistinguishable
+    from a clean run. PR-h-06b stdout/path invariant.
+    """
+    import io
+    import shutil
+    import sys
+
+    import syncade.gc_execute as gc_execute_module
+    from syncade.cli.gc_mode import _report_refused
+    from syncade.gc import execute_gc as _execute_gc
+    from syncade.gc import plan_gc as _plan_gc
+    from syncade.process import SubprocessResult
+    from syncade.workspace_owner import record_owner
+    from tests.gc._helpers import make_repo
+
+    repo = make_repo(tmp_path / "repo")
+    write_run(
+        repo,
+        "run-identity-refused",
+        started_at=datetime.now(UTC) - timedelta(days=60),
+        final_exit_code=0,
+        with_round=True,
+    )
+    wt_base = tmp_path / "wt"
+    tree = wt_base / "run-identity-refused"
+    tree.mkdir(parents=True)
+    record_owner(tree, repo)
+
+    monkeypatch.setattr(
+        gc_execute_module,
+        "run_subprocess",
+        lambda argv, **k: SubprocessResult(
+            returncode=0, stdout="", stderr="", duration_seconds=0.0
+        ),
+    )
+
+    plan = _plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
+    assert tree in plan.worktree_trees_to_remove
+
+    # Swap the directory so the identity changes before execute.
+    shutil.rmtree(tree)
+    tree.mkdir(parents=True)
+    record_owner(tree, repo)
+
+    report = _execute_gc(plan, dry_run=False, repo_root=repo)
+
+    assert tree in report.worktrees_refused
+    # Verify the path appears on stdout via _report_refused.
+    buf = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = buf
+    try:
+        _report_refused(report)
+    finally:
+        sys.stdout = old_stdout
+    assert str(tree) in buf.getvalue(), (
+        "guard-refused path must appear on stdout via _report_refused"
+    )

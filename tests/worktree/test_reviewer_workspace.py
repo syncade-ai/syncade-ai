@@ -15,6 +15,7 @@ from syncade.reviewer_workspace import (
     ReviewerWorkspaceManager,
     stage_reviewer_file,
 )
+from syncade.workspace_owner import OWNER_RECORD_NAME
 from syncade.worktree import WorktreeError
 from tests.worktree._helpers import _git
 
@@ -136,7 +137,7 @@ def test_export_is_exact_pinned_tree_then_stripped_and_has_no_git(
     assert not (workspace.path / "CLAUDE.md").exists()
     assert not (workspace.path / "docs" / "CLAUDE.md").exists()
     assert not os.path.lexists(workspace.path / ".git")
-    assert {path.name for path in manager.run_dir.iterdir()} == {"reviewer"}
+    assert {path.name for path in manager.run_dir.iterdir()} == {"reviewer", OWNER_RECORD_NAME}
 
     # Now prove ordinary local Git recovery fails without relying on the
     # deliberately broken inherited environment above.
@@ -261,7 +262,10 @@ def test_create_requires_full_sha_and_rolls_back_failed_exports(
 
     assert not os.path.lexists(target)
     assert manager._workspaces == []
-    assert not list(manager.run_dir.iterdir())
+    # The rollback leaves no partial WORKSPACE. The ownership record is not one:
+    # it names the run root this manager created, so a directory that survives a
+    # failed export is reclaimable by GC instead of sitting there unowned.
+    assert [p.name for p in manager.run_dir.iterdir()] == [OWNER_RECORD_NAME]
 
 
 def test_create_maps_filesystem_setup_failure_to_worktree_error(

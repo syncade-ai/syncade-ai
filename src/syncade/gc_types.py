@@ -45,6 +45,14 @@ class GcPlan:
     (a run may have become protected since planning) without that re-check silently undoing
     the age bound."""
     worktree_tree_identities: dict[Path, tuple[int, int, int]] = field(default_factory=dict)
+    unclaimable_trees: list[Path] = field(default_factory=list)
+    """Inert manual-cleanup/inspection report entries: recordless syncade-shaped
+    trees, plus unreadable trees whose names match repo-local run artifacts.
+    Nothing downstream may treat this list as a removal set. Recordless entries
+    need manual removal; unreadable entries may become classifiable after they
+    are made inspectable and GC is run again."""
+    unclaimable_bytes: int | None = 0
+    """Exact total size, or ``None`` when any unclaimable tree is unreadable."""
 
 
 @dataclass(frozen=True)
@@ -59,3 +67,24 @@ class GcReport:
     bytes_freed: int = 0
     errors: list[str] = field(default_factory=list)
     dry_run: bool = False
+    worktrees_declined: list[Path] = field(default_factory=list)
+    """Owned workspaces GC declined to REMOVE: either their liveness could not be
+    established, or a process inside one could not be stopped. "Declined" is about the
+    DIRECTORY, not about every side effect — in the narrow race where permissions change
+    between the probe and the signal a pid may already have been reaped, and it appears
+    in ``pids_reaped`` rather than being hidden. Distinct from ``unclaimable_trees`` on
+    the plan, which is about OWNERSHIP — these are provably ours, and only their safety
+    to delete is unsettled."""
+    worktrees_failed: list[Path] = field(default_factory=list)
+    """Owned workspaces GC attempted to remove but could not fully delete. The tree was
+    proven safe (liveness established) but ``shutil.rmtree`` could not complete — e.g.
+    an unwritable child directory. The cause is in ``errors``; this field carries the
+    PATH so callers can put it on stdout alongside the cause on stderr, satisfying the
+    stdout/path invariant the brief requires."""
+    worktrees_refused: list[Path] = field(default_factory=list)
+    """Workspaces GC skipped due to a safety guard BEFORE any liveness check:
+    the tree was found to contain the repo root, or its on-disk identity did not
+    match the planned identity (changed or unrecorded since planning). These are
+    distinct from ``worktrees_declined`` (liveness-declined, provably owned) — here
+    the guard fires earlier and ownership is not proven. The cause is in ``errors``;
+    paths appear here so ``_report_refused`` can name them on stdout."""

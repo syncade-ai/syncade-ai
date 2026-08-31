@@ -1,6 +1,6 @@
 {
   "_comment": "Served from the default branch and read by syncade's once-per-session update check (PR-h-field-07). `latest` is the newest published release. `critical_below` marks every version BELOW it as dangerous and MUST be reserved for what the brief says: significantly broken, or a security issue. It is not 'important' and not 'recommended' \u2014 with no enforcement behind it, this field is worth exactly what its scarcity makes it worth, and spending it on a routine release is how the next real one gets ignored. Set critical_below to null when nothing is. A version that is not exactly three integers is read as no information at all, which is the safe direction.",
-  "latest": "0.8.1",
+  "latest": "0.9.0",
   "critical_below": null,
   "critical_reason": null,
   "critical_url": null

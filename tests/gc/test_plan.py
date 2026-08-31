@@ -9,14 +9,15 @@ ambiguous pre-init/malformed state handled conservatively; worktree-tree mapping
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-import syncade.gc_worktrees as gcw_module
 from syncade.gc import GcPlan, GcReport, plan_gc
+from syncade.workspace_owner import record_owner
 
 from ._helpers import make_repo, write_run
 
@@ -36,14 +37,11 @@ def test_repo_owned_orphan_tree_is_collected(
     foreign = wt_base / "foreign-run"
     foreign.mkdir(parents=True)
 
-    # Pretend the active Git-ownership proof found a live worktree UNDER the
-    # 'ours' tree only. Real-git coverage for this boundary lives in
-    # test_execute.py and test_self_orphan_protection.py.
-    monkeypatch.setattr(
-        gcw_module,
-        "_active_repo_worktree_paths",
-        lambda repo_root, repo_resolved: {(ours / "round-0" / "rv1").resolve()},
-    )
+    # Ownership is the record the tree carries, so this needs no stubbing: the
+    # 'ours' tree gets this repository's record and 'foreign' gets none. The
+    # record names a git common dir, so the repo has to actually be one.
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
+    record_owner(ours, repo)
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     assert ours in plan.orphan_worktree_trees
@@ -184,36 +182,65 @@ def test_no_runs_dir_returns_empty_plan(tmp_path: Path) -> None:
 
 def test_worktree_trees_mapped_for_each_deleted_run(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
     write_run(repo, "run-del", final_exit_code=0)
     write_run(repo, "run-keep", with_loop_manifest=False)  # protected
 
     wt_base = tmp_path / "wt"
-    (wt_base / "run-del").mkdir(parents=True)
+    run_del_tree = wt_base / "run-del"
+    run_del_tree.mkdir(parents=True)
     (wt_base / "run-keep").mkdir(parents=True)
+    # Normal-tier selection requires ownership proof, not just run-id name match.
+    record_owner(run_del_tree, repo)
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
 
-    assert (wt_base / "run-del") in plan.worktree_trees_to_remove
+    assert run_del_tree in plan.worktree_trees_to_remove
     # The protected run's worktree tree is NEVER removed.
     assert (wt_base / "run-keep") not in plan.worktree_trees_to_remove
 
 
-def test_foreign_worktree_tree_with_no_run_is_left_alone(tmp_path: Path) -> None:
-    """PR-27 dogfood finding 2: GC must NOT remove a ``/tmp/syncade/<id>`` tree
-    that has no matching run dir in THIS repo — it may belong to another repo
-    sharing the worktree base. Only worktrees of runs being pruned are removed
-    (those are provably ours). The old shared-base "orphan" scan deleted a
-    foreign repo's tree; that behavior is gone."""
+def test_same_name_foreign_tree_not_removed_by_normal_gc(tmp_path: Path) -> None:
+    """Normal-tier GC must require ownership proof, not just run-id name match.
+
+    Two repositories sharing a worktree base can produce the same run-id. Alpha's
+    GC must not delete beta's validly owned workspace even when alpha also has a
+    run dir for that id — ownership proof is required.
+    """
+    alpha = make_repo(tmp_path / "alpha")
+    subprocess.run(["git", "init", "-q"], cwd=alpha, check=True, capture_output=True)
+    beta = tmp_path / "beta"
+    beta.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=beta, check=True, capture_output=True)
+
+    write_run(alpha, "shared-id", final_exit_code=0)
+
+    wt_base = tmp_path / "wt"
+    beta_tree = wt_base / "shared-id"
+    beta_tree.mkdir(parents=True)
+    record_owner(beta_tree, beta)
+
+    plan = plan_gc(alpha, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
+
+    assert beta_tree not in plan.worktree_trees_to_remove
+
+
+def test_worktree_trees_without_ownership_record_are_left_alone(tmp_path: Path) -> None:
+    """Ownership proof is required; a run-id name match alone is never sufficient.
+
+    A tree at ``<worktree_base>/<run-id>`` with no ownership record is left alone
+    even when this repo has a slimmable run dir for the same id — the tree might
+    belong to another repository sharing the worktree base.
+    """
     repo = make_repo(tmp_path)
-    write_run(repo, "run-del", final_exit_code=0)  # ours, slimmable
+    write_run(repo, "run-del", final_exit_code=0)  # slimmable, but no claim on the tree
     wt_base = tmp_path / "wt"
     (wt_base / "run-del").mkdir(parents=True)
-    (wt_base / "foreign-other-repo-run").mkdir(parents=True)  # NOT ours
+    (wt_base / "foreign-other-repo-run").mkdir(parents=True)
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
 
-    # Our pruned run's tree IS scheduled; the foreign tree is left alone.
-    assert (wt_base / "run-del") in plan.worktree_trees_to_remove
+    assert (wt_base / "run-del") not in plan.worktree_trees_to_remove
     assert (wt_base / "foreign-other-repo-run") not in plan.worktree_trees_to_remove
 
 

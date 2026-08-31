@@ -65,7 +65,7 @@ What bounds this:
   (exits 30/20/10) — so a
   full copy of your repo can remain under `<worktree_base>/<run-id>/`. `syncade --gc` removes
   these workspaces after `gc.worktree_max_age_days` (default 14 days), including runs that are
-  still resume-eligible. With the default `/tmp/syncade` base they live outside your
+  still resume-eligible. Orphaned workspaces created BEFORE ownership records existed carry no record, so syncade cannot prove they are yours and will never reclaim them — `syncade --gc` reports how many and how much space, and you remove them yourself. With the default `/tmp/syncade` base they live outside your
   repo and are not committed or pushed. Configure `worktree_base` in `.syncade/config.toml` or
   `--worktree-base` to change the location; keep it **outside** your repository. Reviewer
   provisioning refuses a location that would put its export inside the operator repository.

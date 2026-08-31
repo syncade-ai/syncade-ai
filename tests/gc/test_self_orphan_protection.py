@@ -9,6 +9,7 @@ import pytest
 
 import syncade.gc_execute as gc_execute_module
 from syncade.gc import GcPlan, execute_gc, plan_gc
+from syncade.workspace_owner import record_owner
 from tests.gc._helpers import write_run
 
 
@@ -58,12 +59,14 @@ def test_gc_does_not_plan_main_checkout_as_pruned_run_worktree(tmp_path: Path) -
 def test_execute_gc_refuses_replacement_pruned_run_tree_from_stale_plan(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / ".syncade" / "runs").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
     run_id = "2026-06-28T15-00-00"
     write_run(repo, run_id, final_exit_code=0)
     wt_base = tmp_path / "worktree_base"
     tree = wt_base / run_id
     tree.mkdir(parents=True)
     (tree / "old-owned.txt").write_text("original\n", encoding="utf-8")
+    record_owner(tree, repo)
 
     plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
     assert tree in plan.worktree_trees_to_remove
@@ -88,7 +91,9 @@ def test_execute_gc_refuses_stale_plan_that_would_remove_repo_root(
     repo = tmp_path / "repo"
     (repo / ".syncade" / "runs").mkdir(parents=True)
     (repo / "keep.txt").write_text("main checkout\n", encoding="utf-8")
-    monkeypatch.setattr(gc_execute_module, "_reap_processes_in_tree", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        gc_execute_module, "_reap_processes_in_tree", lambda *args, **kwargs: ([], True)
+    )
 
     report = execute_gc(
         GcPlan(
@@ -150,8 +155,8 @@ def test_gc_does_not_remove_replacement_tree_from_stale_worktree_registry(
 
     wt_base = tmp_path / "worktree_base"
     gone = wt_base / "gone-run"
-    registered_child = gone / "round-0" / "rv1"
-    git("worktree", "add", "--detach", "-q", str(registered_child))
+    (gone / "round-0" / "rv1").mkdir(parents=True)
+    record_owner(gone, repo)
 
     stale_plan = plan_gc(
         repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0
@@ -162,6 +167,8 @@ def test_gc_does_not_remove_replacement_tree_from_stale_worktree_registry(
     gone.mkdir(parents=True)
     marker = gone / "foreign-owned.txt"
     marker.write_text("must survive\n", encoding="utf-8")
+    # The replacement carries no record, so it is no longer provably ours — the
+    # stale plan must not act on a name it collected under the old contents.
 
     fresh_plan = plan_gc(
         repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0

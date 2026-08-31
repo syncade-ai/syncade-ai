@@ -48,12 +48,14 @@ def test_non_leader_in_tree_pid_is_killed_by_pid_not_by_group(
     monkeypatch.setattr(gc_execute_module.os, "getpgid", lambda pid: 9999)
 
     killpg_calls: list[int] = []
-    kill_calls: list[int] = []
+    kill_calls: list[int] = []  # SIGKILLs only; the os.kill(pid, 0) probe is not a kill
     monkeypatch.setattr(gc_execute_module.os, "killpg", lambda pgid, sig: killpg_calls.append(pgid))
-    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: kill_calls.append(pid))
+    monkeypatch.setattr(
+        gc_execute_module.os, "kill", lambda pid, sig: sig and kill_calls.append(pid)
+    )
 
     errors: list[str] = []
-    reaped = gc_execute_module._reap_processes_in_tree(tree, errors)
+    reaped, _proven_free = gc_execute_module._reap_processes_in_tree(tree, errors)
 
     assert reaped == [4242]
     assert kill_calls == [4242], "non-leader must be killed by exact pid"
@@ -72,12 +74,14 @@ def test_group_leader_in_tree_pid_is_killed_by_pid_not_by_group(
     monkeypatch.setattr(gc_execute_module.os, "getpgid", lambda pid: pid)  # leader
 
     killpg_calls: list[int] = []
-    kill_calls: list[int] = []
+    kill_calls: list[int] = []  # SIGKILLs only; the os.kill(pid, 0) probe is not a kill
     monkeypatch.setattr(gc_execute_module.os, "killpg", lambda pgid, sig: killpg_calls.append(pgid))
-    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: kill_calls.append(pid))
+    monkeypatch.setattr(
+        gc_execute_module.os, "kill", lambda pid, sig: sig and kill_calls.append(pid)
+    )
 
     errors: list[str] = []
-    reaped = gc_execute_module._reap_processes_in_tree(tree, errors)
+    reaped, _proven_free = gc_execute_module._reap_processes_in_tree(tree, errors)
 
     assert reaped == [5050]
     assert kill_calls == [5050], "leader must still be killed by exact pid"
@@ -98,12 +102,12 @@ def test_pid_recheck_accepts_stdout_pid_when_lsof_returns_one(
         return SubprocessResult(returncode=0, stdout="", stderr="", duration_seconds=0.0)
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
-    killed: list[int] = []
-    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: killed.append(pid))
+    killed: list[int] = []  # SIGKILLs only; the os.kill(pid, 0) probe is not a kill
+    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: sig and killed.append(pid))
     monkeypatch.setattr(gc_execute_module.os, "killpg", lambda pgid, sig: None)
 
     errors: list[str] = []
-    reaped = gc_execute_module._reap_processes_in_tree(tree, errors)
+    reaped, _proven_free = gc_execute_module._reap_processes_in_tree(tree, errors)
 
     assert reaped == [6060]
     assert killed == [6060]
@@ -130,13 +134,15 @@ def test_stale_lsof_pid_is_rechecked_and_not_killed(
 
     monkeypatch.setattr(gc_execute_module, "run_subprocess", fake_run)
     killpg_calls: list[int] = []
-    kill_calls: list[int] = []
+    kill_calls: list[int] = []  # SIGKILLs only; the os.kill(pid, 0) probe is not a kill
     monkeypatch.setattr(gc_execute_module.os, "getpgid", lambda pid: pid)
     monkeypatch.setattr(gc_execute_module.os, "killpg", lambda pgid, sig: killpg_calls.append(pgid))
-    monkeypatch.setattr(gc_execute_module.os, "kill", lambda pid, sig: kill_calls.append(pid))
+    monkeypatch.setattr(
+        gc_execute_module.os, "kill", lambda pid, sig: sig and kill_calls.append(pid)
+    )
 
     errors: list[str] = []
-    reaped = gc_execute_module._reap_processes_in_tree(tree, errors)
+    reaped, _proven_free = gc_execute_module._reap_processes_in_tree(tree, errors)
 
     assert reaped == []
     assert kill_calls == []

@@ -127,16 +127,16 @@ def test_resume_refuses_dirty_when_effective_max_rounds_bumped(repo_with_pr_doc)
 # --- M2: resume cleanup refuses targets that escape the worktree base ----
 
 
-def test_resume_cleanup_refuses_target_outside_worktree_base(
-    repo_with_pr_doc, tmp_path, monkeypatch
-):
+def test_resume_cleanup_refuses_target_outside_worktree_base(repo_with_pr_doc, tmp_path):
     """The resume cleanup removes the stale worktree subtree through the
     hardened ``_safe_resume_rmtree``, which refuses a target that resolves
     outside the worktree base (here via a swapped ``<run_id>`` parent
     symlink). Before the fix a raw ``shutil.rmtree`` followed the symlink
-    and deleted the external victim."""
-    import syncade.orchestrator.loop as loop_module
+    and deleted the external victim.
 
+    The guard-refused cleanup now raises ``WorktreeError`` (not a silent
+    ``_StopRun`` continuation), because an existing but unremovable target
+    blocks re-provisioning and must stop the resume explicitly."""
     repo, pr_doc = repo_with_pr_doc
     subprocess.run(["git", "branch", "-m", "main"], cwd=repo, check=False)
     run_dir, _ = _prepare_aborted_run(
@@ -159,13 +159,7 @@ def test_resume_cleanup_refuses_target_outside_worktree_base(
     worktree_base.mkdir()
     (worktree_base / plan.run_id).symlink_to(victim, target_is_directory=True)
 
-    # Halt right after the cleanup so no round is provisioned.
-    def _stop(**kwargs):
-        raise _StopRun
-
-    monkeypatch.setattr(loop_module, "_run_round_step", _stop)
-
-    with pytest.raises(_StopRun):
+    with pytest.raises(WorktreeError):
         run_review(
             repo_root=repo,
             pr_doc_path=pr_doc,
@@ -182,12 +176,13 @@ def test_resume_cleanup_refuses_target_outside_worktree_base(
     assert sentinel.read_text(encoding="utf-8") == "do not delete"
 
 
-def test_resume_cleanup_refuses_symlink_leaf_identity(repo_with_pr_doc, tmp_path, monkeypatch):
+def test_resume_cleanup_refuses_symlink_leaf_identity(repo_with_pr_doc, tmp_path):
     """A resumed worktree dir that is itself a symlink fails the identity
     guard (``tree_identity`` returns None for symlinks) and is left alone —
-    the symlink target is never followed."""
-    import syncade.orchestrator.loop as loop_module
+    the symlink target is never followed.
 
+    The guard-refused cleanup now raises ``WorktreeError`` because the symlink
+    blocks re-provisioning just as a failed delete would."""
     repo, pr_doc = repo_with_pr_doc
     subprocess.run(["git", "branch", "-m", "main"], cwd=repo, check=False)
     run_dir, _ = _prepare_aborted_run(
@@ -208,12 +203,7 @@ def test_resume_cleanup_refuses_symlink_leaf_identity(repo_with_pr_doc, tmp_path
         victim, target_is_directory=True
     )
 
-    def _stop(**kwargs):
-        raise _StopRun
-
-    monkeypatch.setattr(loop_module, "_run_round_step", _stop)
-
-    with pytest.raises(_StopRun):
+    with pytest.raises(WorktreeError):
         run_review(
             repo_root=repo,
             pr_doc_path=pr_doc,
@@ -237,18 +227,22 @@ def test_resume_worktree_cleanup_reaps_in_cwd_processes_before_delete(tmp_path, 
     tests/smoke/test_resume_reap_smoke.py."""
     import syncade.gc_execute as gc_execute_module
     from syncade.orchestrator.loop import _safe_resume_rmtree
+    from syncade.workspace_owner import record_owner
 
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True, capture_output=True)
     base = tmp_path / "wt-base"
     target = base / "run" / "round-1"
     target.mkdir(parents=True)
+    # Ownership lives at the run root (target.parent = base/"run"), not the round dir.
+    record_owner(target.parent, repo_root)
 
     seen: list[tuple[object, bool]] = []
 
     def _spy(tree):
         seen.append((tree, tree.exists()))
-        return []
+        return [], True
 
     monkeypatch.setattr(gc_execute_module, "reap_processes_in_tree", _spy)
 
@@ -282,7 +276,7 @@ def test_resume_artifact_cleanup_does_not_reap(tmp_path, monkeypatch):
     monkeypatch.setattr(
         gc_execute_module,
         "reap_processes_in_tree",
-        lambda tree: reaped.append(tree) or [],
+        lambda tree: (reaped.append(tree), ([], True))[1],
     )
 
     _safe_resume_rmtree(target, base, repo_root)  # default reap=False
@@ -311,7 +305,7 @@ def test_resume_cleanup_does_not_reap_a_refused_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(
         gc_execute_module,
         "reap_processes_in_tree",
-        lambda tree: reaped.append(tree) or [],
+        lambda tree: (reaped.append(tree), ([], True))[1],
     )
 
     _safe_resume_rmtree(target, base, repo_root, reap=True)
@@ -338,6 +332,7 @@ def test_resume_cleanup_reaps_worktree_but_not_run_artifacts(repo_with_pr_doc, m
 
     def _record(target, base, repo_root, *, reap=False):
         calls.append((target, reap))
+        return True  # "cleared"; the abandonment path has its own test file
 
     def _stop(**kwargs):
         raise _StopRun
@@ -357,12 +352,17 @@ def test_resume_cleanup_reaps_worktree_but_not_run_artifacts(repo_with_pr_doc, m
         )
 
     assert len(calls) == 2, calls
-    (artifact_target, artifact_reap), (_worktree_target, worktree_reap) = calls
-    # First removal: the persisted run-artifact dir → NO reap (no SIGKILL).
+    (worktree_target, worktree_reap), (artifact_target, artifact_reap) = calls
+    # PR-h-06b item 4 REVERSED this order, and the order is now load-bearing: the
+    # workspace must be cleared before the artifact dir is destroyed, because a
+    # workspace that cannot be cleared stops the resume, and losing the artifacts on
+    # the way to that stop is the regression the reordering fixes.
+    # First removal: the external worktree subtree → reap.
+    assert "runs" not in str(worktree_target)
+    assert worktree_reap is True
+    # Second removal: the persisted run-artifact dir → NO reap (no SIGKILL).
     assert "runs" in str(artifact_target)
     assert artifact_reap is False
-    # Second removal: the external worktree subtree → reap.
-    assert worktree_reap is True
 
 
 # --- M3: fresh-run reservation atomically claims the /tmp worktree dir ----
@@ -409,3 +409,57 @@ def test_fresh_run_atomically_reserves_tmp_worktree_dir(repo_with_pr_doc, tmp_pa
     # The accepted id's tmp dir was reserved (created) by the loop itself.
     assert captured["tmp_reserved"] is True
     assert (worktree_base / f"{base_id}-2").is_dir()
+
+
+# --- artifact-dir cleanup return check ---
+
+
+def test_resume_raises_worktree_error_when_artifact_dir_cleanup_refused(repo_with_pr_doc, tmp_path):
+    """When the round artifact dir is a symlink, _safe_resume_rmtree returns False
+    and run_review raises WorktreeError instead of letting mkdir fail later with
+    a raw FileExistsError.
+
+    The workspace cleanup runs first (absent → True) so resume reaches the artifact
+    cleanup, which then refuses the symlink (reap=False) and triggers the check.
+    """
+    repo, pr_doc = repo_with_pr_doc
+    subprocess.run(["git", "branch", "-m", "main"], cwd=repo, check=False)
+    run_dir, _ = _prepare_aborted_run(
+        repo, pr_doc, completed_round_count=1, max_rounds=2, aborted_exit_code=40
+    )
+    plan = plan_resume(repo, run_dir)
+    resumed_round = plan.resumed_round
+
+    # Replace the existing round artifact dir with a symlink to an external victim.
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    sentinel = victim / "keep.txt"
+    sentinel.write_text("do not delete", encoding="utf-8")
+
+    round_artifact_dir = run_dir / f"round-{resumed_round}"
+    import shutil
+
+    shutil.rmtree(round_artifact_dir)
+    round_artifact_dir.symlink_to(victim, target_is_directory=True)
+
+    # Workspace dir is absent from the worktree base, so workspace cleanup
+    # returns True (nothing in the way) and the artifact cleanup is reached.
+    worktree_base = tmp_path / "wt-base"
+    worktree_base.mkdir()
+
+    with pytest.raises(WorktreeError) as exc_info:
+        run_review(
+            repo_root=repo,
+            pr_doc_path=pr_doc,
+            config=_two_reviewer_loop_config(max_rounds=2),
+            adapter_factory=_factory_returning(FakeAdapter(_ship()), FakeAdapter(_ship())),
+            resume_plan=plan,
+            force_drift=True,
+            worktree_base=worktree_base,
+            logger=Logger(level="quiet"),
+        )
+
+    assert str(round_artifact_dir) in str(exc_info.value)
+    # The symlink target was never touched.
+    assert sentinel.exists()
+    assert sentinel.read_text(encoding="utf-8") == "do not delete"

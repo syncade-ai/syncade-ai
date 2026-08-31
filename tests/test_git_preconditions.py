@@ -312,7 +312,8 @@ def test_syncade_secrets_file_excluded_from_baseline_commit(tmp_path):
 
 def test_syncade_run_state_excluded_but_config_tracked(tmp_path):
     """H1 hygiene: auto-init must not baseline-commit pre-existing syncade run
-    state (.syncade/runs/..., .syncade/last-reviewed.json), but
+    state (.syncade/runs/..., .syncade/workspace-claims/...,
+    .syncade/last-reviewed.json), but
     .syncade/config.toml stays trackable — the floor ignores generated/run
     state, not all of .syncade/."""
     work = tmp_path / "fresh"
@@ -320,6 +321,9 @@ def test_syncade_run_state_excluded_but_config_tracked(tmp_path):
     artifact = work / ".syncade" / "runs" / "2026-01-01T00-00-00" / "round-0" / "manifest.json"
     artifact.parent.mkdir(parents=True)
     artifact.write_text("{}\n", encoding="utf-8")
+    claim = work / ".syncade" / "workspace-claims" / "2026-01-01T00-00-00"
+    claim.parent.mkdir(parents=True)
+    claim.write_text("{}\n", encoding="utf-8")
     (work / ".syncade" / "last-reviewed.json").write_text("{}\n", encoding="utf-8")
     (work / ".syncade" / "config.toml").write_text("[loop]\nmax_rounds = 2\n", encoding="utf-8")
 
@@ -327,6 +331,7 @@ def test_syncade_run_state_excluded_but_config_tracked(tmp_path):
 
     tracked = _tracked_files(work)
     assert not any(t.startswith(".syncade/runs/") for t in tracked)
+    assert not any(t.startswith(".syncade/workspace-claims/") for t in tracked)
     assert ".syncade/last-reviewed.json" not in tracked
     # Not over-ignored: the user's config is still trackable.
     assert ".syncade/config.toml" in tracked

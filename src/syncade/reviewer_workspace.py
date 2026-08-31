@@ -14,6 +14,7 @@ from types import TracebackType
 from syncade.env_scrub import path_is_relative_to
 from syncade.git_object_id import is_full_git_object_id
 from syncade.process import SubprocessError, run_subprocess
+from syncade.workspace_owner import create_run_dir
 from syncade.worktree import DEFAULT_WORKTREE_BASE, WorktreeError
 from syncade.worktree_env import reviewer_git_ceiling
 from syncade.worktree_paths import _strip_files, _validate_reviewer_name
@@ -264,7 +265,7 @@ class ReviewerWorkspaceManager:
         if os.path.lexists(target):
             raise WorktreeError(f"reviewer export target already exists: {target}")
         try:
-            self.run_dir.mkdir(parents=True, exist_ok=True)
+            create_run_dir(self._base_dir, self._run_id, self._repo_root)
             target.mkdir()
             with tempfile.TemporaryDirectory(prefix=".reviewer-export-", dir=self.run_dir) as raw:
                 _export_checkout(self._repo_root, target, commit_sha, Path(raw))

@@ -130,7 +130,14 @@ you to re-run.
   reviewers and judge. **`claude`** (Anthropic) is additionally required if you run from
   inside Claude Code (where the default producer uses Anthropic); in a plain terminal or
   Codex, all actors resolve to OpenAI.
-- `git`. (`lsof` is optional — only `syncade --gc` uses it.)
+- `git`, and `lsof` if you use `syncade --gc` or `--resume`. `--gc` will not delete any workspace
+  whose live-process check could not ANSWER; `--resume` applies the same check to the one leftover
+  workspace of the round it retries. Without `lsof` installed, `--gc` still prunes
+  transcripts but removes no workspaces and lists every one it declined, and `--resume` stops with
+  exit 60 naming the leftover directory to remove by hand. An answer of "nothing running here" is
+  trusted; non-root `lsof` cannot see every process, so this guards against acting on silence
+  rather than proving a workspace idle. `syncade --doctor` does not check for `lsof` — it
+  previews a review, which does not need it.
 
 Check your setup any time with `syncade --doctor`.
 
@@ -313,7 +320,17 @@ Early access. These are measured, not suspected.
   standalone producer repositories, and trusted linked worktrees for inspection. `syncade --gc` removes them once a run can no longer
   plausibly be resumed —
   controlled by `gc.worktree_max_age_days` (default 14 days), which applies even to runs that are
-  technically still resume-eligible. It reached 4.4 GB on this machine before a cleanup. Point
+  technically still resume-eligible. Recordless Syncade-shaped workspaces cannot be proven yours,
+  are never reclaimed automatically, and are reported by `syncade --gc` for manual removal. An
+  unreadable workspace is also reported when its directory name matches repo-local run artifacts;
+  make it inspectable and rerun GC so ownership can be classified. The report gives an exact size
+  only after a complete traversal, otherwise `size unknown`. Workspaces with an inspectable
+  ownership record — even a malformed record or one naming another repository — are left safely
+  but excluded from this recordless/manual-cleanup report rather than mislabeled. Separately, a
+  workspace GC could not prove is free of live processes is kept, counted as `declined` on the
+  summary line, and listed — that is every workspace on a machine with no `lsof` installed, so
+  install it if `--gc` reclaims nothing.
+  It reached 4.4 GB on this machine before a cleanup. Point
   `worktree_base` somewhere you do not mind, outside the repository under review (reviewer
   provisioning refuses a repo-local export). After manually removing a linked test/check
   worktree, run `git worktree prune`; reviewer exports and standalone producer repositories

@@ -78,6 +78,16 @@ see the "(no operator decision …)" sentinel — there is nothing to apply.
   made a fix" by observing the repository's HEAD move. If you make
   file edits without committing, the orchestrator treats your run
   as a stall and the loop terminates.
+- **Run the repository's blocking checks before every commit, and fix what
+  they say.** They are configured as `[[checks]]` in `.syncade/config.toml` in
+  this repository, each with the exact command to run; `blocking = true` ones
+  gate the verdict. Run them from `{worktree_path}` after your edits and before
+  `git commit`. This matters more than it looks: a blocking check that fails
+  makes the whole round NO-SHIP no matter how good your fix was, and on the last
+  round it ends the run — so a commit that fixes a real finding while leaving a
+  formatter or line-length check red has cost more than it gained. Lint and
+  formatting failures in code you touched are yours to fix, including in tests
+  you add.
 - **Commit subject is a code-focused description.** Example:
   `"fix: handle null pointer in compute_money_flow_snapshot"`.
   NOT: `"address round 0 review finding #3"`, NOT:

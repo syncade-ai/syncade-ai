@@ -35,10 +35,19 @@ _DESTRUCTIVE_PLAN_FIELDS = {
 #: delete — `worktree_trees_to_remove` is still the only thing that names a tree. It ENABLES
 #: destruction without describing any, and it must never release tiers 1 or 2, which
 #: `test_the_age_release_frees_only_worktrees` asserts behaviourally.
+#: ``unclaimable_trees``/``unclaimable_bytes`` are inert for the opposite reason to
+#: ``worktree_age_released``: they name PATHS, but as a NOTICE rather than a target. These trees
+#: are either recordless syncade-shaped workspaces (which need manual removal) or unreadable
+#: known-run roots (which may become classifiable after inspection succeeds). GC must not remove
+#: either from this plan because neither has positive ownership proof at planning time.
+#: `test_gc_never_removes_an_unclaimable_tree` asserts that behaviourally — a pin alone
+#: could not, since the danger is a future change quietly feeding this list to the executor.
 _INERT_PLAN_FIELDS = {
     "protected_run_ids",
     "worktree_tree_identities",
     "worktree_age_released",
+    "unclaimable_trees",
+    "unclaimable_bytes",
 }
 
 

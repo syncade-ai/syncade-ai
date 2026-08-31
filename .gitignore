@@ -37,6 +37,7 @@ htmlcov/
 # Syncade runtime (kept gitignored per-consumer-repo;
 # this repo doesn't generate them, but defensive in case of dev testing)
 .syncade/runs/
+.syncade/workspace-claims/
 .syncade/metrics.db
 .syncade/evidence/
 .syncade/findings.md

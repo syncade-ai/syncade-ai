@@ -5,17 +5,16 @@ filesystem export and the producer gets a STANDALONE repository. Neither is a li
 any more; only the trusted test/check legs still are. GC has two selection paths and they are
 affected differently, so both are pinned here.
 
-The orphan half records a REAL, deliberate narrowing rather than a bug. ``repo_owned_orphan_trees``
-proves ownership by finding a worktree registered in this repo's ``git worktree list`` under the
-tree — and PR-h-05's D5 ("standalone means no shared storage or path breadcrumbs") deliberately
-destroys exactly that evidence. The two goals are in direct tension and the isolation wins: an
-ownership breadcrumb is the operator-path linkage this PR exists to remove. GC's own rule already
-covers the outcome — "a tree we cannot prove is ours is LEFT" — so this fails safe, toward leaked
-disk rather than deleted data.
+The orphan half USED to record a deliberate narrowing: ``repo_owned_orphan_trees`` proved ownership
+by finding a worktree registered in this repo's ``git worktree list`` under the tree, and PR-h-05's
+D5 ("standalone means no shared storage or path breadcrumbs") destroys exactly that evidence, so an
+orphan of the ordinary shape was left on disk forever.
 
-It is also nearly unreachable: an orphan is a run whose ``.syncade/runs/<id>/`` is GONE, and tier 1
-is never deleted, so only a hand-deletion produces one. Everything else is reclaimed by the normal
-path below, which is shape-agnostic.
+PR-h-06a resolved that tension instead of accepting it. Ownership is now a RECORD this repository
+wrote into the tree at creation, which is a claim rather than a linkage git can follow back to us —
+so the proof is restored without restoring the breadcrumb the isolation removed. The safety rule is
+unchanged and still the point: a tree we cannot prove is ours is LEFT, so an absent or unreadable
+record fails safe toward leaked disk rather than deleted data.
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ import subprocess
 from pathlib import Path
 
 from syncade.gc_worktrees import existing_worktree_trees, repo_owned_orphan_trees
+from syncade.workspace_owner import record_owner
 
 
 def _git_init(path: Path) -> None:
@@ -83,19 +83,34 @@ def test_an_orphan_of_the_new_shape_is_left_rather_than_guessed_at(tmp_path):
     assert repo_owned_orphan_trees(operator, candidates, known_run_ids=set()) == []
 
 
-def test_an_orphan_is_still_reclaimed_when_a_trusted_worktree_pins_it(tmp_path):
-    """The orphan path is narrowed, not dead: a run with a test/check leg still registers a
-    linked worktree, and that remains provable ownership."""
+def test_an_orphan_is_reclaimed_when_its_record_names_this_repository(tmp_path):
+    """The proof is the record, and it works for every workspace shape.
+
+    This is the case the narrowing could not reach: a Git-less reviewer export or a
+    standalone producer store, orphaned, with nothing for ``git worktree list`` to find.
+    """
     base = tmp_path / "wtbase"
     tree = _run_workspace(base, "run-orphan")
     operator = tmp_path / "operator"
     _git_init(operator)
-    subprocess.run(
-        ["git", "worktree", "add", "-q", "--detach", str(tree / "test-worktree")],
-        cwd=operator,
-        check=True,
-        capture_output=True,
-    )
+    record_owner(tree, operator)
 
     candidates = sorted(p for p in base.iterdir() if p.is_dir())
     assert repo_owned_orphan_trees(operator, candidates, known_run_ids=set()) == [tree]
+
+
+def test_a_tree_recorded_to_another_repository_is_never_reclaimed(tmp_path):
+    """The measured shape: one shared base, two repositories, no name collision to help.
+
+    9 of 23 trees under this machine's ``/tmp/syncade`` belonged to an unrelated project.
+    """
+    base = tmp_path / "wtbase"
+    theirs = _run_workspace(base, "run-theirs")
+    stranger = tmp_path / "stranger"
+    _git_init(stranger)
+    record_owner(theirs, stranger)
+
+    operator = tmp_path / "operator"
+    _git_init(operator)
+    candidates = sorted(p for p in base.iterdir() if p.is_dir())
+    assert repo_owned_orphan_trees(operator, candidates, known_run_ids=set()) == []

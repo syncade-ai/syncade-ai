@@ -17,6 +17,7 @@ from syncade.gc_protection import (
 from syncade.gc_types import BULK_ARTIFACT_SUFFIXES, GcPlan, GcReport
 from syncade.gc_worktrees import tree_contains_repo_root, tree_identity
 from syncade.process import SubprocessError, run_subprocess
+from syncade.workspace_owner import remove_workspace_claim
 
 _LSOF_TIMEOUT_SECONDS: float = 30.0
 _GIT_PRUNE_TIMEOUT_SECONDS: float = 30.0
@@ -27,6 +28,9 @@ def execute_gc(plan: GcPlan, *, dry_run: bool, repo_root: Path) -> GcReport:
     errors: list[str] = []
     pids_reaped: list[int] = []
     worktrees_removed: list[Path] = []
+    worktrees_declined: list[Path] = []
+    worktrees_failed: list[Path] = []
+    worktrees_refused: list[Path] = []
     protected = set(plan.protected_run_ids) | current_protected_run_ids(repo_root)
     # Tier-3 age release (PR-h-12 item 2). Subtracting these from `protected` above does NOT
     # work and the first version tried it: `run_id_protected_now` falls through to a DISK
@@ -46,28 +50,44 @@ def execute_gc(plan: GcPlan, *, dry_run: bool, repo_root: Path) -> GcReport:
             continue
         if tree_contains_repo_root(tree, repo_root):
             errors.append(f"skipping worktree tree {tree}: it contains repo root {repo_root}")
+            worktrees_refused.append(tree)
             continue
         if not _planned_tree_identity_still_matches(plan, tree, errors, dry_run=dry_run):
+            worktrees_refused.append(tree)
             continue
         reaped, removed = _reap_and_remove_tree(tree, dry_run=dry_run, errors=errors)
         pids_reaped.extend(reaped)
-        if removed:
+        if removed is None:
+            worktrees_declined.append(tree)
+        elif removed:
             worktrees_removed.append(tree)
             pruned_any = True
+            if not dry_run:
+                remove_workspace_claim(repo_root, tree.name)
+        else:
+            worktrees_failed.append(tree)
 
     for tree in plan.orphan_worktree_trees:
         if tree_contains_repo_root(tree, repo_root):
             errors.append(f"skipping worktree tree {tree}: it contains repo root {repo_root}")
+            worktrees_refused.append(tree)
             continue
         if not _planned_tree_identity_still_matches(plan, tree, errors, dry_run=dry_run):
+            worktrees_refused.append(tree)
             continue
         if not orphan_worktree_still_orphan_now(repo_root, tree, protected):
             continue
         reaped, removed = _reap_and_remove_tree(tree, dry_run=dry_run, errors=errors)
         pids_reaped.extend(reaped)
-        if removed:
+        if removed is None:
+            worktrees_declined.append(tree)
+        elif removed:
             worktrees_removed.append(tree)
             pruned_any = True
+            if not dry_run:
+                remove_workspace_claim(repo_root, tree.name)
+        else:
+            worktrees_failed.append(tree)
 
     if pruned_any and not dry_run:
         _git_worktree_prune(repo_root, errors)
@@ -96,6 +116,9 @@ def execute_gc(plan: GcPlan, *, dry_run: bool, repo_root: Path) -> GcReport:
     return GcReport(
         runs_slimmed=runs_slimmed,
         worktrees_removed=worktrees_removed,
+        worktrees_declined=worktrees_declined,
+        worktrees_failed=worktrees_failed,
+        worktrees_refused=worktrees_refused,
         pids_reaped=pids_reaped,
         bytes_freed=bytes_freed,
         errors=errors,
@@ -240,8 +263,16 @@ def _planned_tree_identity_still_matches(
 
 def _reap_and_remove_tree(
     tree: Path, *, dry_run: bool, errors: list[str]
-) -> tuple[list[int], bool]:
-    """Reap in-cwd processes, then rmtree a single worktree tree."""
+) -> tuple[list[int], bool | None]:
+    """Prove the tree is free, reap what is in it, then rmtree it.
+
+    Returns ``(reaped_pids, removed)``, where ``removed`` is ``True`` (gone),
+    ``False`` (tried and failed) or ``None`` (DECLINED — the tree may still be in use,
+    so it was not removed; anything reaped before that decision is still returned rather
+    than discarded). The caller reports the three differently:
+    a decline is a first-class outcome an operator must see, not the same silence as
+    having had nothing to do. Every non-``True`` case appends its reason to ``errors``.
+    """
     try:
         if tree.is_symlink():
             errors.append(f"skipping unsafe symlink worktree tree {tree}")
@@ -250,102 +281,193 @@ def _reap_and_remove_tree(
         errors.append(f"failed to inspect worktree tree {tree}: {exc}")
         return [], False
 
-    reaped = _reap_processes_in_tree(tree, errors, dry_run=dry_run)
+    reaped, proven_free = _reap_processes_in_tree(tree, errors, dry_run=dry_run)
+    if not proven_free:
+        errors.append(
+            f"declined worktree tree {tree}: not provably safe to remove — either its "
+            f"live processes could not be enumerated, or one of them could not be "
+            f"stopped. Preceding warnings say which. Remove the tree yourself if you "
+            f"know it is idle."
+        )
+        return reaped, None
 
     if dry_run:
         return reaped, True
 
-    shutil.rmtree(tree, ignore_errors=True)
-    if tree.exists():
-        errors.append(
-            f"failed to remove worktree tree {tree} (still present after rmtree; "
-            f"permission denied?)"
-        )
+    # `ignore_errors=True` discarded which path failed and why, leaving `exists()` as
+    # the only signal and forcing the report to GUESS ("permission denied?"). Measured,
+    # that guess is wrong for a case the stdlib gets right on its own: rmtree refuses a
+    # symlinked top entry with "Cannot call rmtree on a symbolic link", and
+    # ignore_errors swallowed it.
+    #
+    # `onerror=` rather than letting rmtree RAISE, for two measured reasons. It keeps
+    # deleting around the failure — on a tree with one unwritable subdirectory it
+    # reclaimed 3,000,000 of 3,000,001 bytes where raising reclaimed NONE, and a tree
+    # that stays at full size recurs on every future GC, which is the accumulation this
+    # work exists to end. And it reports FULL paths: `_rmtree_safe_fd` unlinks
+    # fd-relatively, so a raised exception carries only the basename.
+    #
+    # `onerror=` is deprecated in favour of `onexc` from 3.12, but the deprecation is
+    # DOCUMENTATION-ONLY — measured on 3.11.13 and 3.14.0 under
+    # `warnings.simplefilter("error")`, neither emits anything, so the loop's
+    # `pytest -W error` leg is unaffected and no version branch is needed. `onexc` does
+    # not exist on this project's 3.11 floor, so it cannot be used unconditionally.
+    failures: list[str] = []
+    shutil.rmtree(tree, onerror=lambda _fn, path, exc: failures.append(f"{path}: {exc[1]}"))
+    if failures or tree.exists():
+        # The FIRST failure is the root cause; every later one is an rmdir it blocked,
+        # so reporting the head is both bounded and the most informative line available.
+        detail = failures[0] if failures else "still present after rmtree"
+        errors.append(f"failed to remove worktree tree {tree}: {detail}")
         return reaped, False
     return reaped, True
 
 
-def _reap_processes_in_tree(tree: Path, errors: list[str], *, dry_run: bool = False) -> list[int]:
-    """Return or reap PIDs whose current working directory is inside ``tree``."""
+def _reap_processes_in_tree(
+    tree: Path, errors: list[str], *, dry_run: bool = False
+) -> tuple[list[int], bool]:
+    """``(pids reaped, the tree is proven free)``.
+
+    **The whole proof completes before anything is signalled.** Acting inside the
+    proving loop is a defect this function has now had twice: a recheck failing
+    halfway, then a kill denied halfway, each left processes dead in service of a
+    removal that was then refused — and, because the refusal discarded the list, the
+    report said ``0 process(es) reaped`` over a process GC had destroyed. So the two
+    questions a removal needs — *who is in here* and *may I stop them* — are both
+    answered for every pid first. ``os.kill(pid, 0)`` asks the second without
+    signalling, which is also what lets ``dry_run`` reach the same refusals rather
+    than promising a removal the real run declines.
+
+    ``reaped`` is returned even when the tree is not proven free, so a race between
+    the probe and the signal cannot make the report untrue about what died.
+    """
     pids = _lsof_pids_in_tree(tree, errors)
-    if dry_run:
-        return pids
-    reaped: list[int] = []
+    if pids is None:
+        return [], False
+
+    confirmed: list[int] = []
     for pid in pids:
-        if not _pid_cwd_is_still_in_tree(pid, tree, errors):
-            continue
+        still_here = _pid_cwd_is_still_in_tree(pid, tree, errors)
+        if still_here is None:
+            return [], False
+        if still_here:
+            confirmed.append(pid)
+
+    live: list[int] = []
+    for pid in confirmed:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue  # It exited between the recheck and now. Nothing is in the way.
+        except OSError as exc:
+            # It is alive, it is in this tree, and we may not signal it (EPERM: a setuid
+            # child that kept its cwd across the exec, or another user's process on the
+            # world-shared default base). An UNANSWERED question refuses, so an answer of
+            # "yes, and I cannot act on it" must refuse too.
+            _warn(errors, f"cannot signal live pid {pid} in {tree} ({exc}).")
+            return [], False
+        live.append(pid)
+    if dry_run:
+        return live, True
+
+    reaped: list[int] = []
+    for pid in live:
         try:
             os.kill(pid, signal.SIGKILL)
             reaped.append(pid)
-        except (ProcessLookupError, PermissionError) as exc:
-            errors.append(f"could not reap pid {pid} in {tree}: {exc}")
-    return reaped
+        except ProcessLookupError:
+            continue
+        except OSError as exc:  # Permissions changed since the probe: rare, still fatal.
+            _warn(errors, f"could not reap live pid {pid} in {tree} ({exc}).")
+            return reaped, False
+    return reaped, True
 
 
-def reap_processes_in_tree(tree: Path) -> list[int]:
-    """SIGKILL every process whose cwd is inside ``tree``; return reaped PIDs.
+def reap_processes_in_tree(tree: Path) -> tuple[list[int], bool]:
+    """``(pids reaped, the tree is proven free)`` — the seam GC and resume both use.
 
-    Public seam shared by GC and resume cleanup so both apply the SAME
-    cwd-scoped live-process safety before an ``rmtree`` — a directory is
-    never removed out from under a running (orphaned) subprocess. Best
-    effort: an ``lsof`` recheck failure is swallowed and that pid is skipped.
+    Both callers apply the SAME cwd-scoped live-process safety before an ``rmtree``, so
+    a directory is never removed out from under a running (orphaned) subprocess. This
+    returns the proof rather than discarding it: coercing it away here was item 1's old
+    swallow wearing a safer type, and left resume cleanup deleting on an unanswered
+    question while GC declined.
     """
     errors: list[str] = []
     return _reap_processes_in_tree(tree, errors)
 
 
-def _pid_cwd_is_still_in_tree(pid: int, tree: Path, errors: list[str]) -> bool:
+def _pid_cwd_is_still_in_tree(pid: int, tree: Path, errors: list[str]) -> bool | None:
+    """Whether ``pid`` still has a cwd inside ``tree``, or ``None`` if lsof did not say."""
     try:
         result = run_subprocess(
-            ["lsof", "-t", "-a", "-d", "cwd", "-p", str(pid), "+D", str(tree)],
+            ["lsof", "-w", "-t", "-a", "-d", "cwd", "-p", str(pid), "+D", str(tree)],
             timeout=_LSOF_TIMEOUT_SECONDS,
         )
     except SubprocessError as exc:
-        msg = (
-            f"WARNING: lsof recheck unavailable for pid {pid} in {tree} ({exc}); skipping this pid."
-        )
-        print(msg, file=sys.stderr)
-        errors.append(msg)
-        return False
+        _warn(errors, f"lsof recheck could not answer for pid {pid} in {tree} ({exc}).")
+        return None
 
     if pid in _parse_lsof_pids(result.stdout):
         return True
     if result.returncode != 0 and result.stderr.strip():
-        msg = (
-            f"WARNING: lsof recheck errored for pid {pid} in {tree} "
-            f"(rc={result.returncode}: {result.stderr.strip()}); skipping this pid."
+        _warn(
+            errors,
+            f"lsof recheck errored for pid {pid} in {tree} "
+            f"(rc={result.returncode}: {result.stderr.strip()}).",
         )
-        print(msg, file=sys.stderr)
-        errors.append(msg)
+        return None
     return False
 
 
-def _lsof_pids_in_tree(tree: Path, errors: list[str]) -> list[int]:
+def _lsof_pids_in_tree(tree: Path, errors: list[str]) -> list[int] | None:
+    """PIDs with a cwd inside ``tree``, or ``None`` when ``lsof`` could not answer.
+
+    The distinction is the whole point. ``lsof`` exits non-zero with an EMPTY stderr
+    when nothing matches — that is an answer, and it means the tree is free. A launch
+    failure, a timeout, or an error exit with diagnostics is the ABSENCE of an answer,
+    and was previously rendered as "nobody is there": the tree was deleted out from
+    under whatever was still using it, and the warning said so out loud
+    ("still removing the directory").
+
+    ``-w`` suppresses lsof's WARNING channel, which shares stderr with the fatal one.
+    **Measured inert on macOS** (lsof 4.91, Darwin 25.5.0): across an empty tree, a live
+    in-tree cwd, an unreadable subdirectory, an unreadable root, a fifo, a dangling and
+    an escaping symlink, and a root-owned pid, stderr is empty with or without it — the
+    only producer is a ``+D`` argument that is not an existing directory. It is kept for
+    Linux, where ``+D``'s documented per-entry "can't stat()" warnings accompany a
+    complete answer and would otherwise trip the non-empty-stderr refusal below. That
+    Linux behaviour is DOCUMENTED, not measured here.
+
+    **The ceiling, stated rather than implied: an empty answer is not proof of absence.**
+    Non-root lsof silently omits processes it may not inspect, and a live cwd inside an
+    unreadable subdirectory yields rc=1 with empty stdout AND empty stderr — read here as
+    "answered: nobody is there". What this module actually guarantees is narrower and is
+    the whole of item 1: a question that was not ANSWERED never reads as "nobody".
+    """
     try:
         result = run_subprocess(
-            ["lsof", "-t", "-a", "-d", "cwd", "+D", str(tree)],
+            ["lsof", "-w", "-t", "-a", "-d", "cwd", "+D", str(tree)],
             timeout=_LSOF_TIMEOUT_SECONDS,
         )
     except SubprocessError as exc:
-        msg = (
-            f"WARNING: lsof unavailable for {tree} ({exc}); skipping process "
-            f"reaping for this tree (still removing the directory)."
-        )
-        print(msg, file=sys.stderr)
-        errors.append(msg)
-        return []
+        _warn(errors, f"lsof could not answer for {tree} ({exc}).")
+        return None
 
     if result.returncode != 0 and result.stderr.strip():
-        msg = (
-            f"WARNING: lsof errored for {tree} (rc={result.returncode}: "
-            f"{result.stderr.strip()}); skipping process reaping for this tree "
-            f"(still removing the directory)."
+        _warn(
+            errors,
+            f"lsof errored for {tree} (rc={result.returncode}: {result.stderr.strip()}).",
         )
-        print(msg, file=sys.stderr)
-        errors.append(msg)
-        return []
+        return None
 
     return _parse_lsof_pids(result.stdout)
+
+
+def _warn(errors: list[str], message: str) -> None:
+    """Record an operator-visible warning on both channels GC reports through."""
+    text = f"WARNING: {message}"
+    print(text, file=sys.stderr)
+    errors.append(text)
 
 
 def _parse_lsof_pids(stdout: str) -> list[int]:

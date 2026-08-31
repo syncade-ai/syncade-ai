@@ -21,6 +21,7 @@ from pathlib import Path
 from types import TracebackType
 
 from syncade.process import SubprocessError, SubprocessResult, run_subprocess
+from syncade.workspace_owner import create_run_dir
 
 from .worktree_paths import (
     WorktreeError,
@@ -221,7 +222,7 @@ class WorktreeManager:
         # provisioning error rather than a raw OSError so the CLI can
         # map it to exit code 60.
         try:
-            self.run_dir.mkdir(parents=True, exist_ok=True)
+            create_run_dir(self._base_dir, self._run_id, self._repo_root)
         except OSError as exc:
             raise WorktreeError(
                 f"git worktree add failed: could not create run_dir {self.run_dir}: {exc}"

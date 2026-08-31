@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from syncade.gc import execute_gc, plan_gc
+from syncade.workspace_owner import record_owner
 
 from ._helpers import make_repo, write_run
 
@@ -44,6 +45,7 @@ def test_real_process_reaping_is_cwd_scoped(tmp_path: Path) -> None:
     wt_base = tmp_path / "wt"
     tree = wt_base / "run-del"
     tree.mkdir(parents=True)
+    record_owner(tree, repo)
     outside = tmp_path / "outside"
     outside.mkdir()
 
@@ -55,7 +57,7 @@ def test_real_process_reaping_is_cwd_scoped(tmp_path: Path) -> None:
         # Give the OS a beat to register the cwds for lsof.
         time.sleep(0.5)
 
-        plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+        plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
         report = execute_gc(plan, dry_run=False, repo_root=repo)
 
         # The in-tree sleep must be reaped.
@@ -97,6 +99,7 @@ def test_real_reaping_does_not_killpg_out_of_tree_group_member(tmp_path: Path) -
     wt_base = tmp_path / "wt"
     tree = wt_base / "run-del"
     tree.mkdir(parents=True)
+    record_owner(tree, repo)
     outside = tmp_path / "outside"
     outside.mkdir()
 
@@ -118,7 +121,7 @@ def test_real_reaping_does_not_killpg_out_of_tree_group_member(tmp_path: Path) -
         time.sleep(0.6)
         assert os.getpgid(child_pid) == os.getpgid(leader_pid), "child must share leader's group"
 
-        plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+        plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
         report = execute_gc(plan, dry_run=False, repo_root=repo)
 
         # In-tree child reaped.
@@ -155,6 +158,7 @@ def test_real_reaping_ignores_open_file_with_cwd_outside(tmp_path: Path) -> None
     wt_base = tmp_path / "wt"
     tree = wt_base / "run-del"
     tree.mkdir(parents=True)
+    record_owner(tree, repo)
     outside = tmp_path / "outside"
     outside.mkdir()
     afile = tree / "afile.txt"
@@ -166,7 +170,7 @@ def test_real_reaping_ignores_open_file_with_cwd_outside(tmp_path: Path) -> None
     inside = subprocess.Popen(["sleep", "60"], cwd=str(tree), start_new_session=True)
     try:
         time.sleep(0.5)
-        plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base)
+        plan = plan_gc(repo, keep=0, max_age_days=0, worktree_base=wt_base, worktree_max_age_days=0)
         report = execute_gc(plan, dry_run=False, repo_root=repo)
 
         # cwd-in-tree control IS reaped.

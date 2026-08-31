@@ -43,10 +43,11 @@ from syncade.gc_protection import run_id_protected_now as _run_id_protected_now
 from syncade.gc_protection import safe_iter_subdirs as _safe_iter_subdirs
 from syncade.gc_types import GcPlan, GcReport
 from syncade.gc_worktrees import (
-    existing_worktree_trees,
+    repo_owned_existing_trees,
     repo_owned_orphan_trees,
-    tree_contains_repo_root,
     tree_identity,
+    tree_size_bytes,
+    unclaimable_trees,
 )
 from syncade.persistence import RUN_INIT_FILENAME
 from syncade.worktree import DEFAULT_WORKTREE_BASE
@@ -73,6 +74,7 @@ __all__ = [
     "autoprune_transcripts",
     "execute_gc",
     "plan_gc",
+    "repo_owned_existing_trees",
 ]
 
 DEFAULT_KEEP: int = 20
@@ -129,7 +131,7 @@ def plan_gc(
     """Partition ``.syncade/runs/`` into protected vs slimmable.
 
     ``skip_worktrees=True`` omits all worktree and orphan discovery, avoiding
-    the ``git worktree list`` subprocess and the ``/tmp/syncade/`` walk.  Used by
+    the ``git rev-parse`` subprocess and the ``/tmp/syncade/`` walk.  Used by
     :func:`autoprune_transcripts` so routine loop startup never touches worktree
     planning — that is the slow and destructive half of GC, unsuitable for the
     opening moments of a loop.
@@ -170,15 +172,12 @@ def plan_gc(
     # `_worktree_removable`: deriving tier-3 targets from tier-2's selection is what let a
     # one-day-old worktree be deleted because its transcripts had aged out.
     all_worktree_ids, released = _worktree_removable(run_dirs, protected, worktree_max_age_days)
-    worktree_trees = [
-        tree
-        for tree in existing_worktree_trees(worktree_base, all_worktree_ids)
-        if not tree_contains_repo_root(tree, repo_root)
-    ]
+    worktree_trees = repo_owned_existing_trees(repo_root, worktree_base, all_worktree_ids)
     known_run_ids = {d.name for d in run_dirs} | protected
-    orphan_trees = repo_owned_orphan_trees(
-        repo_root, _safe_iter_subdirs(worktree_base), known_run_ids
-    )
+    subdirs = _safe_iter_subdirs(worktree_base)
+    orphan_trees = repo_owned_orphan_trees(repo_root, subdirs, known_run_ids)
+    stranded = unclaimable_trees(repo_root, subdirs, known_run_ids)
+    stranded_sizes = [tree_size_bytes(tree) for tree in stranded]
     tree_identities = {
         tree: identity
         for tree in [*worktree_trees, *orphan_trees]
@@ -192,6 +191,12 @@ def plan_gc(
         orphan_worktree_trees=orphan_trees,
         worktree_tree_identities=tree_identities,
         worktree_age_released=released,
+        unclaimable_trees=stranded,
+        unclaimable_bytes=(
+            None
+            if any(size is None for size in stranded_sizes)
+            else sum(size for size in stranded_sizes if size is not None)
+        ),
     )
 
 

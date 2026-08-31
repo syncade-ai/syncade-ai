@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from syncade.orchestrator.loop import _safe_resume_rmtree
+from syncade.workspace_owner import record_owner
 
 
 def _assert_dead(proc: subprocess.Popen, *, timeout: float) -> None:
@@ -48,9 +49,15 @@ def test_resume_worktree_cleanup_reaps_in_cwd_process(tmp_path: Path) -> None:
     it stays alive."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
+    # A real git repo is required so git_common_dir returns a valid path and
+    # the PR-h-06a ownership check passes — a plain directory is not a git repo.
+    subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True, capture_output=True)
     base = tmp_path / "wt"
     tree = base / "run" / "round-1"
     tree.mkdir(parents=True)
+    # Ownership is recorded at the run root (tree.parent = base/"run"), one level
+    # above the round dir — matching where create_run_dir stamps the record.
+    record_owner(tree.parent, repo_root)
     outside = tmp_path / "outside"
     outside.mkdir()
 

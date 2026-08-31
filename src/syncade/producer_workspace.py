@@ -13,6 +13,7 @@ from types import TracebackType
 from syncade.env_scrub import path_is_relative_to
 from syncade.git_object_id import is_full_git_object_id
 from syncade.process import SubprocessError, run_subprocess
+from syncade.workspace_owner import create_run_dir
 from syncade.worktree import DEFAULT_WORKTREE_BASE, WorktreeError
 
 _GIT_TIMEOUT_SECONDS = 30.0
@@ -238,7 +239,7 @@ class ProducerWorkspaceManager:
             raise WorktreeError(f"producer repository target already exists: {target}")
 
         try:
-            self.run_dir.mkdir(parents=True, exist_ok=True)
+            create_run_dir(self._base_dir, self._run_id, self._repo_root)
             with tempfile.TemporaryDirectory(prefix=".producer-init-", dir=self.run_dir) as raw:
                 _seed_repository(self._repo_root, target, commit_sha, Path(raw))
             _assert_standalone(self._repo_root, target, commit_sha)
