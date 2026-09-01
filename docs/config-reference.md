@@ -100,7 +100,7 @@ below; `worktree_base` is the one top-level scalar.
 | `retry` | `[retry]` table | — | Transient-error retry bound. See [`[retry]`](#retry--retryconfig). |
 | `gc` | `[gc]` table | — | Run-artifact retention. See [`[gc]`](#gc--gcconfig). |
 | `update` | `[update]` table | — | Background update check and opt-out. See [`[update]`](#update--updateconfig). |
-| `worktree_base` | path | `/tmp/syncade` | Base dir for per-run Git-less reviewer exports, standalone producer repositories, and linked test/check worktrees. Overridable with `--worktree-base`; point it at a fast local disk if `/tmp` is small or slow. |
+| `worktree_base` | path | `/tmp/syncade` | Base dir for per-run Git-less reviewer exports, standalone producer repositories, and linked test/check worktrees. Overridable with `--worktree-base`; point it at a fast local disk if `/tmp` is small or slow. Must be **absolute** (`~` is expanded, in the file and on the CLI alike); a relative value is refused, since it would resolve against whatever directory syncade was invoked from. |
 | `checks` | `[[checks]]` list | none | Mechanical exit-code gates. See [`[[checks]]`](#checks--checkconfig). |
 | `pricing` | `[pricing]` table | packaged price table | Per-model token pricing for cost estimation. See [`[pricing]`](#pricing--pricingconfig). |
 | `synthesizer` | `[synthesizer]` table | `openai`/`gpt-5.5` | The cold judge. See [cold actors](#synthesizer--drafter--auditor-cold-actors). |

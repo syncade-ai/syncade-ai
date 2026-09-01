@@ -18,15 +18,22 @@ invocation for the effective per-reviewer timeout on a ``--timeout`` run.)
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from pydantic import ValidationError
 
-from syncade.config import ReviewerConfig, SyncadeConfig
+from syncade.config import ReviewerConfig, SyncadeConfig, normalize_worktree_base
+from syncade.config_loader import ConfigError
 
 
-class OverrideError(Exception):
-    """A CLI override that can't be applied (unknown reviewer name / schema-rejected value)."""
+class OverrideError(ConfigError):
+    """A CLI override that can't be applied (unknown reviewer name / schema-rejected value).
+
+    A ``ConfigError`` SUBCLASS, deliberately: a bad override and a bad config file are the
+    same thing to an operator (exit 50, "config error: ..."), and four call sites apply
+    overrides while only one caught ``OverrideError``. Inheriting means every mode that
+    already handles a config-load failure covers its overrides too, instead of each one
+    having to remember a second handler — which is how ``--worktree-base wt`` came to
+    print a traceback and exit 1 from ``--gc``.
+    """
 
 
 def apply_cli_overrides(config: SyncadeConfig, args) -> SyncadeConfig:
@@ -45,11 +52,21 @@ def apply_worktree_base_override(config: SyncadeConfig, args) -> SyncadeConfig:
 
     Standalone rather than folded into the reviewer/loop merge because BOTH a review run AND
     ``--doctor`` honor it, and ``--doctor`` does not route through :func:`apply_cli_overrides` —
-    ``doctor_mode`` calls this directly so the writability preview matches the run it previews."""
+    ``doctor_mode`` calls this directly so the writability preview matches the run it previews.
+
+    Normalization goes through :func:`syncade.config.normalize_worktree_base`, NOT a local
+    ``expanduser()``. ``model_copy`` bypasses field validators, so a second implementation
+    here is how the two spellings of one setting came to name two different destinations."""
     raw = getattr(args, "worktree_base", None)
     if raw is None:
         return config
-    return config.model_copy(update={"worktree_base": Path(raw).expanduser()})
+    try:
+        base = normalize_worktree_base(raw)
+    except ValueError as exc:
+        # The normalizer speaks pydantic's language (ValueError) because the model field
+        # calls it too. Here it must speak the CLI's, or it escapes as a traceback.
+        raise OverrideError(f"--worktree-base: {exc}") from exc
+    return config.model_copy(update={"worktree_base": base})
 
 
 def _apply_loop_overrides(config: SyncadeConfig, args) -> SyncadeConfig:

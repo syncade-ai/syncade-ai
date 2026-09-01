@@ -220,7 +220,12 @@ def test_gc_threads_configured_worktree_base(tmp_path, monkeypatch, capsys):
     captured: dict = {}
     # The stub plan carries every field the renderer reads; the test's subject is the
     # BASE, so a missing field must not be what fails it.
-    plan = SimpleNamespace(protected_run_ids=[], unclaimable_trees=[], unclaimable_bytes=0)
+    plan = SimpleNamespace(
+        protected_run_ids=[],
+        unclaimable_recordless_trees=[],
+        unclaimable_unreadable_trees=[],
+        unclaimable_bytes=0,
+    )
     report = SimpleNamespace(
         dry_run=False,
         runs_slimmed=[],

@@ -230,7 +230,13 @@ def _run_resume(args) -> int:
     config = _resolve_resume_budget(config, args, plan)
     # Honor the configured/overridden worktree base on resume too (dogfood B2): without this a
     # resumed run silently falls back to /tmp/syncade even when the run relocated its worktrees.
-    config = apply_worktree_base_override(config, args)
+    # Its own try rather than the load_config one above: the plan load sits between them, so
+    # this cannot be hoisted. OverrideError is a ConfigError, hence exit 50 and no traceback.
+    try:
+        config = apply_worktree_base_override(config, args)
+    except ConfigError as exc:
+        print(f"[syncade] config error: {exc}", file=sys.stderr)
+        return CONFIG_ERROR
 
     # Default-branch refusal (PR-v2-26, D1(c)). will_commit uses the EFFECTIVE cap
     # run_review will use — a single-pass resume (effective == 1) commits nothing and is

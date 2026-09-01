@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "syncade"
-version = "0.9.0"
+version = "0.9.1"
 description = "External blind multi-judge review orchestrator for AI-assisted coding"
 readme = "README.md"
 requires-python = ">=3.11"

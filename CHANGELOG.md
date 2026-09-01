@@ -7,6 +7,46 @@ include breaking changes.
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-09-01
+
+### Changed
+
+- **`syncade --gc` now reports the disk you actually get back.** Both workspace sizes and
+  "transcripts freed" were the sum of logical file lengths; they are now allocated blocks, the
+  same thing `du` reports. Measured on the author's corpus, the manual-cleanup figure the 0.9.0
+  upgrade note asks you to act on moves from 1.7 GB to 2.0 GB — the disk was always there, the
+  number was low.
+- **The manual-cleanup report tells you which of its two actions applies to which path.** It
+  prescribes deleting recordless trees yourself and making unreadable ones inspectable before
+  rerunning, then printed every path under one `recordless or unreadable` label. Recordless and
+  unreadable trees are now counted and labelled separately.
+- **`worktree_base` means the same thing in `config.toml` and on the command line.** `~` is now
+  expanded in the config file, where it used to be taken literally — `worktree_base = "~/scratch"`
+  created a directory *named* `~` under whatever directory you ran syncade from, while
+  `--worktree-base ~/scratch` correctly reached your home directory.
+- **An unresolvable `~user` in `worktree_base` is now a config error (exit 50) instead of a
+  traceback**, and an embedded NUL is rejected whether the value is given as a string or a path.
+- **A relative `worktree_base` is now refused (exit 50) instead of silently resolving against the
+  current directory.** The same config would otherwise provision workspaces in different places
+  depending on where you invoked syncade. Set an absolute path; `~` is expanded for you.
+
+### Security
+
+- **Per-run workspace roots are `0700`.** A reviewer export is a complete copy of your source
+  tree and the default `worktree_base` is `/tmp/syncade`, so on a multi-user host every workspace
+  was readable by any other user. Only the run root is locked — that is enough, since traversing to
+  anything below it requires permission on the root — and the shared base stays traversable so
+  other users can still create their own. **A root created by an earlier version is tightened when
+  syncade reuses it**, so resuming an older run no longer writes fresh work under a world-readable
+  directory; abandoned trees from earlier versions keep their old permissions, and deleting them is
+  already the 0.9.0 upgrade step.
+- **Garbage collection can no longer be crashed or hung by a hostile ownership record.** Checking
+  whether a `.syncade-owner.json` is readable now opens a descriptor and closes it, instead of
+  reading the whole file: a named pipe there used to block GC planning indefinitely, and a very
+  large or corrupt record could exhaust memory before the directory was even identified as a
+  syncade workspace.
+
+
 ## [0.9.0] — 2026-08-31
 
 ### Upgrading
@@ -802,7 +842,8 @@ Initial public release.
 - Ships as a `pip`-installable CLI plus an Agent Skill for Claude Code and Codex
   (`scripts/install-skill.sh`).
 
-[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/syncade-ai/syncade-ai/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.9.1
 [0.9.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.9.0
 [0.8.1]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.8.1
 [0.8.0]: https://github.com/syncade-ai/syncade-ai/releases/tag/v0.8.0

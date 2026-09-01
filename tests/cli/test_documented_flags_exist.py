@@ -55,6 +55,9 @@ _FOREIGN = {
     "--hard": "git reset --hard",
     "--into": "scripts/oss-release.sh",
     "--is-ancestor": "git merge-base",
+    # CLAUDE.md's pre-push-hook paragraph warns that a slow hook trains you to reach for
+    # this. It is git's, and naming it is the point of the sentence.
+    "--no-verify": "git push --no-verify (skipping the pre-push hook)",
     "--show-toplevel": 'git rev-parse (PR-h-15 records why `cd "$(...)"` cannot fail closed)',
     "--no-ff": "git merge",
     "--numstat": "git diff --numstat (the binary-report oracle PR-h-field-01 rejected)",

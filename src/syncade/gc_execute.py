@@ -15,7 +15,7 @@ from syncade.gc_protection import (
     run_id_protected_now,
 )
 from syncade.gc_types import BULK_ARTIFACT_SUFFIXES, GcPlan, GcReport
-from syncade.gc_worktrees import tree_contains_repo_root, tree_identity
+from syncade.gc_worktrees import allocated_bytes, tree_contains_repo_root, tree_identity
 from syncade.process import SubprocessError, run_subprocess
 from syncade.workspace_owner import remove_workspace_claim
 
@@ -182,19 +182,30 @@ def _slim_run_dir(
 
     freed = 0
     removed = 0
+    seen_inodes: set[tuple[int, int]] = set()
     for round_dir in round_dirs:
         for artifact in _bulk_artifacts_under(round_dir, run_dir_resolved, errors):
             try:
-                size = artifact.stat().st_size
+                # ALLOCATED, not logical: `bytes_freed` is presented to the operator
+                # as disk reclaimed, so it must be measured the same way the
+                # unclaimable report is. See `allocated_bytes`.
+                st = artifact.stat()
+                size = allocated_bytes(st)
             except OSError:
                 continue
+            inode_key = (st.st_dev, st.st_ino)
+            is_new_inode = inode_key not in seen_inodes
+            if is_new_inode:
+                seen_inodes.add(inode_key)
             if dry_run:
-                freed += size
+                if is_new_inode:
+                    freed += size
                 removed += 1
                 continue
             try:
                 artifact.unlink()
-                freed += size
+                if is_new_inode:
+                    freed += size
                 removed += 1
             except OSError as exc:
                 errors.append(f"failed to remove transcript {artifact}: {exc}")

@@ -55,10 +55,12 @@ def _run_gc(args) -> int:
         # check_api_keys=False: --gc spawns no model actors, so a missing actor API key must not
         # block maintenance — but a malformed [gc] value still fails schema validation → exit 50.
         config = load_config(repo_root, preset=args.preset, check_api_keys=False)
+        # INSIDE the try: OverrideError is a ConfigError, so a bad --worktree-base is
+        # reported as one instead of escaping as a traceback.
+        config = apply_worktree_base_override(config, args)  # cleans a custom base too
     except ConfigError as exc:
         print(f"[syncade] config error: {exc}", file=sys.stderr)
         return CONFIG_ERROR
-    config = apply_worktree_base_override(config, args)  # --worktree-base cleans a custom base too
 
     # Retention precedence: CLI --gc-keep/--gc-max-age-days → [gc] config → default (GcConfig's
     # defaults reproduce gc.DEFAULT_KEEP / DEFAULT_MAX_AGE_DAYS). Flag defaults are None so "passed
@@ -185,15 +187,21 @@ def _report_refused(report) -> None:
 def _report_unclaimable(plan, *, quiet: bool) -> None:
     """Report the inert manual-cleanup/inspection set without overstating it.
 
-    An entry is either an inspectable, recordless syncade-shaped tree or an
-    unreadable tree whose name matches this repository's run artifacts. The
-    former will never become ownership-proven and needs manual removal. The
-    latter is not yet classifiable: after it becomes inspectable, a later GC may
-    prove ownership and reclaim it. The plan intentionally carries one inert
-    list for both, so the shared message names both cases and both operator
-    actions instead of claiming permanence for an unreadable unknown.
+    The set has two halves prescribing two DIFFERENT operator actions: a proven
+    recordless tree needs manual removal, while an unreadable one needs its
+    permissions fixed and GC rerun. They are therefore printed under distinct
+    labels. A single shared label was the original shape and it made the summary
+    unactionable — measured at v0.9.0, 38 paths carried one identical
+    ``recordless or unreadable`` string under a message naming two actions, so
+    the operator could not tell which path took which.
+
+    The precision cuts both ways, which is the point: an unreadable tree is never
+    called recordless (its state is unknown, not permanent), and a recordless one
+    is never hedged as possibly-unreadable when it was read successfully.
     """
-    count = len(plan.unclaimable_trees)
+    recordless = plan.unclaimable_recordless_trees
+    unreadable = plan.unclaimable_unreadable_trees
+    count = len(recordless) + len(unreadable)
     if not count:
         return
     size = (
@@ -203,14 +211,16 @@ def _report_unclaimable(plan, *, quiet: bool) -> None:
     )
     print(
         f"[syncade] gc: {count} workspace(s) need inspection or manual cleanup "
-        f"({size}): recordless syncade-shaped trees, plus unreadable trees whose names "
-        f"match repo-local run artifacts. syncade will not remove these paths on this "
-        f"run. Remove recordless trees yourself; make unreadable trees inspectable and "
-        f"rerun GC."
+        f"({size}): {len(recordless)} recordless syncade-shaped tree(s) to remove "
+        f"yourself, {len(unreadable)} unreadable tree(s) to make inspectable before "
+        f"rerunning GC. syncade will not remove these paths on this run."
     )
-    if not quiet:
-        for tree in plan.unclaimable_trees:
-            print(f"  not removed (recordless or unreadable known-run workspace): {tree}")
+    if quiet:
+        return
+    for tree in recordless:
+        print(f"  not removed (recordless workspace — delete it yourself): {tree}")
+    for tree in unreadable:
+        print(f"  not removed (could not inspect — fix permissions and rerun gc): {tree}")
 
 
 def _human_bytes(n: int) -> str:

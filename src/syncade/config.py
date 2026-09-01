@@ -329,6 +329,52 @@ def _default_worktree_base() -> Path:
     return DEFAULT_WORKTREE_BASE
 
 
+def normalize_worktree_base(value: object) -> object:
+    """The ONE meaning of a ``worktree_base`` value, for the file and the CLI alike.
+
+    Both spellings of this setting must name one destination. They did not: the CLI
+    override called ``expanduser()`` and the model did not, so ``worktree_base =
+    "~/scratch"`` in ``config.toml`` created a directory literally NAMED ``~`` under
+    the process cwd while ``--worktree-base ~/scratch`` reached the home directory.
+    This function is the single implementation; ``config_overrides`` calls it rather
+    than repeating it, and a parity test pins that the two paths agree.
+
+    Three rules, in order:
+
+    - An embedded NUL is refused here rather than at the first syscall, where it
+      surfaces as an uncaught ``ValueError`` instead of a config error (exit 50).
+    - ``~`` is expanded, because an operator who writes it means their home directory
+      in either spelling.
+    - A RELATIVE base is refused. It would resolve against wherever syncade happened
+      to be invoked, so one config provisions into different places from different
+      directories — and GC's ownership machinery keys on the base. The hazard is
+      already recorded one layer down, where a relative base produced
+      ``base/base/<run-id>``; refusing at the door means a config file cannot reach it.
+    """
+    if not isinstance(value, (str, Path)):
+        return value
+    # The NUL check is about the VALUE, not how it was spelled. It once tested
+    # `isinstance(value, str)` only, while this function accepts `Path` too, so a
+    # `Path` carrying a NUL validated cleanly here and raised an uncaught ValueError
+    # from `mkdir` much later. Ordered AFTER the type gate so both spellings reach it.
+    if "\x00" in str(value):
+        raise ValueError(  # GENERIC_ERR_OK: Pydantic validator expects ValueError.
+            "worktree_base must not contain an embedded NUL byte"
+        )
+    try:
+        expanded = Path(value).expanduser()
+    except RuntimeError as exc:
+        # GENERIC_ERR_OK: Pydantic validator expects ValueError.
+        raise ValueError(str(exc)) from exc
+    if not expanded.is_absolute():
+        raise ValueError(  # GENERIC_ERR_OK: Pydantic validator expects ValueError.
+            f"worktree_base must be an absolute path, got {value!r}. A relative base "
+            "resolves against the directory syncade is invoked from, so the same "
+            "config would provision workspaces in different places."
+        )
+    return expanded
+
+
 class SyncadeConfig(BaseModel):
     """Top-level ``.syncade/config.toml`` schema.
 
@@ -371,7 +417,9 @@ class SyncadeConfig(BaseModel):
             "producer repositories, and linked test/check worktrees are created "
             f"(default ``{DEFAULT_WORKTREE_BASE}``). "
             "Overridable per-run with "
-            "``--worktree-base``. Point it at a fast local disk if ``/tmp`` is small or slow."
+            "``--worktree-base``. Point it at a fast local disk if ``/tmp`` is small or slow. "
+            "Must be ABSOLUTE; ``~`` is expanded. A relative value is refused, because it "
+            "would resolve against whatever directory syncade was invoked from."
         ),
     )
     # User-defined mechanical checks. Empty (default) = today's loop,
@@ -394,15 +442,8 @@ class SyncadeConfig(BaseModel):
 
     @field_validator("worktree_base", mode="before")
     @classmethod
-    def _reject_nul_in_worktree_base(cls, value: object) -> object:
-        # Path() accepts embedded NUL bytes but the OS rejects them at the first
-        # syscall, producing an uncaught ValueError instead of a config error.
-        # Catch it here so load_config raises ConfigError (exit 50) consistently.
-        if isinstance(value, str) and "\x00" in value:
-            raise ValueError(  # GENERIC_ERR_OK: Pydantic validator expects ValueError.
-                "worktree_base must not contain an embedded NUL byte"
-            )
-        return value
+    def _normalize_worktree_base_field(cls, value: object) -> object:
+        return normalize_worktree_base(value)
 
     @model_validator(mode="after")
     def _reject_duplicate_reviewer_names(self) -> "SyncadeConfig":

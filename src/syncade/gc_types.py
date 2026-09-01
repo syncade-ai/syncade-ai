@@ -45,12 +45,20 @@ class GcPlan:
     (a run may have become protected since planning) without that re-check silently undoing
     the age bound."""
     worktree_tree_identities: dict[Path, tuple[int, int, int]] = field(default_factory=dict)
-    unclaimable_trees: list[Path] = field(default_factory=list)
-    """Inert manual-cleanup/inspection report entries: recordless syncade-shaped
-    trees, plus unreadable trees whose names match repo-local run artifacts.
-    Nothing downstream may treat this list as a removal set. Recordless entries
-    need manual removal; unreadable entries may become classifiable after they
-    are made inspectable and GC is run again."""
+    unclaimable_recordless_trees: list[Path] = field(default_factory=list)
+    """Inert report entries PROVEN recordless: inspectable, syncade-shaped, no
+    ownership record. Nothing downstream may treat this as a removal set. The
+    state is permanent — no future GC can prove ownership of them — so the
+    operator action is manual removal."""
+    unclaimable_unreadable_trees: list[Path] = field(default_factory=list)
+    """Inert report entries whose classification is UNKNOWN: some part of the
+    record or shape could not be read, and they are reported only because their
+    name matches repo-local run artifacts. Disjoint from
+    ``unclaimable_recordless_trees`` and kept separate because the two prescribe
+    DIFFERENT operator actions — these may become reclaimable through the normal
+    ownership-proven path once they are inspectable, so the action is to fix the
+    permissions and rerun GC, not to delete. Reporting both under one label left
+    an operator unable to sort the paths GC had just printed."""
     unclaimable_bytes: int | None = 0
     """Exact total size, or ``None`` when any unclaimable tree is unreadable."""
 

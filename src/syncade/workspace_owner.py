@@ -361,7 +361,17 @@ def create_run_dir(base_dir: Path, run_id: str, repo_root: Path, *, exist_ok: bo
     try:
         root_was_created = True
         try:
-            os.mkdir(parts[0], dir_fd=base_fd)
+            # 0o700, because a reviewer export is a full copy of the operator's source
+            # and `worktree_base` defaults to a world-readable /tmp. Only the ROOT: the
+            # managers populate the tree BY PATH (git takes paths, not descriptors) so
+            # their directories keep the ambient umask, and POSIX requires execute
+            # permission on EVERY ancestor to traverse — a private root makes all of it
+            # unreachable by another user whatever the children's modes. The BASE is
+            # deliberately left alone; it is shared between projects, and locking it
+            # would stop a second USER creating their own roots under it.
+            # umask can only REMOVE bits, so the worst case here is syncade failing
+            # loudly on its own directory, never a quieter permission than intended.
+            os.mkdir(parts[0], 0o700, dir_fd=base_fd)
         except FileExistsError:
             if not exist_ok:
                 raise
@@ -388,6 +398,13 @@ def create_run_dir(base_dir: Path, run_id: str, repo_root: Path, *, exist_ok: bo
         )
         if created:
             _write_workspace_claim(repo_root, parts[0], root_fd)
+        # Tighten the root after ownership is proven — not only on fresh creation.
+        # A run root created before this change (or by an older binary) may carry
+        # mode 0755; resumed/continued runs reuse the existing root via exist_ok=True
+        # and must not leave fresh reviewer/producer/test work under a world-readable
+        # ancestor. fchmod through the SAME descriptor that was ownership-verified so
+        # this cannot be raced to a different directory by a symlink swap.
+        os.fchmod(root_fd, 0o700)
         for part in parts[1:]:
             with suppress(FileExistsError):
                 os.mkdir(part, dir_fd=fds[-1])

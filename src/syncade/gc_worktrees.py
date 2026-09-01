@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import os
 import re
+import stat as _stat
 from pathlib import Path
+from typing import NamedTuple
 
 from syncade.workspace_owner import (
     OWNER_RECORD_NAME,
@@ -220,9 +222,34 @@ def _looks_like_syncade_workspace(sub: Path) -> bool | None:
         return None
 
 
+class UnclaimableTrees(NamedTuple):
+    """The inert report set, SPLIT by which of its two operator actions applies.
+
+    The two halves are disjoint and are classified in the SAME pass that selects
+    them, deliberately: re-deriving the split from the returned paths would make
+    the label a second source of truth that can drift from the selection.
+
+    ``recordless`` is proven — the tree was inspectable, it is syncade-shaped, and
+    it has no ownership record. That state is permanent, so the action is manual
+    removal. ``unreadable`` is an absence of knowledge, not a fact about the tree:
+    some part of the classification (the record, the shape, or both) could not be
+    read, and the tree is here only because its NAME matches a repo-local run. It
+    may become reclaimable through the normal ownership-proven path once it is
+    inspectable, so the action is to fix the permissions and rerun GC.
+    """
+
+    recordless: list[Path]
+    unreadable: list[Path]
+
+    @property
+    def all_trees(self) -> list[Path]:
+        """Both halves, sorted — the whole inert set, for sizing and counting."""
+        return sorted([*self.recordless, *self.unreadable])
+
+
 def unclaimable_trees(
     repo_root: Path, candidate_trees: list[Path], known_run_ids: set[str]
-) -> list[Path]:
+) -> UnclaimableTrees:
     """Workspace trees eligible for the inert manual-cleanup/inspection report.
 
     Inspectable entries are syncade-shaped trees with no ownership-record file.
@@ -254,7 +281,8 @@ def unclaimable_trees(
     as our unfinished business would be a different kind of untrue.
     """
     orphans_we_own = set(repo_owned_orphan_trees(repo_root, candidate_trees, known_run_ids))
-    unclaimable: list[Path] = []
+    recordless: list[Path] = []
+    unreadable: list[Path] = []
     for sub in candidate_trees:
         if sub in orphans_we_own:
             continue
@@ -269,18 +297,98 @@ def unclaimable_trees(
         # unreadable known-run tree still needs an honest warning.
         record_state = _has_record_file(sub)
         if record_state is True:
+            # lstat succeeded; verify the record is a readable regular file.
+            # A FIFO would block read_bytes() forever; a symlink would be followed
+            # even though owner_of() refuses symlink records — both must be treated
+            # as unreadable rather than probed with read_bytes().
+            record_path = sub / OWNER_RECORD_NAME
+            try:
+                lst = record_path.lstat()
+            except OSError:
+                if sub.name in known_run_ids:
+                    unreadable.append(sub)
+                continue
+            if not _stat.S_ISREG(lst.st_mode):
+                if sub.name in known_run_ids:
+                    unreadable.append(sub)
+                continue
+            try:
+                # Bounded probe: open and immediately close the descriptor.
+                # read_bytes() would load the entire file with no size cap, which
+                # can crash GC planning on a large or corrupt record before the
+                # directory is proven syncade-shaped or repo-local.  Opening the
+                # descriptor is sufficient to check read permission; the record's
+                # contents are validated by owner_of() if the tree reaches the
+                # ownership-proven removal path.
+                _probe_fd = os.open(record_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                os.close(_probe_fd)
+            except OSError:
+                if sub.name in known_run_ids:
+                    unreadable.append(sub)
+                continue
             continue
         shape = _looks_like_syncade_workspace(sub)
         if shape is False:
             continue
         if shape is None and sub.name not in known_run_ids:
             continue
-        unclaimable.append(sub)
-    return sorted(unclaimable)
+        # The split, decided HERE because this is where both states are known.
+        # Only a tree whose record was READ as absent AND whose shape was READ as
+        # syncade's is proven recordless; every other survivor reached this line
+        # through an unreadable record, an unreadable shape, or both, and its
+        # classification is unknown rather than settled.
+        if record_state is False and shape is True:
+            recordless.append(sub)
+        else:
+            unreadable.append(sub)
+    return UnclaimableTrees(recordless=sorted(recordless), unreadable=sorted(unreadable))
+
+
+def allocated_bytes(st: os.stat_result) -> int:
+    """The disk a file actually occupies, in bytes — not its logical length.
+
+    ``st_size`` is what the file CLAIMS to be; ``st_blocks`` is what the filesystem
+    gave it, in POSIX-defined 512-byte units regardless of the filesystem's own
+    block size. GC reports the second, because deleting a tree returns the second.
+    Summing ``st_size`` understated this repo's own stranded corpus by 15.6% —
+    1.81 GB against 2.14 GB of real disk — in the one number the v0.9.0 upgrade
+    note asks an operator to act on.
+
+    ``st_blocks`` is POSIX-only; on a platform without it the logical size is the
+    honest fallback, since no better answer is available there.
+    """
+    blocks = getattr(st, "st_blocks", None)
+    return st.st_size if blocks is None else blocks * 512
 
 
 def tree_size_bytes(tree: Path) -> int | None:
-    """Total file size under ``tree``, or ``None`` when traversal is incomplete."""
+    """Disk allocated to files under ``tree``, or ``None`` when traversal is incomplete.
+
+    CEILING, stated because it is a real approximation: directory inodes' own
+    allocated blocks are not counted. Measured on APFS they are zero and this
+    function matches ``du -sk`` to the byte; on a filesystem that does allocate for
+    directories the answer is low by roughly one block per directory, which against
+    a workspace of many-KB files is far below the error this replaced. Counting
+    them would mean sizing the root outside the recursion for a sub-percent effect.
+
+    Hard-linked inodes are counted once **within this tree**, matching ``du`` for a
+    single-tree walk and the disk reclaimed if this tree alone were removed.
+
+    THE SCOPE IS THE GUARANTEE, and it is deliberately narrow. A caller that sums
+    this function over SEVERAL roots gets no cross-root deduplication: an inode
+    linked from two reported workspaces is counted once per tree. That is a known,
+    accepted approximation, not an oversight — the promise this function makes is
+    "never UNDERSTATES the disk this tree holds", not exact ``du`` parity over an
+    arbitrary selection. Four review rounds were spent widening this before the
+    guarantee was bounded instead, so treat a cross-root parity report as a request
+    to re-open a decision rather than as a defect: what would change it is a
+    measurement that real workspace trees share hard-linked inodes, not a fixture
+    demonstrating the arithmetic.
+    """
+    return _tree_size_bytes(tree, set())
+
+
+def _tree_size_bytes(tree: Path, seen: set[tuple[int, int]]) -> int | None:
     total = 0
     try:
         with os.scandir(tree) as entries:
@@ -288,12 +396,17 @@ def tree_size_bytes(tree: Path) -> int | None:
                 if entry.is_symlink():
                     continue
                 if entry.is_dir(follow_symlinks=False):
-                    child_size = tree_size_bytes(Path(entry.path))
+                    child_size = _tree_size_bytes(Path(entry.path), seen)
                     if child_size is None:
                         return None
                     total += child_size
                 elif entry.is_file(follow_symlinks=False):
-                    total += entry.stat(follow_symlinks=False).st_size
+                    st = entry.stat(follow_symlinks=False)
+                    inode_key = (st.st_dev, st.st_ino)
+                    if inode_key in seen:
+                        continue
+                    seen.add(inode_key)
+                    total += allocated_bytes(st)
     except OSError:
         return None
     return total

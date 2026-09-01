@@ -177,7 +177,7 @@ def plan_gc(
     subdirs = _safe_iter_subdirs(worktree_base)
     orphan_trees = repo_owned_orphan_trees(repo_root, subdirs, known_run_ids)
     stranded = unclaimable_trees(repo_root, subdirs, known_run_ids)
-    stranded_sizes = [tree_size_bytes(tree) for tree in stranded]
+    stranded_sizes = [tree_size_bytes(tree) for tree in stranded.all_trees]
     tree_identities = {
         tree: identity
         for tree in [*worktree_trees, *orphan_trees]
@@ -191,7 +191,8 @@ def plan_gc(
         orphan_worktree_trees=orphan_trees,
         worktree_tree_identities=tree_identities,
         worktree_age_released=released,
-        unclaimable_trees=stranded,
+        unclaimable_recordless_trees=stranded.recordless,
+        unclaimable_unreadable_trees=stranded.unreadable,
         unclaimable_bytes=(
             None
             if any(size is None for size in stranded_sizes)

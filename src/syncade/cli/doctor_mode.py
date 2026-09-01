@@ -41,13 +41,13 @@ def _run_doctor(args) -> int:
 
     try:
         config = load_config(repo_root, preset=args.preset, deprecation_callback=_emit_deprecation)
+        # --worktree-base overrides config.worktree_base so the writability preview probes the
+        # base the real run would use (doctor does not route through apply_cli_overrides — see
+        # config_overrides). INSIDE the try: OverrideError is a ConfigError.
+        config = apply_worktree_base_override(config, args)
     except ConfigError as exc:
         print(f"[syncade] config error: {exc}", file=sys.stderr)
         return CONFIG_ERROR
-
-    # --worktree-base overrides config.worktree_base so the writability preview probes the base the
-    # real run would use (doctor does not route through apply_cli_overrides — see config_overrides).
-    config = apply_worktree_base_override(config, args)
 
     # Mirror the CLI's own run resolution so the branch preview matches what a real
     # `syncade <pr-doc>` would do for the same flags (C1). repo always pre-exists here

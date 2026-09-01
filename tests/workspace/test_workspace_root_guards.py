@@ -392,3 +392,91 @@ def test_reclaim_does_not_follow_symlinked_run_root(tmp_path: Path) -> None:
     _reclaim_shared_run_dir(run_dir)
 
     assert owner_record.exists(), "owner record in symlink target must not be deleted"
+
+
+# --- B04: the run root is private -------------------------------------------
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are required")
+def test_the_run_root_is_private_to_its_owner(repo: Path, tmp_path: Path) -> None:
+    """A reviewer export is a full copy of the operator's source, in a shared /tmp.
+
+    Every tree under the default ``worktree_base`` was ``0755``, so any other user on
+    a multi-user host could read the whole checkout. This is not the same-user racer
+    PR-h-06b declined — it needs no race and no timing, only a second login.
+    """
+    base = tmp_path / "wt"
+
+    root = create_run_dir(base, "run-1/round-0", repo)
+
+    mode = (base / "run-1").stat().st_mode & 0o777
+    assert mode == 0o700, f"run root is {mode:o}, readable by group/other"
+    assert root.is_dir()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are required")
+def test_the_private_root_is_what_protects_the_nested_workspaces(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Only the ROOT is chmodded, and that is sufficient rather than partial.
+
+    The managers populate the tree BY PATH (``git worktree add``, a checkout export, a
+    seeded repository) because git takes paths, not descriptors, so their directories
+    keep the ambient umask. POSIX requires execute permission on EVERY ancestor to
+    traverse, so a `0700` root makes all of it unreachable by another user whatever the
+    children's own modes — which is why this fix does not chase the mode into three
+    manager code paths.
+    """
+    base = tmp_path / "wt"
+    create_run_dir(base, "run-2/round-0", repo)
+    payload = base / "run-2" / "round-0" / "reviewer-export"
+    payload.mkdir()
+
+    assert payload.stat().st_mode & 0o077 != 0, (
+        "this test is only meaningful while the nested dir is NOT private; if managers "
+        "start creating private dirs the traversal argument still holds but this test "
+        "no longer demonstrates it"
+    )
+    assert (base / "run-2").stat().st_mode & 0o077 == 0, (
+        "the root denies traversal, so the permissive child is unreachable by others"
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are required")
+def test_reused_run_root_is_tightened_to_private(repo: Path, tmp_path: Path) -> None:
+    """A run root that existed with a permissive mode is tightened on reuse.
+
+    create_run_dir only calls os.mkdir for brand-new roots, so a resumed or
+    continued run (exist_ok=True) never re-ran the mode argument — fresh
+    reviewer/producer/test work could land under a still-world-readable 0755
+    root. fchmod through the ownership-verified descriptor closes that gap.
+    """
+    base = tmp_path / "wt"
+    create_run_dir(base, "run-x/round-0", repo)
+    run_root_path = base / "run-x"
+
+    # Simulate a root that was created before this fix.
+    run_root_path.chmod(0o755)
+    assert run_root_path.stat().st_mode & 0o777 == 0o755
+
+    # Reuse the existing root for a new nested round.
+    create_run_dir(base, "run-x/round-1", repo)
+
+    mode = run_root_path.stat().st_mode & 0o777
+    assert mode == 0o700, f"reused run root is {mode:o}, readable by group/other"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are required")
+def test_the_shared_base_itself_stays_traversable(repo: Path, tmp_path: Path) -> None:
+    """The BASE is not made private, deliberately.
+
+    ``worktree_base`` defaults to ``/tmp/syncade`` and is shared — measured, trees from
+    several projects sit side by side there. Locking the base would stop a second USER
+    from creating their own run roots under it, which is a cost the per-run root does
+    not impose. Only the run root is private.
+    """
+    base = tmp_path / "wt"
+
+    create_run_dir(base, "run-3", repo)
+
+    assert base.stat().st_mode & 0o111 != 0, "the shared base must stay traversable"
